@@ -7,7 +7,9 @@ import { hostname, networkInterfaces } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { toCamel, type Db } from './db';
 import { AppError } from './errors';
-import { acceptInvite, login, logout, now, sessionUser, setupWorkspace } from './auth';
+import { acceptInvite, confirmPassword, createSession, login, logout, now, sessionUser, sessionVia, setupWorkspace } from './auth';
+import { askOwnerPage, viaProxy, inTailscaleRange, peerAddress, signInExempt, tailscaleSettings, whois, type TailscalePerson } from './tailscale';
+import { syncTeamFile } from './teamFile';
 import { assertTokenScope, dispatch, nextActionId, type ChangeEvent } from './dispatch';
 import { can, isGuest, sessionActor, visibleProjectIds, type Actor } from './permissions';
 import { bearerOf, tokenActor, TokenRateLimiter } from './tokens';
@@ -43,6 +45,7 @@ import { discordSettings, discordTarget, registerDiscordCommands, registerDiscor
 import { registerSlackRoutes, slackSettings, slackTarget } from './integrations/slack';
 import { gitHookList, registerGitRoutes } from './integrations/git';
 import type { User } from '../shared/types';
+import pkg from '../package.json' with { type: 'json' };
 
 export interface AppOptions {
   db: Db;
@@ -71,6 +74,10 @@ export interface AppOptions {
    * outside tests; the allow-list itself can't be changed.
    */
   outbound?: { mocks?: Partial<Record<AllowedHost, string>> };
+  /** Sign-in by Tailscale (server/tailscale.ts). Default from env: JT_TAILSCALE_AUTH=1 turns it on, JT_TAILSCALE_SOCKET. */
+  tailscale?: { enabled: boolean; socketPath: string };
+  /** Test seam of the tailscaled lookup. Never set outside tests (and never from env). */
+  tailscaleWhois?: (ip: string, port: number) => Promise<TailscalePerson | null>;
 }
 
 /** How often the chat notification outbox is sent (server/integrations/common.ts). */
@@ -109,6 +116,9 @@ declare module 'fastify' {
 
 export const CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
   + "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+/** Questlog's version, read once (inlined by the server bundle). */
+const VERSION: string = pkg.version;
 
 export function buildApp(opts: AppOptions): FastifyInstance {
   const { db } = opts;
@@ -206,6 +216,64 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     if (verdict === 'locked') return reply.code(423).send({ error: 'workspace_disabled' });
   });
 
+  const secure = (req: FastifyRequest) => req.protocol === 'https';
+  const cookieBase = (req: FastifyRequest) => ({ httpOnly: true, sameSite: 'lax' as const, path: '/', secure: secure(req) });
+  const setSessionCookie = (req: FastifyRequest, reply: FastifyReply, token: string) =>
+    reply.setCookie(SESSION_COOKIE, token, { ...cookieBase(req), maxAge: 30 * DAY });
+
+  // ---- sign-in by Tailscale (server/tailscale.ts) ----
+  // A page load (GET, accepts HTML, no Authorization, no valid session, not an exempt path) from a tailnet address is
+  // looked up in tailscaled: a person linked to an enabled user gets an ordinary session; anyone else Tailscale knows
+  // gets the "ask the owner" page and a join request. The peer is only ever the socket address, never a header, and a
+  // request that came through a proxy (forwarding headers) is never looked up: the socket peer would be the proxy.
+  // Switch off, a non-tailnet address, a daemon that does not answer or any failure: the request goes on as if this
+  // did not exist.
+  const tailscale = opts.tailscale ?? tailscaleSettings();
+  const lookUp = opts.tailscaleWhois ?? ((addr: string, port: number) => whois(addr, port, tailscale.socketPath));
+  const tailscalePeer = async (req: FastifyRequest): Promise<TailscalePerson | null> => {
+    if (!tailscale.enabled || viaProxy(req.headers)) return null;
+    const addr = peerAddress(req.socket.remoteAddress);
+    if (!addr || !inTailscaleRange(addr)) return null;
+    try {
+      return await lookUp(addr, req.socket.remotePort ?? 0);
+    } catch (e) {
+      console.error('[jt] tailscale lookup failed', String((e as Error)?.message ?? e));
+      return null;
+    }
+  };
+  const linkedUser = (login: string) =>
+    db.prepare('SELECT id, disabled, kind FROM users WHERE tailscale_login=?').get(login) as { id: string; disabled: number; kind: string } | undefined;
+  app.addHook('onRequest', async (req, reply) => {
+    if (!tailscale.enabled || req.method !== 'GET' || req.headers.authorization !== undefined) return;
+    if (!String(req.headers.accept ?? '').includes('text/html')) return;
+    const raw = req.url.split('?')[0];
+    let decoded = raw;
+    try { decoded = decodeURIComponent(raw); } catch { /* malformed: judged as sent */ }
+    if (signInExempt(raw) || signInExempt(decoded)) return;
+    if (sessionUser(db, req.cookies[SESSION_COOKIE] ?? '')) return;
+    const person = await tailscalePeer(req);
+    if (!person) return;
+    try {
+      const user = linkedUser(person.login);
+      if (user) {
+        // As a password login: disabled people and service users never get in; a disabled workspace only lets its owner in.
+        if (user.disabled || user.kind === 'service' || (isWorkspaceDisabled(db) && !isOwner(db, user.id))) return;
+        const token = createSession(db, user.id, 'tailscale');
+        setSessionCookie(req, reply, token);
+        req.cookies[SESSION_COOKIE] = token;
+        return;
+      }
+      const at = now();
+      db.prepare(`INSERT INTO access_requests (login, display_name, first_seen, last_seen) VALUES (?,?,?,?)
+        ON CONFLICT(login) DO UPDATE SET display_name=excluded.display_name, last_seen=excluded.last_seen`)
+        .run(person.login, person.displayName, at, at);
+    } catch (e) {
+      console.error('[jt] tailscale sign-in failed', String((e as Error)?.message ?? e));
+      return;
+    }
+    return reply.code(403).header('cache-control', 'no-store').type('text/html; charset=utf-8').send(askOwnerPage(person));
+  });
+
   // The app page and its static files: only our own scripts, styles, images and sockets. Card text is
   // rendered as HTML in the browser, so this is the backstop if anything ever slips through.
   app.addHook('onSend', async (req, reply, payload) => {
@@ -217,11 +285,9 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     return payload;
   });
 
-  const secure = (req: FastifyRequest) => req.protocol === 'https';
   const setCookies = (req: FastifyRequest, reply: FastifyReply, token: string, device: string) => {
-    const base = { httpOnly: true, sameSite: 'lax' as const, path: '/', secure: secure(req) };
-    reply.setCookie(SESSION_COOKIE, token, { ...base, maxAge: 30 * DAY });
-    reply.setCookie(DEVICE_COOKIE, device, { ...base, maxAge: 365 * DAY });
+    setSessionCookie(req, reply, token);
+    reply.setCookie(DEVICE_COOKIE, device, { ...cookieBase(req), maxAge: 365 * DAY });
   };
   const ip = (req: FastifyRequest) => req.socket.remoteAddress ?? 'unknown';
   const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -291,6 +357,63 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     }
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
     return { ok: true };
+  });
+
+  /** This connection's Tailscale person and whether a user is linked to them; how the current session was made. */
+  app.get('/api/tailscale', async (req) => {
+    needUser(req);
+    const person = await tailscalePeer(req);
+    return {
+      enabled: tailscale.enabled,
+      login: person?.login ?? null,
+      displayName: person?.displayName ?? null,
+      linkedUserId: person ? linkedUser(person.login)?.id ?? null : null,
+      sessionVia: sessionVia(db, req.cookies[SESSION_COOKIE] ?? ''),
+    };
+  });
+  /**
+   * Links this connection's Tailscale login to the signed-in user, so Tailscale signs them in from now on. Asks for the
+   * password (rate limited as a login), so a stolen session alone can't make itself permanent.
+   */
+  app.post('/api/tailscale/link', async (req) => {
+    const user = needUser(req);
+    const person = await tailscalePeer(req);
+    if (!person) throw new AppError(400, 'not_tailscale');
+    confirmPassword(db, user.id, str(body(req).password), ip(req));
+    const owner = linkedUser(person.login);
+    if (owner && owner.id !== user.id) throw new AppError(409, 'already_linked');
+    try {
+      db.prepare('UPDATE users SET tailscale_login=? WHERE id=?').run(person.login, user.id);
+      db.prepare('DELETE FROM access_requests WHERE login=?').run(person.login);
+    } catch (e) {
+      if (/UNIQUE/.test(String(e))) throw new AppError(409, 'already_linked');
+      throw e;
+    }
+    syncTeamFile(db);
+    try {
+      hub.publish(nextActionId(), [{ model: 'user', op: 'upsert', row: userRow(db, user.id)! }]);
+    } catch (e) {
+      console.error('live publish failed', e);
+    }
+    return { ok: true, login: person.login };
+  });
+
+  /** Pending join requests (people Tailscale knows who asked to join), newest first. For whoever manages people. */
+  app.get('/api/team-requests', async (req) => {
+    const user = needUser(req);
+    if (!can(db, sessionActor(user), 'user.manage')) throw new AppError(403, 'forbidden');
+    const rows = db.prepare('SELECT login, display_name, first_seen, last_seen FROM access_requests ORDER BY last_seen DESC, login').all() as
+      { login: string; display_name: string; first_seen: number; last_seen: number }[];
+    return { requests: rows.map((r) => ({ login: r.login, displayName: r.display_name, firstSeen: r.first_seen, lastSeen: r.last_seen })) };
+  });
+
+  /** Who this connection is, for other Jatify tools on the tailnet (shared rule, TEAM-SERVER.md). No cookie needed. */
+  app.get('/team/whoami', async (req, reply) => {
+    const person = await tailscalePeer(req);
+    if (!person) return reply.code(404).send({ error: 'not_tailscale' });
+    const u = db.prepare(`SELECT r.role AS role FROM users u JOIN account_roles r ON r.user_id=u.id
+      WHERE u.tailscale_login=? AND u.disabled=0 AND u.kind='person'`).get(person.login) as { role: string } | undefined;
+    return { login: person.login, name: person.displayName, role: u?.role ?? null, service: 'questlog', version: VERSION };
   });
 
   const inviteRow = (token: string) => {

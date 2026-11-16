@@ -34,7 +34,14 @@ const LAST_USED_MS = 60_000;
  * Namespaces, i.e. the part of the command name before '/'.
  * accounts/update stays available to admin write tokens, except its userApiTokensEnabled switch (checked there).
  */
-export const TOKEN_DENIED_NAMESPACES: ReadonlySet<string> = new Set(['apiTokens', 'billing', 'dangerZone', 'integrations', 'invites', 'userReports', 'onboarding', 'emailPrefs', 'open', 'openDecks', 'guests']);
+export const TOKEN_DENIED_NAMESPACES: ReadonlySet<string> = new Set(['apiTokens', 'billing', 'dangerZone', 'integrations', 'invites', 'teamRequests', 'userReports', 'onboarding', 'emailPrefs', 'open', 'openDecks', 'guests']);
+
+/**
+ * Single commands a token can never run, inside namespaces that are otherwise open to it. users/unlinkTailscale
+ * ends Tailscale sessions and the link, so it is credential management like invites (and a token never uses its
+ * "clear my own link" shortcut either). users/setRole and users/disable stay open to admin tokens (user.manage).
+ */
+export const TOKEN_DENIED_COMMANDS: ReadonlySet<string> = new Set(['users/unlinkTailscale']);
 
 export const hashToken = (t: string): string => createHash('sha256').update(t).digest('hex');
 

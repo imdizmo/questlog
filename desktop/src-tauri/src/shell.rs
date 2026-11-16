@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
+use tauri::Url;
+
 pub const PREFERRED_PORT: u16 = 8790;
 /// Lines of recent output kept in memory for error reports.
 const TAIL_LINES: usize = 200;
@@ -31,10 +33,121 @@ fn bindable(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-fn read_saved(data: &Path) -> Option<u16> {
-    let text = fs::read_to_string(data.join("desktop.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    u16::try_from(v.get("port")?.as_u64()?).ok().filter(|p| *p != 0)
+/// Default port of a Questlog team server.
+const TEAM_DEFAULT_PORT: u16 = 8780;
+
+/// The `desktop.json` choices: the local server's port and where the window connects (`"local"` or a server URL).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct DesktopConfig {
+    pub port: Option<u16>,
+    pub server: Option<String>,
+}
+
+impl DesktopConfig {
+    /// `None` when there is no `desktop.json`; an unreadable or invalid one counts as an empty config.
+    pub fn load(data: &Path) -> Option<DesktopConfig> {
+        let text = match fs::read_to_string(data.join("desktop.json")) {
+            Ok(t) => t,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(_) => return Some(DesktopConfig::default()),
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return Some(DesktopConfig::default());
+        };
+        let port = v.get("port").and_then(|p| p.as_u64()).and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0);
+        let server = v.get("server").and_then(|s| s.as_str()).map(str::to_string);
+        Some(DesktopConfig { port, server })
+    }
+
+    pub fn save(&self, data: &Path) -> io::Result<()> {
+        let mut map = serde_json::Map::new();
+        if let Some(p) = self.port {
+            map.insert("port".into(), p.into());
+        }
+        if let Some(s) = &self.server {
+            map.insert("server".into(), s.clone().into());
+        }
+        let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(map)).map_err(io::Error::other)?;
+        text.push('\n');
+        fs::write(data.join("desktop.json"), text)
+    }
+}
+
+/// Parses `JATIFY_TEAM`: `host` or `host:port` (IPv6 in brackets), no scheme. Anything else is `None`.
+pub fn team_url(value: &str) -> Option<Url> {
+    let v = value.trim();
+    if v.is_empty() || v.ends_with(':') || v.contains("://") || v.contains(|c: char| c.is_whitespace() || matches!(c, '/' | '\\' | '@' | '?' | '#')) {
+        return None;
+    }
+    let mut url = Url::parse(&format!("http://{v}")).ok()?;
+    url.host_str()?;
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    let has_port = match v.strip_prefix('[') {
+        Some(rest) => rest.contains("]:"),
+        None => v.contains(':'),
+    };
+    if !has_port {
+        url.set_port(Some(TEAM_DEFAULT_PORT)).ok()?;
+    }
+    Some(url)
+}
+
+/// Parses a saved server address: an http(s) URL with a host. Credentials, path, query and fragment are dropped.
+pub fn saved_url(value: &str) -> Option<Url> {
+    let mut url = Url::parse(value.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    url.host_str()?;
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url)
+}
+
+/// An address typed into the chooser: a full http(s) URL, or a bare `host` / `host:port` like `JATIFY_TEAM`.
+pub fn address_url(value: &str) -> Option<Url> {
+    saved_url(value).or_else(|| team_url(value))
+}
+
+/// Saves where the window connects (`"local"` or a server URL) in `desktop.json`, keeping the saved port.
+pub fn save_server(data: &Path, value: &str) -> io::Result<()> {
+    fs::create_dir_all(data)?;
+    let mut cfg = DesktopConfig::load(data).unwrap_or_default();
+    cfg.server = Some(value.to_string());
+    cfg.save(data)
+}
+
+/// Where the window connects.
+#[derive(Debug, PartialEq)]
+pub enum Target {
+    Local,
+    Server(Url),
+    Ask,
+}
+
+/// A saved choice wins over `JATIFY_TEAM`; with neither and no `desktop.json` at all the user is asked.
+pub fn resolve_target(cfg: Option<&DesktopConfig>, team: Option<&str>) -> Target {
+    if let Some(saved) = cfg.and_then(|c| c.server.as_deref()) {
+        if saved.trim() == "local" {
+            return Target::Local;
+        }
+        if let Some(url) = saved_url(saved) {
+            return Target::Server(url);
+        }
+    }
+    if let Some(url) = team.and_then(team_url) {
+        return Target::Server(url);
+    }
+    if cfg.is_none() {
+        Target::Ask
+    } else {
+        Target::Local
+    }
 }
 
 /// Saved port if still free, else 8790 if free, else an OS-assigned port. The choice is saved.
@@ -44,12 +157,14 @@ pub fn choose_port(data: &Path) -> io::Result<u16> {
 
 fn choose_port_from(data: &Path, preferred: u16) -> io::Result<u16> {
     fs::create_dir_all(data)?;
-    let port = match read_saved(data).filter(|p| bindable(*p)) {
+    let mut cfg = DesktopConfig::load(data).unwrap_or_default();
+    let port = match cfg.port.filter(|p| bindable(*p)) {
         Some(p) => p,
         None if bindable(preferred) => preferred,
         None => TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port(),
     };
-    fs::write(data.join("desktop.json"), format!("{{\"port\": {port}}}\n"))?;
+    cfg.port = Some(port);
+    cfg.save(data)?;
     Ok(port)
 }
 
@@ -291,5 +406,117 @@ mod tests {
         let mut log = RotatingLog::open(&data.join("logs").join("server.log"), 1000).unwrap();
         log.write_line("héllo").unwrap();
         assert_eq!(fs::read_to_string(data.join("logs/server.log")).unwrap(), "héllo\n");
+    }
+
+    #[test]
+    fn address_url_takes_urls_and_bare_hosts() {
+        let u = |s: &str| address_url(s).map(|u| u.to_string());
+        assert_eq!(u("nas").as_deref(), Some("http://nas:8780/"));
+        assert_eq!(u(" 127.0.0.1:1 ").as_deref(), Some("http://127.0.0.1:1/"));
+        assert_eq!(u("[::1]:9000").as_deref(), Some("http://[::1]:9000/"));
+        assert_eq!(u("https://team.example.com/board?x=1").as_deref(), Some("https://team.example.com/"));
+        assert_eq!(u("http://nas:8780").as_deref(), Some("http://nas:8780/"));
+        assert_eq!(u(""), None);
+        assert_eq!(u("ftp://nas"), None);
+        assert_eq!(u("nas/path"), None);
+        assert_eq!(u("two words"), None);
+        assert_eq!(u("javascript:alert(1)"), None);
+    }
+
+    #[test]
+    fn save_server_keeps_port() {
+        let d = Scratch::new("saveserver");
+        save_server(d.path(), "local").unwrap();
+        assert_eq!(DesktopConfig::load(d.path()), Some(DesktopConfig { port: None, server: Some("local".into()) }));
+        DesktopConfig { port: Some(8791), server: None }.save(d.path()).unwrap();
+        save_server(d.path(), "http://nas:8780/").unwrap();
+        assert_eq!(
+            DesktopConfig::load(d.path()),
+            Some(DesktopConfig { port: Some(8791), server: Some("http://nas:8780/".into()) })
+        );
+        // A local start afterwards keeps the saved server.
+        let port = choose_port(d.path()).unwrap();
+        assert_eq!(DesktopConfig::load(d.path()).unwrap().server.as_deref(), Some("http://nas:8780/"));
+        assert_ne!(port, 0);
+    }
+
+    #[test]
+    fn existing_install_stays_local() {
+        let d = Scratch::new("existing");
+        fs::write(d.path().join("desktop.json"), "{\"port\": 8790}").unwrap();
+        let cfg = DesktopConfig::load(d.path());
+        assert_eq!(cfg, Some(DesktopConfig { port: Some(8790), server: None }));
+        assert_eq!(resolve_target(cfg.as_ref(), None), Target::Local);
+    }
+
+    #[test]
+    fn load_cases() {
+        let d = Scratch::new("load");
+        assert_eq!(DesktopConfig::load(d.path()), None);
+        fs::write(d.path().join("desktop.json"), "nope").unwrap();
+        assert_eq!(DesktopConfig::load(d.path()), Some(DesktopConfig::default()));
+    }
+
+    #[test]
+    fn saving_server_keeps_port() {
+        let d = Scratch::new("saveserver");
+        let want = free_port();
+        fs::write(d.path().join("desktop.json"), format!("{{\"port\": {want}}}")).unwrap();
+        let mut cfg = DesktopConfig::load(d.path()).unwrap();
+        cfg.server = Some("http://nas:8780/".into());
+        cfg.save(d.path()).unwrap();
+        let back = DesktopConfig::load(d.path()).unwrap();
+        assert_eq!(back, DesktopConfig { port: Some(want), server: Some("http://nas:8780/".into()) });
+        assert_eq!(choose_port_from(d.path(), free_port()).unwrap(), want);
+        assert_eq!(DesktopConfig::load(d.path()).unwrap().server.as_deref(), Some("http://nas:8780/"));
+    }
+
+    fn url(s: &str) -> Url {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn fresh_install_asks() {
+        assert_eq!(resolve_target(None, None), Target::Ask);
+        assert_eq!(resolve_target(None, Some("")), Target::Ask);
+        assert_eq!(resolve_target(None, Some("garbage value")), Target::Ask);
+    }
+
+    #[test]
+    fn team_wins_when_nothing_saved() {
+        let want = Target::Server(url("http://nas:8780/"));
+        assert_eq!(resolve_target(None, Some("nas")), want);
+        assert_eq!(resolve_target(Some(&DesktopConfig::default()), Some("nas")), want);
+    }
+
+    #[test]
+    fn saved_local_beats_team() {
+        let cfg = DesktopConfig { port: None, server: Some("local".into()) };
+        assert_eq!(resolve_target(Some(&cfg), Some("nas")), Target::Local);
+    }
+
+    #[test]
+    fn saved_url_beats_team() {
+        let cfg = DesktopConfig { port: Some(8790), server: Some("http://other:9/x?y#z".into()) };
+        assert_eq!(resolve_target(Some(&cfg), Some("nas")), Target::Server(url("http://other:9/")));
+        let bad = DesktopConfig { port: None, server: Some("ftp://x".into()) };
+        assert_eq!(resolve_target(Some(&bad), None), Target::Local);
+    }
+
+    #[test]
+    fn team_url_forms() {
+        assert_eq!(team_url("100.64.0.7"), Some(url("http://100.64.0.7:8780/")));
+        assert_eq!(team_url("nas:9000"), Some(url("http://nas:9000/")));
+        assert_eq!(team_url("  nas  "), Some(url("http://nas:8780/")));
+        assert_eq!(team_url("[fd7a:115c:a1e0::5]"), Some(url("http://[fd7a:115c:a1e0::5]:8780/")));
+        assert_eq!(team_url("[fd7a:115c:a1e0::5]:9000"), Some(url("http://[fd7a:115c:a1e0::5]:9000/")));
+        assert_eq!(team_url("nas:80"), Some(url("http://nas/")));
+    }
+
+    #[test]
+    fn bad_team_values_are_ignored() {
+        for v in ["", "  ", "http://x", "a b", "host:99999", "host/path", "host:", "u@host", "host?x", ":", "[::1"] {
+            assert_eq!(team_url(v), None, "{v:?}");
+        }
     }
 }

@@ -49,6 +49,17 @@ on the first start, otherwise another free port, then always the same one) and `
 one old copy kept as `server.log.1`). Starting Questlog a second time brings the open window to the front instead.
 Closing the window stops the server.
 
+**Connecting to a team server.** The app can also open a Questlog server on your network instead of its own
+workspace. The Jatify Launcher sets `JATIFY_TEAM` to the server's address (`host` or `host:port`; the port is 8780 if
+you leave it out, and the connection is plain http). Without it, a fresh install asks **Where is your workspace?**:
+**this computer** or **a server**, where you type the address. A choice saved in `desktop.json` (`"server": "local"`
+or an address) wins over `JATIFY_TEAM`. If the server is down, the app says "Questlog can't reach the server" and
+offers **Retry**, **Change server** and **Use this computer**. **Use this computer** is remembered: to go back to the
+team server, close Questlog and remove the `"server"` entry from `desktop.json` in the data folder
+(`~/.local/share/questlog/desktop.json` on Linux, `%LOCALAPPDATA%\Questlog\desktop.json` on Windows). The workspace on
+this computer is separate from the server's: nothing syncs between them. A server that redirects to a different
+address opens in your system browser instead of the app window.
+
 **Backups.** Before a new version changes the database, the app saves a copy in `backups/` inside the data folder,
 named `jt-<migration>-<YYYYMMDD-HHMMSS>.db`; the newest three are kept. To back up by hand, close Questlog and copy
 the whole data folder. To restore, close Questlog and put the copied folder (or a `backups/` file, renamed to `jt.db`
@@ -68,9 +79,8 @@ by us. If you try it, please check:
 
 - The exe is not signed yet, so Windows SmartScreen may say "Windows protected your PC". Choose **More info**, then
   **Run anyway**.
-- No window at all: the WebView2 runtime is probably missing. Check for "Microsoft Edge WebView2 Runtime" under
-  Settings > Apps, and install the Evergreen runtime from Microsoft if it is not there. The window itself writes no
-  log, so this case leaves nothing in the data folder.
+- A message box saying WebView2 is missing: install the Evergreen runtime from the link it shows, then start Questlog
+  again.
 - A window that shows an error page: the page says what failed and names the log. Send
   `%LOCALAPPDATA%\Questlog\logs\server.log` (and `server.log.1` if present) along with a screenshot of the page.
 
@@ -118,6 +128,40 @@ JT_HOSTS=tracker.lan:8780,studio-pc:8780 pnpm start
 ```
 
 Any other name gets HTTP 421.
+
+## Team server
+
+To share one Questlog over Tailscale, run the server on a machine that is on your tailnet and let people sign in by
+their Tailscale device instead of a password. It is off unless you turn it on:
+
+```sh
+JT_HOST=100.x.y.z JT_HOSTS=nas:8780 JT_TAILSCALE_AUTH=1 JT_TEAM_FILE=/path/to/team.json pnpm start
+```
+
+- `JT_HOST` makes the server listen on one address only. Use the machine's Tailscale address (`100.x.y.z`), so nobody
+  outside your tailnet can reach it. Add the name people use to reach it (for example a MagicDNS name) to `JT_HOSTS`,
+  as in [Host names](#host-names).
+- `JT_TAILSCALE_AUTH=1` turns on sign-in by Tailscale. The server asks the local Tailscale daemon who is connecting;
+  `JT_TAILSCALE_SOCKET` sets its socket (default `/var/run/tailscale/tailscaled.sock`).
+- Only connections from Tailscale addresses count, and who they are is taken from the connection itself. A request that
+  carries proxy headers (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Via`) is never signed in this
+  way, so run Questlog directly on the Tailscale address, not behind a proxy.
+- `JT_TEAM_FILE` names a shared team list. Questlog writes it at start and after every team change, with each person
+  who has a Tailscale login (version 1 format). At start it first takes in people already in an existing file. A file it
+  cannot read or does not understand is left as it is.
+- `GET /team/whoami` tells you who the server thinks you are.
+
+**Who gets in.** Only members whose account is linked to their Tailscale login are signed in automatically when they
+open the page. Anyone else sees a page that says to ask the owner, with a link to the normal password sign-in. People
+Tailscale knows but Questlog doesn't show up under **Members → Waiting to join**, where an owner or admin can **Add**
+them with a role or **Dismiss** them.
+
+**Linking your own account.** Any member who has a password (the owner too) signs in with it once, then links their
+Tailscale login from **My account** (this asks for the password again). After that, opening the page on that device
+signs them in. Nobody can set a login for someone else: owners and admins can only unlink people, and only the owner
+can unlink the owner. Unlinking someone who was added from **Waiting to join** is safe: they have no password, so their
+next visit asks to join again, and adding that request reconnects the same account (same tasks, same history). Logging
+out on a Tailscale device signs you straight back in.
 
 ## Data and backups
 

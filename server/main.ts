@@ -8,6 +8,7 @@ import { startScheduler } from './jobs';
 import { deleteWorkspace } from './commands/dangerZone';
 import { emailConfig } from './email';
 import { loadSecret } from './secret';
+import { startTeamFile } from './teamFile';
 
 const port = Number(process.env.PORT ?? 8780);
 const dbPath = process.env.JT_DB ?? 'data/jt.db';
@@ -41,6 +42,7 @@ try {
 }
 const swept = sweepFilesDir(db, filesDir);
 if (swept.tmp || swept.orphans) console.log(`files: removed ${swept.tmp} partial upload(s), ${swept.orphans} orphaned file(s)`);
+startTeamFile(db);
 const email = emailConfig();
 const app = buildApp({ db, webRoot: resolve(process.env.JT_WEB ?? 'dist/web'), port, filesDir, email: { ...email, secret: loadSecret(dirname(resolve(dbPath))) } });
 const host = process.env.JT_HOST;

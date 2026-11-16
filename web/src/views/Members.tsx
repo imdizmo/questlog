@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { OrgRole, User } from '../../../shared/types';
-import { api, ApiError, dispatch, messageFor, type InviteInfo } from '../api';
-import { people as peopleOf, planAllows, useStore } from '../store';
+import { api, ApiError, dispatch, messageFor, type InviteInfo, type JoinRequest } from '../api';
+import { people as peopleOf, planAllows, roleOf, useStore } from '../store';
+import { refreshTailscale } from '../tailscale';
 import { showToast } from '../toast';
 import { copyText } from '../cards';
 import { Dialog } from '../components/Dialog';
@@ -23,6 +24,7 @@ export function Members({ onClose }: { onClose: () => void }) {
   const roles = useStore((s) => s.accountRoles);
   const projects = useStore((s) => s.projects);
   const meId = useStore((s) => s.me?.id);
+  const meOwner = useStore((s) => roleOf(s, s.me?.id) === 'owner');
   const [invites, setInvites] = useState<InviteInfo[] | null>(null);
   const [inviting, setInviting] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -52,12 +54,14 @@ export function Members({ onClose }: { onClose: () => void }) {
           <button type="button" className="btn btn-primary" onClick={() => setInviting(true)}>Invite people</button>
         </div>
 
+        <WaitingToJoin />
+
         <div className="table-wrap">
           <table className="table" aria-label="People">
             <thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Active</th></tr></thead>
             <tbody>
               {people.map((u) => (
-                <PersonRow key={u.id} user={u} role={roles.get(u.id)!} isMe={u.id === meId} busy={busy} run={run} />
+                <PersonRow key={u.id} user={u} role={roles.get(u.id)!} isMe={u.id === meId} meOwner={meOwner} busy={busy} run={run} />
               ))}
             </tbody>
           </table>
@@ -103,8 +107,8 @@ export function Members({ onClose }: { onClose: () => void }) {
   );
 }
 
-function PersonRow({ user, role, isMe, busy, run }: {
-  user: User; role: OrgRole; isMe: boolean; busy: boolean; run: (fn: () => Promise<unknown>) => Promise<void>;
+function PersonRow({ user, role, isMe, meOwner, busy, run }: {
+  user: User; role: OrgRole; isMe: boolean; meOwner: boolean; busy: boolean; run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const owner = role === 'owner';
   const observersOk = useStore((s) => planAllows(s, 'observerRole'));
@@ -113,6 +117,17 @@ function PersonRow({ user, role, isMe, busy, run }: {
       <th scope="row">
         <span className="person">{user.name}{isMe && <span className="muted"> (you)</span>}</span>
         <span className="person-sub">{user.email}</span>
+        {user.tailscaleLogin && (
+          <span className="person-sub">
+            Tailscale: <span data-testid="tailscale-login">{user.tailscaleLogin}</span>
+            {(isMe || (owner ? meOwner : true)) && (
+              <>{' '}<button type="button" className="btn btn-ghost btn-sm" disabled={busy} aria-label={`Unlink Tailscale from ${user.name}`}
+                onClick={() => run(async () => { await dispatch('users', 'unlinkTailscale', { userId: user.id }); if (isMe) await refreshTailscale(); })}>
+                Unlink
+              </button></>
+            )}
+          </span>
+        )}
       </th>
       <td>
         {owner ? <span>Owner</span> : (
@@ -135,6 +150,61 @@ function PersonRow({ user, role, isMe, busy, run }: {
         )}
       </td>
     </tr>
+  );
+}
+
+type JoinRole = 'admin' | 'member' | 'observer';
+
+/** People Tailscale knows who asked to join. Absent while the list is empty (or the server has no Tailscale). */
+function WaitingToJoin() {
+  const observersOk = useStore((s) => planAllows(s, 'observerRole'));
+  const [requests, setRequests] = useState<JoinRequest[]>([]);
+  const [roles, setRoles] = useState<Record<string, JoinRole>>({});
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try { setRequests((await api.teamRequests()).requests); } catch { setRequests([]); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  if (requests.length === 0) return null;
+
+  const act = async (action: 'approve' | 'dismiss', r: JoinRequest) => {
+    setBusy(true);
+    try {
+      await dispatch('teamRequests', action, action === 'approve' ? { login: r.login, role: roles[r.login] ?? 'member' } : { login: r.login });
+    } catch { /* toast shown by dispatch */ } finally {
+      await load(); // no live event for this list
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <h3 className="sub">Waiting to join</h3>
+      <div className="table-wrap">
+        <table className="table" aria-label="Waiting to join">
+          <thead><tr><th scope="col">Person</th><th scope="col">Last seen</th><th scope="col">Joins as</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+          <tbody>
+            {requests.map((r) => (
+              <tr key={r.login}>
+                <th scope="row"><span className="person">{r.displayName || r.login}</span><span className="person-sub">{r.login}</span></th>
+                <td>{shortDate(r.lastSeen)}</td>
+                <td>
+                  <select className="quick-select" aria-label={`Role for ${r.login}`} value={roles[r.login] ?? 'member'} disabled={busy}
+                    onChange={(e) => setRoles((m) => ({ ...m, [r.login]: e.target.value as JoinRole }))}>
+                    <option value="member">Member</option>
+                    <option value="admin">Admin</option>
+                    <option value="observer" disabled={!observersOk}>Observer</option>
+                  </select>
+                </td>
+                <td className="cell-end">
+                  <button type="button" className="btn btn-primary btn-sm" disabled={busy} aria-label={`Add ${r.login}`} onClick={() => void act('approve', r)}>Add</button>{' '}
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy} aria-label={`Dismiss ${r.login}`} onClick={() => void act('dismiss', r)}>Dismiss</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

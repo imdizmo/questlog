@@ -14,6 +14,13 @@ import type { IntegrationSettings } from './views/settings/Discord';
 
 export const CONFLICT_TEXT = 'Someone changed this task while you were editing. Your view now shows their version.';
 
+/** `GET /api/tailscale`. */
+export interface TailscaleInfo {
+  enabled: boolean; login: string | null; displayName: string | null; linkedUserId: string | null; sessionVia: 'tailscale' | null;
+}
+/** A person Tailscale knows who asked to join; shown under "Waiting to join". */
+export interface JoinRequest { login: string; displayName: string; firstSeen: number; lastSeen: number }
+
 export interface ExitOption { id: string; label: string; followUp: string }
 
 export class ApiError extends Error {
@@ -27,6 +34,11 @@ const MESSAGES: Record<string, string> = {
   forbidden: "You don't have permission to do that.",
   space_not_empty: 'That area still has lists. Move or delete them first.',
   bad_credentials: 'Wrong email or password.',
+  already_member: 'That person already has an account: they can link Tailscale themselves under My account.',
+  disabled_member: "That person's account is disabled. Enable it on the Members page first.",
+  not_found: 'That request is gone. The list was refreshed.',
+  not_tailscale: "This device isn't signed in through Tailscale.",
+  already_linked: 'That Tailscale account is already linked to someone else.',
   already_setup: 'This workspace is already set up. Log in instead.',
   invalid_input: 'Please fill in every field.',
   too_many_attempts: 'Too many attempts. Wait a few minutes and try again.',
@@ -130,6 +142,12 @@ export const api = {
   card: (seq: number) =>
     request<{ card: Card; deck: Deck | null; resolvables: Resolvable[]; entries: ResolvableEntry[]; reactions: Reaction[] }>('GET', `/api/cards/${seq}`),
   invites: () => request<InviteInfo[]>('GET', '/api/invites'),
+  /** This connection's Tailscale person and how the session was made (signed-in people). */
+  tailscale: () => request<TailscaleInfo>('GET', '/api/tailscale'),
+  /** Signs this person in by Tailscale from now on; asks for the current password. Errors are shown inline by the caller. */
+  linkTailscale: (password: string) => request<{ ok: true; login: string }>('POST', '/api/tailscale/link', { password }),
+  /** People Tailscale knows who asked to join (needs the right to manage people). */
+  teamRequests: () => request<{ requests: JoinRequest[] }>('GET', '/api/team-requests'),
   closedThreads: (cardId: string) =>
     request<{ threads: { resolvable: Resolvable; entries: ResolvableEntry[]; reactions: Reaction[] }[] }>('GET', `/api/cards/${encodeURIComponent(cardId)}/threads?closed=1`),
   activity: (q: { deckId?: string; projectId?: string; milestoneId?: string; sprintId?: string; before?: string | null; filters?: string[] }) => {

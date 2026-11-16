@@ -232,6 +232,13 @@ describe('API tokens', () => {
     expect(r.json().error).toBe('missing_scope');
     expect((await send({ bearer: token }, 'apiTokens/revoke', { id })).statusCode).toBe(403);
     expect((await send({ bearer: token }, 'invites/create', { role: 'admin', projectIds: [] })).statusCode).toBe(403);
+    // Unlinking Tailscale is credential management, refused like invites, also for the self-unlink a session user has.
+    const m = mkUser('member');
+    for (const body of [{ userId: m }, { userId: owner }]) {
+      const t = await send({ bearer: token }, 'users/unlinkTailscale', body);
+      expect(t.statusCode).toBe(403);
+      expect(t.json()).toEqual((await send({ bearer: token }, 'invites/create', { role: 'admin', projectIds: [] })).json());
+    }
     // Nor may a token switch personal tokens back on (or off).
     expect((await send({ bearer: token }, 'accounts/update', { userApiTokensEnabled: false })).statusCode).toBe(403);
     // Nor switch MCP (an integration) on, or set its daily limit; other settings still work through a token.

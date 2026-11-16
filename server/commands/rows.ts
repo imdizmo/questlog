@@ -22,7 +22,7 @@ export const CARD_SELECT = `cards.*,
          WHERE d.locking_card_id=cards.id AND k.status!='done' AND k.visibility!='deleted') AS is_blocking_dep`;
 export const cardRow = (db: Db, id: string) => one(db, `SELECT ${CARD_SELECT} FROM cards WHERE id=?`, id);
 export const userRow = (db: Db, id: string) =>
-  one(db, 'SELECT id,email,name,timezone,disabled,kind,created_at FROM users WHERE id=?', id);
+  one(db, 'SELECT id,email,name,timezone,disabled,kind,created_at,tailscale_login FROM users WHERE id=?', id);
 export const resolvableRow = (db: Db, id: string) => one(db, 'SELECT * FROM resolvables WHERE id=?', id);
 export const entryRow = (db: Db, id: string) => one(db, 'SELECT * FROM resolvable_entries WHERE id=?', id);
 export const handCardRow = (db: Db, userId: string, cardId: string) =>

@@ -26,7 +26,7 @@ import { discordCommands } from './integrations/discord';
 import { slackCommands } from './integrations/slack';
 import { gitCommands } from './integrations/git';
 import { isGuest, sessionActor, type Actor } from './permissions';
-import { TOKEN_DENIED_NAMESPACES } from './tokens';
+import { TOKEN_DENIED_COMMANDS, TOKEN_DENIED_NAMESPACES } from './tokens';
 
 export type ModelName =
   | 'account' | 'user' | 'accountRole' | 'project' | 'projectAccess' | 'projectPref'
@@ -99,7 +99,7 @@ export const toActor = (u: User | Actor): Actor => ('via' in u ? u : sessionActo
 export function assertTokenScope(actor: Actor, name: string): void {
   if (actor.via !== 'token') return;
   const ns = name.split('/')[0];
-  if (TOKEN_DENIED_NAMESPACES.has(ns)) throw new AppError(403, 'missing_scope', { requiredScope: 'session' });
+  if (TOKEN_DENIED_NAMESPACES.has(ns) || TOKEN_DENIED_COMMANDS.has(name)) throw new AppError(403, 'missing_scope', { requiredScope: 'session' });
   if (!actor.scopes.includes('write')) throw new AppError(403, 'missing_scope', { requiredScope: `${ns}:write` });
 }
 

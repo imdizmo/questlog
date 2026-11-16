@@ -153,7 +153,7 @@ export function buildSnapshot(db: Db, me: User | Actor) {
     account: accountRow(db),
     // Addresses as /api/query shows them: to a token, only when it acts as an admin (sessions keep the full list).
     // Guests (Open Decks visitors) are no members: they never show in people lists or pickers.
-    users: rows(db, `SELECT id,${withEmails(db, me) ? 'email,' : ''}name,timezone,disabled,kind,created_at FROM users
+    users: rows(db, `SELECT id,${withEmails(db, me) ? 'email,tailscale_login,' : ''}name,timezone,disabled,kind,created_at FROM users
       WHERE id NOT IN (SELECT user_id FROM account_roles WHERE role='guest') ORDER BY created_at, id`),
     accountRoles: rows(db, "SELECT * FROM account_roles WHERE role != 'guest'"),
     projects,

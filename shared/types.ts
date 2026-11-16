@@ -105,6 +105,8 @@ export interface User {
   createdAt: number;
   /** 'service': the acting user of an org API token; never logs in, hidden from people lists and pickers. */
   kind?: 'person' | 'service';
+  /** Tailscale login that signs this person in (servers with JT_TAILSCALE_AUTH=1); null when none. Sent with `email`. */
+  tailscaleLogin?: string | null;
 }
 
 /** An API token as clients see it: never the secret or its hash. */

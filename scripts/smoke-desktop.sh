@@ -64,7 +64,7 @@ inner() {
   local shell_pid=$!
   echo "smoke: started Questlog pid $shell_pid"
 
-  # desktop.json, then /healthz.
+  # desktop.json (seeded with "server": "local") gets a port, then /healthz.
   local port="" i
   for ((i = 0; i < 300; i++)); do
     [[ -s "$data/desktop.json" ]] && port=$(grep -oE '"port":[[:space:]]*[0-9]+' "$data/desktop.json" | grep -oE '[0-9]+$' || true)
@@ -184,8 +184,10 @@ done
 
 mkdir -p "$SCRATCH_ROOT"
 S=$(mktemp -d "$SCRATCH_ROOT/smoke.XXXXXX")
-mkdir -p "$S/unpack" "$S/data" "$S/config" "$S/cache" "$S/run"
+mkdir -p "$S/unpack" "$S/data/questlog" "$S/config" "$S/cache" "$S/run"
 chmod 700 "$S/run"
+# A fresh data folder asks where the workspace is; this test is about the local server.
+printf '{\n  "server": "local"\n}\n' >"$S/data/questlog/desktop.json"
 xvfb_pid=""
 
 # PIDs (not ours) whose environment mentions the scratch dir: the app, WebKit, D-Bus and anything it activated.
@@ -251,7 +253,7 @@ done
 # systemd-run needs the user's bus, so it goes first; everything after `env` is isolated.
 systemd-run --user --scope -q -p MemoryMax="$MEMORY_MAX" -p MemorySwapMax=0 \
   env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u XAUTHORITY -u XDG_SESSION_TYPE -u XDG_CURRENT_DESKTOP \
-  -u DESKTOP_SESSION -u SESSION_MANAGER \
+  -u DESKTOP_SESSION -u SESSION_MANAGER -u JATIFY_TEAM \
   DISPLAY=":${DISPLAY_NUM}" GDK_BACKEND=x11 \
   XDG_DATA_HOME="$S/data" XDG_CONFIG_HOME="$S/config" XDG_CACHE_HOME="$S/cache" XDG_RUNTIME_DIR="$S/run" \
   SMOKE_SCRATCH="$S" \

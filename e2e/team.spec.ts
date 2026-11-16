@@ -177,3 +177,32 @@ test('settings persist', async ({ page }) => {
   else await expect(dlg.getByRole('switch', { name: 'Due dates' })).not.toBeChecked();
   await page.screenshot({ path: `${SHOTS}/settings-features.png`, animations: 'disabled' });
 });
+
+test('Members page without Tailscale', async ({ page }) => {
+  await ensureWorkspace(page);
+  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('menuitem', { name: 'Members' }).click();
+  const members = page.getByRole('dialog', { name: 'Members' });
+  await expect(members.getByRole('table', { name: 'People' })).toBeVisible();
+  // Nobody is linked, so no row shows a Tailscale login or an Unlink button; nobody waits to join.
+  await expect(members.getByTestId('tailscale-login')).toHaveCount(0);
+  await expect(members.getByRole('button', { name: /^Unlink Tailscale/ })).toHaveCount(0);
+  await expect(members.getByRole('heading', { name: 'Waiting to join' })).toHaveCount(0);
+  await expect(members.getByRole('textbox', { name: /Tailscale/ })).toHaveCount(0);
+});
+
+test('no Tailscale button when Tailscale is off', async ({ page }) => {
+  await ensureWorkspace(page);
+  const state = await page.evaluate(async () => (await fetch('/api/tailscale')).json());
+  expect(state.enabled).toBe(false);
+  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Email notifications' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'My account' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.goto('/?show=myAccount');
+  const dlg = page.getByRole('dialog', { name: 'My account' });
+  await expect(dlg.getByText('not turned on')).toBeVisible();
+  await expect(dlg.getByRole('button', { name: /Sign in with Tailscale/ })).toHaveCount(0);
+  // The log-out button keeps its plain label.
+  await expect(page.getByRole('button', { name: 'Log out', exact: true })).toBeVisible();
+});

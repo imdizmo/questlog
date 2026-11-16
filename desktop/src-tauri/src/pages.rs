@@ -22,7 +22,20 @@ font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;m
 .bar{width:160px;height:3px;background:#2a2a30;border-radius:2px;overflow:hidden}\
 .bar::after{content:'';display:block;width:40%;height:100%;background:#ec8219;animation:s 1.2s ease-in-out infinite}\
 @keyframes s{from{transform:translateX(-100%)}to{transform:translateX(250%)}}\
-@media (prefers-reduced-motion:reduce){.bar::after{animation:none;width:100%}}";
+@media (prefers-reduced-motion:reduce){.bar::after{animation:none;width:100%}}\
+.choice{background:#1a1a1e;border:1px solid #2a2a30;border-radius:12px;padding:18px 20px;margin:16px 0}\
+.choice h2{font-size:16px;font-weight:600;margin:0 0 4px}\
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}\
+.btn{display:inline-block;border:1px solid #2a2a30;border-radius:8px;padding:8px 16px;background:#232328;color:#fff;\
+font:600 14px/1.4 system-ui,sans-serif;text-decoration:none;cursor:pointer}\
+.btn:hover{border-color:#3a3a42}.btn.primary{background:#ec8219;border-color:#ec8219;color:#111}\
+.btn:focus-visible,input:focus-visible{outline:2px solid #ec8219;outline-offset:2px}\
+input{flex:1 1 220px;min-width:0;background:#0f0f10;color:#fff;border:1px solid #2a2a30;border-radius:8px;\
+padding:8px 12px;font:14px/1.4 ui-monospace,monospace}\
+.err{color:#ff8a7a}";
+
+/// Where the shell's own pages send their actions; `main.rs` cancels these navigations and acts on them.
+const SHELL: &str = "http://questlog-shell.invalid";
 
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -145,6 +158,44 @@ pub fn stopped_page(code: Option<i32>, log_path: &Path, tail: &[String]) -> Stri
     )
 }
 
+/// Asks where the workspace is: this computer, or a server at an address. `error` is a line about a bad address.
+pub fn chooser(error: Option<&str>) -> String {
+    let error = error.map(|e| format!("<p class=\"err\" role=\"alert\">{}</p>", escape(e))).unwrap_or_default();
+    document(
+        "Questlog",
+        &format!(
+            "<main>{ICON}<h1>Where is your workspace?</h1>\
+             <section class=\"choice\"><h2>On this computer</h2>\
+             <p>Questlog keeps your workspace on this computer and runs it here.</p>\
+             <div class=\"row\"><a class=\"btn primary\" href=\"{SHELL}/local\">Use this computer</a></div></section>\
+             <section class=\"choice\"><h2>On a server</h2>\
+             <p>Your team runs Questlog on a server. Enter its address, like <code>nas</code> or \
+             <code>10.0.0.20:8780</code>.</p>{error}\
+             <form class=\"row\" method=\"get\" action=\"{SHELL}/server\">\
+             <input name=\"address\" aria-label=\"Server address\" placeholder=\"nas:8780\" required \
+             autocomplete=\"off\" spellcheck=\"false\" autocapitalize=\"off\">\
+             <button class=\"btn primary\" type=\"submit\">Connect</button></form></section></main>"
+        ),
+    )
+}
+
+/// The page for a server that could not be reached. All text is HTML-escaped.
+pub fn unreachable(address: &str, err: &str) -> String {
+    document(
+        "Questlog can't reach the server",
+        &format!(
+            "<main>{ICON}<h1>Questlog can't reach the server</h1>\
+             <p>No answer from <code>{}</code>: {}.</p>\
+             <p>Check that the server is running and that this computer is on the same network (or Tailscale).</p>\
+             <div class=\"row\"><a class=\"btn primary\" href=\"{SHELL}/retry\">Retry</a>\
+             <a class=\"btn\" href=\"{SHELL}/change\">Change server</a>\
+             <a class=\"btn\" href=\"{SHELL}/local\">Use this computer</a></div></main>",
+            escape(address),
+            escape(err)
+        ),
+    )
+}
+
 fn exit_text(code: Option<i32>) -> String {
     match code {
         Some(c) => format!("exit code {c}"),
@@ -197,6 +248,39 @@ mod tests {
             }
         }
         assert_eq!(String::from_utf8(out).unwrap(), html);
+    }
+
+    #[test]
+    fn chooser_offers_both_choices() {
+        let html = chooser(None);
+        assert!(html.contains("Where is your workspace?"), "{html}");
+        assert!(html.contains("href=\"http://questlog-shell.invalid/local\""), "{html}");
+        assert!(html.contains("action=\"http://questlog-shell.invalid/server\""), "{html}");
+        assert!(html.contains("method=\"get\""), "{html}");
+        assert!(html.contains("name=\"address\""), "{html}");
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("role=\"alert\""));
+    }
+
+    #[test]
+    fn chooser_error_is_escaped() {
+        let html = chooser(Some("bad <b>&</b>"));
+        assert!(html.contains("bad &lt;b&gt;&amp;&lt;/b&gt;"), "{html}");
+        assert!(!html.contains("<b>"));
+        assert!(html.contains("role=\"alert\""));
+    }
+
+    #[test]
+    fn unreachable_names_address_and_error_with_actions() {
+        let html = unreachable("http://nas:8780/<x>", "refused & \"gone\"");
+        assert!(html.contains("http://nas:8780/&lt;x&gt;"), "{html}");
+        assert!(html.contains("refused &amp; &quot;gone&quot;"), "{html}");
+        assert!(!html.contains("<x>"));
+        for action in ["retry", "change", "local"] {
+            assert!(html.contains(&format!("href=\"http://questlog-shell.invalid/{action}\"")), "{action}: {html}");
+        }
+        assert!(html.contains("Use this computer") && html.contains("Change server") && html.contains("Retry"));
+        assert!(!html.contains("<script"));
     }
 
     #[test]

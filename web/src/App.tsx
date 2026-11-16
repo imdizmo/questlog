@@ -29,6 +29,8 @@ import { AccountSettings } from './views/AccountSettings';
 import { ApiTokens } from './views/settings/ApiTokens';
 import { EmailPrefs } from './views/settings/Email';
 import { Members } from './views/Members';
+import { MyAccount } from './views/MyAccount';
+import { resetTailscale, useTailscale } from './tailscale';
 import { Timeline } from './views/Timeline';
 import { MilestonePage } from './views/MilestonePage';
 import { RunPage } from './views/RunPage';
@@ -108,6 +110,7 @@ const NAV_SHORTCUTS: Record<string, () => string> = {
   Digit1: () => '/', Digit2: () => '/decks', Digit3: () => '/milestones', Digit4: () => visionHref(),
 };
 
+const LOGOUT_TS = 'Log out (Tailscale signs you back in on this device)';
 const HELP_KEY = keysOf('help');
 const SEARCH_KEY = keysOf('search');
 const INBOX_KEY = keysOf('nav.inbox');
@@ -116,6 +119,9 @@ function Shell({ route, show }: { route: Route; show: string | null }) {
   const me = useStore((s) => s.me);
   const workspace = useStore((s) => s.account?.name);
   const admin = useStore(isAdmin);
+  const ts = useTailscale();
+  const accountItem = ts?.enabled ? [{ label: 'My account', onSelect: () => setQuery('show', 'myAccount') }] : [];
+  const logoutLabel = ts?.sessionVia === 'tailscale' ? LOGOUT_TS : 'Log out';
   const closeOverlay = () => setQuery('show', null);
   const loc = useLocation();
   // The shortcut panel is `?show=shortcuts`, so the deck header's button can open it too.
@@ -194,6 +200,7 @@ function Shell({ route, show }: { route: Route; show: string | null }) {
   const logout = async () => {
     try { await api.logout(); } catch { /* the session is gone either way */ }
     store.reset('unauthenticated');
+    resetTailscale();
     resetOpenDecks();
     zoneSynced = false; // the next person to sign in gets their own sync
     navigate('/login', { replace: true });
@@ -213,17 +220,19 @@ function Shell({ route, show }: { route: Route; show: string | null }) {
               { label: 'Workspace settings', onSelect: () => setQuery('show', 'accountSettings') },
               { label: 'Members', onSelect: () => setQuery('show', 'members') },
               { label: 'Email notifications', onSelect: () => setQuery('show', 'emailSettings') },
+              ...accountItem,
             ]} />
           ) : (
             <Menu label="Account menu" trigger={<Icon name="gear" />} items={[
               { label: 'API tokens', onSelect: () => setQuery('show', 'apiTokens') },
               { label: 'Email notifications', onSelect: () => setQuery('show', 'emailSettings') },
+              ...accountItem,
             ]} />
           )}
           <span className="avatar" aria-hidden>{(me?.name ?? '?').slice(0, 1).toUpperCase()}</span>
           <span className="me-name">{me?.name}</span>
           <button type="button" className="icon-btn" aria-label="See shortcuts" title={`See shortcuts (${HELP_KEY})`} aria-keyshortcuts={HELP_KEY} onClick={() => setHelpOpen(true)}>?</button>
-          <button type="button" className="icon-btn" aria-label="Log out" title="Log out" onClick={logout}><Icon name="logout" /></button>
+          <button type="button" className="icon-btn" aria-label={logoutLabel} title={logoutLabel} onClick={logout}><Icon name="logout" /></button>
         </div>
       </header>
       <div className="shell-body">
@@ -243,6 +252,7 @@ function Shell({ route, show }: { route: Route; show: string | null }) {
           <EmailPrefs />
         </Dialog>
       )}
+      {show === 'myAccount' && <MyAccount onClose={closeOverlay} />}
       {admin && show === 'members' && <Members onClose={closeOverlay} />}
       {!admin && show && ADMIN_OVERLAYS.has(show) && <NotAllowed onClose={closeOverlay} />}
     </div>

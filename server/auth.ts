@@ -169,18 +169,14 @@ export function setupWorkspace(
   });
 }
 
-export function login(
-  db: Db,
-  email: string,
-  pw: string,
-  ip: string,
-  deviceToken?: string,
-  /** Runs once the password checked out, before any session exists; throws to refuse (a disabled workspace: 423). */
-  mayLogIn?: (userId: string) => void,
-): { token: string; user: User; deviceToken: string } {
+/**
+ * The password check of a login, with its limiters (per IP, per email+IP, per account; a known device skips them):
+ * 429 while locked out, 401 bad_credentials on a wrong password, an unknown, disabled or service user. Returns whether
+ * the device is known.
+ */
+function checkPassword(db: Db, row: Record<string, unknown> | undefined, email: string, pw: string, ip: string, deviceToken?: string): boolean {
   const emailKey = email.trim().toLowerCase();
   const pairKey = `${emailKey}|${ip}`;
-  const row = db.prepare('SELECT * FROM users WHERE email=?').get(email.trim()) as Record<string, unknown> | undefined;
   const known =
     !!row &&
     !!deviceToken &&
@@ -196,6 +192,30 @@ export function login(
     if (row && !known) accountFail(row.id as string);
     throw new AppError(401, 'bad_credentials');
   }
+  return known;
+}
+
+/**
+ * Asks a signed-in user for their password again (before a lasting change), under the limits of a login. A known
+ * device does not skip them here: the session is already on that device, so the device proves nothing more.
+ */
+export function confirmPassword(db: Db, userId: string, pw: string, ip: string): void {
+  const row = db.prepare('SELECT * FROM users WHERE id=?').get(userId) as Record<string, unknown> | undefined;
+  checkPassword(db, row, String(row?.email ?? ''), pw, ip);
+}
+
+export function login(
+  db: Db,
+  email: string,
+  pw: string,
+  ip: string,
+  deviceToken?: string,
+  /** Runs once the password checked out, before any session exists; throws to refuse (a disabled workspace: 423). */
+  mayLogIn?: (userId: string) => void,
+): { token: string; user: User; deviceToken: string } {
+  const row = db.prepare('SELECT * FROM users WHERE email=?').get(email.trim()) as Record<string, unknown> | undefined;
+  const known = checkPassword(db, row, email, pw, ip, deviceToken);
+  if (!row) throw new AppError(401, 'bad_credentials'); // checkPassword already refused it
   mayLogIn?.(row.id as string);
   const token = newToken();
   db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?,?,?)')
@@ -212,6 +232,21 @@ export function login(
     ).run(row.id as string, row.id as string, MAX_DEVICES);
   }
   return { token, user: publicUser(row), deviceToken: device };
+}
+
+/** A session made without a password (`via` says how). Returns its token; the caller has checked the user may sign in. */
+export function createSession(db: Db, userId: string, via: 'tailscale'): string {
+  const token = newToken();
+  db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,via) VALUES (?,?,?,?)').run(sha(token), userId, clock() + SESSION_MS, via);
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(clock());
+  return token;
+}
+
+/** How the session of `token` was made: 'tailscale', or null for a password session (or none). */
+export function sessionVia(db: Db, token: string): 'tailscale' | null {
+  if (!token) return null;
+  const r = db.prepare('SELECT via FROM sessions WHERE token_hash=?').get(sha(token)) as { via: string | null } | undefined;
+  return r?.via === 'tailscale' ? 'tailscale' : null;
 }
 
 export function revokeDevices(db: Db, userId: string): void {
