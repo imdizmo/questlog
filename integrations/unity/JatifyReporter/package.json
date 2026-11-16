@@ -1,0 +1,9 @@
+{
+  "name": "com.jatify.reporter",
+  "version": "0.1.0",
+  "displayName": "Jatify Reporter",
+  "description": "Send bug reports and feedback from a game build to a Questlog workspace, with screenshots and other files.",
+  "unity": "2021.3",
+  "author": { "name": "Jatify" },
+  "keywords": ["bug report", "feedback", "jatify"]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Jatify.Reporter",
+  "rootNamespace": "Jatify.Reporter",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

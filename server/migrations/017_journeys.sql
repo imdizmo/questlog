@@ -1,0 +1,6 @@
+CREATE TABLE journeys (
+  id TEXT PRIMARY KEY,
+  deck_id TEXT NOT NULL UNIQUE REFERENCES decks(id) ON DELETE CASCADE,
+  steps TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

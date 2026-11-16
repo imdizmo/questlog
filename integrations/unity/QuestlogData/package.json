@@ -1,0 +1,9 @@
+{
+  "name": "com.jatify.questlog-data",
+  "version": "0.1.0",
+  "displayName": "Questlog Game Data",
+  "description": "Editor menu Questlog → Pull game data: downloads a campaign's wiki export (questlog-gamedata JSON) into Assets/QuestlogData.",
+  "unity": "2021.3",
+  "author": { "name": "Jatify" },
+  "keywords": ["game data", "wiki", "questlog", "jatify"]
+}

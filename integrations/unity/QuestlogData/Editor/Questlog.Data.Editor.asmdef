@@ -1,0 +1,9 @@
+{
+  "name": "Questlog.Data.Editor",
+  "rootNamespace": "Questlog.Data.Editor",
+  "references": [],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

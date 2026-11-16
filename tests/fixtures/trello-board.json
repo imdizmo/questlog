@@ -1,0 +1,81 @@
+{
+  "id": "6740a1b2c3d4e5f600000001",
+  "name": "Lantern Keep",
+  "desc": "Small game jam board",
+  "closed": false,
+  "idOrganization": null,
+  "url": "https://trello.com/b/AbCdEf12/lantern-keep",
+  "shortUrl": "https://trello.com/b/AbCdEf12",
+  "prefs": { "permissionLevel": "private", "background": "blue" },
+  "labelNames": { "green": "Art", "red": "Bug", "blue": "", "yellow": "", "orange": "", "purple": "" },
+  "labels": [
+    { "id": "6740a1b2c3d4e5f6000000a1", "idBoard": "6740a1b2c3d4e5f600000001", "name": "Art", "color": "green", "uses": 2 },
+    { "id": "6740a1b2c3d4e5f6000000a2", "idBoard": "6740a1b2c3d4e5f600000001", "name": "Bug", "color": "red", "uses": 1 },
+    { "id": "6740a1b2c3d4e5f6000000a3", "idBoard": "6740a1b2c3d4e5f600000001", "name": "", "color": "blue", "uses": 1 }
+  ],
+  "lists": [
+    { "id": "6740a1b2c3d4e5f6000000b1", "name": "Backlog", "closed": false, "idBoard": "6740a1b2c3d4e5f600000001", "pos": 16384, "subscribed": false },
+    { "id": "6740a1b2c3d4e5f6000000b2", "name": "Doing", "closed": false, "idBoard": "6740a1b2c3d4e5f600000001", "pos": 32768, "subscribed": false },
+    { "id": "6740a1b2c3d4e5f6000000b3", "name": "Old ideas", "closed": true, "idBoard": "6740a1b2c3d4e5f600000001", "pos": 49152, "subscribed": false }
+  ],
+  "cards": [
+    {
+      "id": "6740a1b2c3d4e5f6000000c1", "name": "Lantern sprite", "desc": "Glow pass on the lantern.",
+      "closed": false, "idBoard": "6740a1b2c3d4e5f600000001", "idList": "6740a1b2c3d4e5f6000000b1", "pos": 16384,
+      "idLabels": ["6740a1b2c3d4e5f6000000a1", "6740a1b2c3d4e5f6000000a3"], "idMembers": ["6740a1b2c3d4e5f6000000m1"],
+      "idChecklists": ["6740a1b2c3d4e5f6000000k1"], "due": "2030-03-04T17:00:00.000Z", "dueComplete": false,
+      "dateLastActivity": "2026-11-01T10:00:00.000Z", "shortUrl": "https://trello.com/c/Xy12Ab34",
+      "url": "https://trello.com/c/Xy12Ab34/1-lantern-sprite",
+      "attachments": [
+        { "id": "6740a1b2c3d4e5f6000000t1", "name": "glow-ref.png", "url": "https://trello.com/1/cards/6740a1b2c3d4e5f6000000c1/attachments/6740a1b2c3d4e5f6000000t1/download/glow-ref.png", "bytes": 20480, "mimeType": "image/png", "isUpload": true, "date": "2026-11-01T10:00:00.000Z" }
+      ]
+    },
+    {
+      "id": "6740a1b2c3d4e5f6000000c2", "name": "Door does not open", "desc": "",
+      "closed": false, "idBoard": "6740a1b2c3d4e5f600000001", "idList": "6740a1b2c3d4e5f6000000b2", "pos": 16384,
+      "idLabels": ["6740a1b2c3d4e5f6000000a2"], "idMembers": ["6740a1b2c3d4e5f6000000m2"],
+      "idChecklists": [], "due": null, "dueComplete": false,
+      "dateLastActivity": "2026-11-02T10:00:00.000Z", "shortUrl": "https://trello.com/c/Zz98Yy76",
+      "url": "https://trello.com/c/Zz98Yy76/2-door-does-not-open", "attachments": []
+    },
+    {
+      "id": "6740a1b2c3d4e5f6000000c3", "name": "Title screen", "desc": "Logo and *press start*.",
+      "closed": false, "idBoard": "6740a1b2c3d4e5f600000001", "idList": "6740a1b2c3d4e5f6000000b1", "pos": 8192,
+      "idLabels": ["6740a1b2c3d4e5f6000000a1"], "idMembers": [],
+      "idChecklists": [], "due": null, "dueComplete": false,
+      "dateLastActivity": "2026-11-03T10:00:00.000Z", "shortUrl": "https://trello.com/c/Tt11Ss22",
+      "url": "https://trello.com/c/Tt11Ss22/3-title-screen", "attachments": []
+    },
+    {
+      "id": "6740a1b2c3d4e5f6000000c4", "name": "Archived card", "desc": "Not imported",
+      "closed": true, "idBoard": "6740a1b2c3d4e5f600000001", "idList": "6740a1b2c3d4e5f6000000b1", "pos": 65536,
+      "idLabels": [], "idMembers": [], "idChecklists": [], "due": null, "dueComplete": false,
+      "dateLastActivity": "2026-10-03T10:00:00.000Z", "shortUrl": "https://trello.com/c/Aa00Bb00",
+      "url": "https://trello.com/c/Aa00Bb00/4-archived-card", "attachments": []
+    },
+    {
+      "id": "6740a1b2c3d4e5f6000000c5", "name": "Card in an archived list", "desc": "",
+      "closed": false, "idBoard": "6740a1b2c3d4e5f600000001", "idList": "6740a1b2c3d4e5f6000000b3", "pos": 16384,
+      "idLabels": [], "idMembers": [], "idChecklists": [], "due": null, "dueComplete": false,
+      "dateLastActivity": "2026-10-03T10:00:00.000Z", "shortUrl": "https://trello.com/c/Cc00Dd00",
+      "url": "https://trello.com/c/Cc00Dd00/5-card-in-an-archived-list", "attachments": []
+    }
+  ],
+  "checklists": [
+    {
+      "id": "6740a1b2c3d4e5f6000000k1", "name": "Steps", "idBoard": "6740a1b2c3d4e5f600000001", "idCard": "6740a1b2c3d4e5f6000000c1", "pos": 16384,
+      "checkItems": [
+        { "id": "6740a1b2c3d4e5f6000000i2", "name": "Paint glow", "state": "incomplete", "idChecklist": "6740a1b2c3d4e5f6000000k1", "pos": 32768 },
+        { "id": "6740a1b2c3d4e5f6000000i1", "name": "Sketch", "state": "complete", "idChecklist": "6740a1b2c3d4e5f6000000k1", "pos": 16384 }
+      ]
+    }
+  ],
+  "members": [
+    { "id": "6740a1b2c3d4e5f6000000m1", "fullName": "Bo Painter", "username": "bopainter", "initials": "BP", "avatarHash": null },
+    { "id": "6740a1b2c3d4e5f6000000m2", "fullName": "Stranger Person", "username": "stranger", "initials": "SP", "avatarHash": null }
+  ],
+  "actions": [
+    { "id": "6740a1b2c3d4e5f6000000x1", "type": "commentCard", "date": "2026-11-01T11:00:00.000Z", "idMemberCreator": "6740a1b2c3d4e5f6000000m1",
+      "data": { "text": "Looks good", "card": { "id": "6740a1b2c3d4e5f6000000c1", "name": "Lantern sprite" }, "list": { "id": "6740a1b2c3d4e5f6000000b1", "name": "Backlog" } } }
+  ]
+}
