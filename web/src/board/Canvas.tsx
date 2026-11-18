@@ -5,14 +5,13 @@ import {
 import type * as Y from 'yjs';
 import {
   adoptAfterResize, containerAt, DEFAULT_SIZE, filterSize, GRID, nearestSide, newId, newNodeAt, snap, spotBeside, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
-  type BoardNode, type EdgeEnd, type NodePos, type NodeType, type Point, type Rect, type Side,
+  type BoardEdge, type BoardNode, type EdgeEnd, type NodePos, type NodeType, type Point, type Rect, type Side,
 } from '../../../shared/board';
-import { cardCode, derivedStatus, titleOf } from '../../../shared/cards';
-import { planProjectTree, planStoryboard, refOf, SCENE, SUBTASK, WAITS_FOR } from './projectTree';
+import { cardCode, titleOf } from '../../../shared/cards';
+import { planStoryboard, refOf, SCENE, SUBTASK, WAITS_FOR } from './projectTree';
+import { convertTree, layoutFrames, originBelow, treeProjects, type BoardPatch } from './projectFrames';
+import { frameInput, refuseProject } from './boards';
 import { isStoryline, makeFrame } from '../components/wiki/Builder';
-import { lockersOf } from '../relations';
-import { openByCard } from '../cards';
-import { spaceLabel } from '../spaces';
 import { showToast } from '../toast';
 import { dispatch } from '../api';
 import { Dialog } from '../components/Dialog';
@@ -25,12 +24,16 @@ import { CardView } from '../views/Card';
 import { Icon, type IconName } from '../components/icons';
 import { CardNodeDialog } from './CardNodeDialog';
 import { ImageDialog, VideoDialog } from './MediaDialogs';
-import { readNode, useBoard } from './useBoard';
+import { LOCAL, readBoard, readNode, useBoard } from './useBoard';
+import { Holds, useFollowProject } from './follow';
+import { HOLD_MS, listMoveToSend, markListMove, moveBackSync, OFFLINE_DROP, OFFLINE_LIST, parentChanges, planMove, readListMove, saveDrop, type DropIntent } from './drop';
+import { ASK_ADMIN, deletable, depChoice, edgeStepCalls, FRAME_DELETE, isProjectFrame, meaningOf, saveLink, unlinkCall } from './links';
 import { NodeView, handlesFor, initialValue, TYPE_LABEL, type Handle } from './nodes';
 import { NodeToolbar } from './NodeToolbar';
 import { SmartFilterPanel } from './SmartFilterPanel';
 import { smartToStored, smartValue, type SmartValue } from './SmartNode';
-import { Edges, edgeGeometry, type ConnectPreview } from './Edges';
+import { EdgeLabels, Edges, edgeGeometry, MacroLinks, type ConnectPreview } from './Edges';
+import { isMacro, macroView } from './macro';
 import type { Awareness } from 'y-protocols/awareness';
 import { PresenceLayer, useLocalPresence } from './Presence';
 
@@ -53,6 +56,10 @@ const PAN_STEP = 40;
 const clampZoom = (s: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(s * 10) / 10));
 
 const SIDES: Side[] = ['top', 'right', 'bottom', 'left'];
+
+const HINT_KEY = 'ql.hint.connect';
+const readHintGone = (): boolean => { try { return localStorage.getItem(HINT_KEY) === '1'; } catch { return false; } };
+const writeHintGone = () => { try { localStorage.setItem(HINT_KEY, '1'); } catch { /* storage blocked: the hint comes back next visit */ } };
 
 const ARROWS: Record<string, Point> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
 
@@ -94,7 +101,30 @@ const editable = (t: EventTarget | null) => {
 };
 
 /** The vision board: tool rail, pannable and zoomable node layer, selection toolbar, undo. */
-export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | null; canEdit: boolean; host: Card; awareness?: Awareness | null }) {
+const deckProject = (id: string) => store.get().decks.get(id)?.projectId;
+
+const NOT_LOADED = "The project isn't loaded yet. Try again in a moment.";
+
+/** The project of the board's old tree, when the tree names exactly one and the board shows no other. */
+function treeProject(nodes: BoardNode[], projectId: string | null): string | null {
+  const named = treeProjects(nodes, deckProject);
+  if (named.size !== 1) return null;
+  const [pid] = named;
+  return projectId && projectId !== pid ? null : pid;
+}
+
+/** "Arrange as frames" for a board made with the old tree: the plan, or null when the board has no tree of one project. */
+function planArrange(nodes: BoardNode[], edges: BoardEdge[], projectId: string | null): (BoardPatch & { projectId: string }) | null {
+  const pid = treeProject(nodes, projectId);
+  const inp = pid ? frameInput(store.get(), pid, nodes, edges) : null;
+  return inp && convertTree(inp, deckProject);
+}
+
+export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
+  doc: Y.Doc | null; canEdit: boolean; host: Card; awareness?: Awareness | null;
+  /** Hands up "Arrange as frames" while this board has an old tree to arrange (null when it has none). */
+  onArrange?: (run: (() => void) | null) => void;
+}) {
   const board = useBoard(doc);
   const meId = useStore((x) => x.me?.id);
   const settings = useStore(settingsOf);
@@ -118,6 +148,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
   /** The right-click menu: where it shows (pixels in the canvas) and where its node goes (board units). */
   const [menu, setMenu] = useState<{ left: number; top: number; at: Point } | null>(null);
   const [hover, setHover] = useState<string | null>(null);
+  const [hintGone, setHintGone] = useState(readHintGone);
   const [connecting, setConnecting] = useState<{ from: EdgeEnd; to: Point } | null>(null);
   const [drag, setDrag] = useState<{ ids: Set<string>; dx: number; dy: number } | null>(null);
   const [resize, setResize] = useState<{ id: string; rect: Rect } | null>(null);
@@ -128,7 +159,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
   const [openNode, setOpenNode] = useState<string | null>(null);
   /** The Smart Node whose filter panel is open; it shares the side with the card panel, so only one shows. */
   const [setupNode, setSetupNode] = useState<string | null>(null);
-  /** The project picker for "Project tree", and the question a line between two tasks raises. */
+  /** The project picker for "Add project", and the question a line between two tasks raises. */
   const [treeAsk, setTreeAsk] = useState(false);
   const [linkAsk, setLinkAsk] = useState<{ edgeId: string; a: string; b: string } | null>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -155,6 +186,22 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
     const area = (n: BoardNode) => (n.type === 'container' ? n.pos.w * n.pos.h : -1);
     return [...nodes].sort((a, b) => area(b) - area(a));
   }, [nodes]);
+  // Zoomed out on a project board: the overview. Drawn from the board as it is; zooming never writes to the document.
+  const projectBoard = !!board.projectId;
+  const macro = isMacro(view.s, projectBoard);
+  const overview = useMemo(() => (macro ? macroView(nodes, edges) : null), [macro, nodes, edges]);
+  const shown = useMemo(() => (overview ? ordered.filter((n) => !overview.hidden.has(n.id)) : ordered), [ordered, overview]);
+  const isShown = (id: string | undefined) => !!id && !overview?.hidden.has(id);
+  /** On a project board its frames and header follow the project: their names can't be edited, nor can they be deleted. */
+  const frozen = (n: BoardNode | undefined) => projectBoard && isProjectFrame(n);
+  // Entering the overview drops what it no longer draws from the selection (the node and the picked group).
+  useEffect(() => {
+    if (!overview) return;
+    if (selected && overview.hidden.has(selected)) { setSelected(null); setEditing(null); }
+    setMulti((m) => ([...m].some((id) => overview.hidden.has(id)) ? new Set([...m].filter((id) => !overview.hidden.has(id))) : m));
+  }, [overview]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** A frame held down in the overview: its toolbar stays hidden until it is let go. */
+  const [pressed, setPressed] = useState(false);
 
   useEffect(() => { if (!canEdit) { setTool(null); setEditing(null); setEditingEdge(null); setConnecting(null); } }, [canEdit]);
   useEffect(() => { if (selected && !selNode) { setSelected(null); setEditing(null); } }, [selected, selNode, setSelected]);
@@ -206,17 +253,23 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
     setEditing(null);
     pendingFocus.current = 'canvas';
   }, []);
+  /** Deletes the nodes named, except, on a project board, the project's own frames and header (which say why instead). */
+  const removeMany = useCallback((ids: Iterable<string>) => {
+    const b = live.current.board;
+    const { ok, refused } = deletable(b.nodes, ids, !!b.projectId);
+    for (const id of ok) remove(id);
+    if (refused) showToast(FRAME_DELETE, 'info', 5000);
+    return ok.length > 0;
+  }, [remove]);
 
   const removeEdge = useCallback((id: string) => {
-    // Removing a line that means something takes the meaning with it: the dependency, or the parent.
+    // Removing a line that means something takes the meaning with it: the dependency, or the parent. A line the user
+    // only labelled "waits for" means nothing in the project (see standsFor), so it takes nothing with it.
     const e = live.current.board.edges.find((x) => x.id === id);
-    const end = (nodeId: string) => { const n = live.current.board.nodes.find((x) => x.id === nodeId); const r = n ? refOf(n) ?? '' : ''; return r.startsWith('card:') ? r.slice(5) : null; };
-    const src = e ? end(e.value.source.nodeId) : null, dst = e ? end(e.value.target.nodeId) : null;
-    if (e && src && dst && live.current.canEdit) {
-      const s = store.get();
-      if (e.label === WAITS_FOR) void dispatch('cards', 'update', { id: src, inDeps: lockersOf(s.cardDeps.values(), src).filter((x) => x !== dst) }).catch(() => {});
-      else if (e.label === SUBTASK && s.cards.get(dst)?.parentCardId === src) void dispatch('cards', 'update', { id: dst, parentCardId: null }).catch(() => {});
-    }
+    const s = store.get();
+    const m = e && live.current.canEdit ? meaningOf(e, live.current.board.nodes, s) : null;
+    const call = m && unlinkCall(m, s);
+    if (call) void dispatch(call.ns, call.action, call.payload).catch(() => {});
     live.current.board.deleteEdge(id);
     setSelectedEdge(null);
     setEditingEdge(null);
@@ -229,13 +282,15 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
     live.current.board.addEdge({ id, value: { source: from, target: to } });
     selectEdge(id);
     pendingFocus.current = id;
-    // A line that joins project things means something: task to task asks what, task to list moves the task.
+    // A line that joins project things means something: task to task asks what; on a board without a project, task to
+    // list moves the task (and list to area the list). On a project board (frames) that is a drop, so a line is a line.
     const a = byId.get(from.nodeId), b = byId.get(to.nodeId);
     if (!a || !b) return;
     const ra = refOf(a) ?? '', rb = refOf(b) ?? '';
     // Two tasks: ask what the line means. Wiki entries (a storyline's frames) are not tasks: their line is only a line.
     const isTask = (r: string) => r.startsWith('card:') && store.get().cards.get(r.slice(5))?.isDoc === false;
     if (isTask(ra) && isTask(rb)) setLinkAsk({ edgeId: id, a: ra.slice(5), b: rb.slice(5) });
+    else if (live.current.board.projectId) return;
     else if (ra.startsWith('card:') && rb.startsWith('deck:')) moveToList(a, b, id);
     else if (ra.startsWith('deck:') && rb.startsWith('card:')) moveToList(b, a, id);
     else if (ra.startsWith('deck:') && rb.startsWith('area:')) moveToArea(a, b, id);
@@ -252,7 +307,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
         const o = other ? live.current.board.nodes.find((n) => n.id === other) : undefined;
         if (o && (refOf(o) ?? '').startsWith('area:')) live.current.board.deleteEdge(e.id);
       }
-      showToast(`${deck.title} moved to ${String(area.value.content ?? 'the area')}`, 'info', 3000);
+      showToast(`${deck.title} moved to ${String(area.value.content ?? area.value.label ?? 'the area')}`, 'info', 3000);
     }).catch(() => { live.current.board.deleteEdge(keep); });
   };
   /** The task goes to the list it was just joined to; its line to the old list goes away. */
@@ -269,31 +324,71 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
       showToast(`${titleOf(card.content)} moved to ${deck.title}`, 'info', 3000);
     }).catch(() => { live.current.board.deleteEdge(keep); });
   };
-  /** Adds the project as a tree, or only what is new since the last time. One undo step. */
-  const addProjectTree = (projectId: string) => {
+  /**
+   * Makes this board the project's board and lays the project out as frames (an old tree of it is arranged in place,
+   * anything else goes below what is there), in one undo step. A board shows one project, its host task's: for another
+   * one this returns (or toasts) why not, and nothing changes.
+   */
+  const addProject = (projectId: string): string | null => {
     const s = store.get(), project = s.projects.get(projectId);
-    if (!project || !live.current.canEdit) return;
-    const open = openByCard(s.resolvables.values());
-    const decks = [...s.decks.values()].filter((d) => d.projectId === projectId).sort((x, y) => x.sortIndex - y.sortIndex || x.seq - y.seq);
-    const inDeck = new Set(decks.map((d) => d.id));
-    const cards = [...s.cards.values()].filter((c) => c.deckId && inDeck.has(c.deckId) && c.visibility === 'default' && !c.isDoc
-      && derivedStatus(c, open.get(c.id) ?? new Set()) !== 'done');
-    const plan = planProjectTree({
-      project, decks, cards, deps: [...s.cardDeps.values()], nodes: live.current.board.nodes, edges: live.current.board.edges,
-      areaName: (id) => { const sp = project.spaces.find((x) => x.id === id); return sp ? spaceLabel(sp) : ''; },
-    });
-    live.current.board.addMany(plan.nodes, plan.edges);
-    const tasks = plan.nodes.filter((n) => n.type === 'card').length;
-    showToast(plan.nodes.length || plan.edges.length ? `Added ${tasks} ${tasks === 1 ? 'task' : 'tasks'} and ${plan.edges.length} ${plan.edges.length === 1 ? 'line' : 'lines'}` : 'Nothing new: the tree is up to date', 'info', 4000);
+    if (!doc || !live.current.canEdit) return null;
+    if (!project) { setTreeAsk(false); showToast(NOT_LOADED, 'info', 4000); return null; }
+    const { nodes: now, edges: lines, projectId: current } = readBoard(doc);
+    if (current && current !== projectId) return `This board shows ${s.projects.get(current)?.name ?? 'another project'}; make a new project board for another.`;
     setTreeAsk(false);
+    // Only the project of the board's host task: another one could be one the board's other editors may not see.
+    const refused = refuseProject(s, host.id, projectId);
+    if (refused) { showToast(refused, 'info', 5000); return null; }
+    if (current === projectId) { showToast(`This board already shows ${project.name}.`, 'info', 4000); return null; }
+    const named = treeProjects(now, deckProject);
+    if (named.size > 1) { showToast("This board has more than one project's tree; make a new project board.", 'info', 5000); return null; }
+    const inp = frameInput(s, projectId, now, lines);
+    if (!inp) return null;
+    const tree = named.has(projectId) ? planArrange(now, lines, null) : null;
+    // Below what is there, clear of the tool rail (an empty board starts where a storyboard does).
+    const below = originBelow(now);
+    const patch = tree ?? layoutFrames(inp, { x: below.x + 4 * GRID, y: now.length ? below.y : 2 * GRID });
+    live.current.board.applyPatch(patch, LOCAL, projectId);
+    return null;
   };
-  // A board opened as `?tree=<project>` (a new project board) lays that project out once.
+  // A board opened as `?tree=<project>` (a new project board) lays that project out once, after its content is here.
   const treeParam = useLocation().query.get('tree');
   useEffect(() => {
     if (!treeParam || !doc || !canEdit) return;
     setQuery('tree', null);
-    addProjectTree(treeParam);
+    void doc.whenSynced.then(() => { addProject(treeParam); });
   }, [treeParam, doc, canEdit]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The board follows its project by itself (SYNC writes, never undone); not while a node is being dragged or resized.
+  // `holds`: nodes reconcile must not move, such as a card dropped into another list frame while the task's move is
+  // being saved (saveDrop), so it is not pulled back to its old list meanwhile.
+  const [holds] = useState(() => new Holds());
+  useFollowProject(doc, host.id, canEdit, () => gesture.current?.kind === 'move' || gesture.current?.kind === 'resize', holds);
+  // "Arrange as frames" is offered while the board holds an old tree of one project.
+  const decks = useStore((x) => x.decks);
+  const cardsNow = useStore((x) => x.cards);
+  // Not offered when it would be refused: a tree of another project than the board's own (its host task's).
+  const arrangeable = useMemo(() => {
+    const pid = canEdit ? treeProject(nodes, board.projectId) : null;
+    return !!pid && !refuseProject(store.get(), host.id, pid);
+  }, [canEdit, nodes, board.projectId, decks, cardsNow, host.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const arrange = useRef(() => {});
+  arrange.current = () => {
+    if (!doc || !live.current.canEdit) return;
+    const now = readBoard(doc);
+    const pid = treeProject(now.nodes, now.projectId);
+    if (pid && !store.get().projects.has(pid)) { showToast(NOT_LOADED, 'info', 4000); return; }
+    const refused = pid ? refuseProject(store.get(), host.id, pid) : null;
+    if (refused) { showToast(refused, 'info', 5000); return; }
+    const plan = planArrange(now.nodes, now.edges, now.projectId);
+    if (!plan) return;
+    const { projectId, ...patch } = plan;
+    live.current.board.applyPatch(patch, LOCAL, projectId);
+  };
+  useEffect(() => {
+    if (!onArrange) return;
+    onArrange(arrangeable ? () => arrange.current() : null);
+    return () => onArrange(null);
+  }, [arrangeable, onArrange]);
   // A storyline's board opened as `?story=1` gets a picture card for every frame that is not on it yet.
   const storyParam = useLocation().query.get('story');
   useEffect(() => {
@@ -310,39 +405,99 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
       if (plan.nodes.length && live.current.canEdit) live.current.board.addMany(plan.nodes, plan.edges);
     });
   }, [storyParam, doc, canEdit]); // eslint-disable-line react-hooks/exhaustive-deps
-  /** What the line between two tasks means; "only a line" leaves the project alone. */
-  const meanLink = (kind: 'dep' | 'sub') => {
+  /**
+   * What the line between two tasks means; "only a line" leaves the project alone. `turnOn`: an admin's "It waits for
+   * it (turns on dependencies)" switches dependencies on for the workspace first.
+   */
+  const meanLink = (kind: 'dep' | 'sub', turnOn = false) => {
     if (!linkAsk) return;
     const { a, b, edgeId } = linkAsk;
     setLinkAsk(null);
-    const s = store.get();
-    const patch = kind === 'dep' ? { inDeps: [...new Set([...lockersOf(s.cardDeps.values(), a), b])] } : { parentCardId: b };
-    void dispatch('cards', 'update', { id: a, ...patch })
+    void saveLink(kind, a, b, store.get(), dispatch, turnOn)
       .then(() => {
-        if (kind === 'dep') { live.current.board.setEdgeLabel(edgeId, WAITS_FOR); return; }
+        if (kind === 'dep') { live.current.board.setEdgeLabel(edgeId, WAITS_FOR, 'dep'); return; }
         // A subtask line always runs parent → child, as the tree draws it: redraw the one just made the other way round.
         const e = live.current.board.edges.find((x) => x.id === edgeId);
         if (!e) return;
         live.current.board.deleteEdge(edgeId);
-        live.current.board.addEdge({ id: newId(), value: { source: e.value.target, target: e.value.source }, label: SUBTASK });
+        live.current.board.addEdge({ id: newId(), value: { source: e.value.target, target: e.value.source, kind: 'sub' }, label: SUBTASK });
       })
       .catch(() => { /* the toast says why; the line stays as a plain line */ });
   };
+  const waitsChoice = useStore((x) => depChoice(x, projectBoard));
 
-  /** One write: the node moves by (dx, dy) board units, snapped; parent recomputed; a container's descendants follow. */
-  const moveNode = (id: string, dx: number, dy: number) => {
-    const self = byId.get(id);
-    if (!self || !live.current.canEdit) return;
-    const x = snap(self.pos.x + dx), y = snap(self.pos.y + dy);
-    const ddx = x - self.pos.x, ddy = y - self.pos.y;
-    const rect = { x, y, w: self.pos.w, h: self.pos.h };
-    const changes: Array<{ id: string; pos: NodePos }> = [{ id, pos: { ...rect, parent: containerAt(nodes, rect, id) } }];
-    for (const cid of descendants(nodes, id)) {
-      const c = byId.get(cid);
-      if (c) changes.push({ id: cid, pos: { ...c.pos, x: c.pos.x + ddx, y: c.pos.y + ddy } });
-    }
-    board.setPos(changes);
+  /** What a saved drop says (the dispatch toasts a refusal). */
+  const toastDrop = (done: DropIntent, s = store.get(), area?: BoardNode) => {
+    if (done?.kind === 'move-task') showToast(`${titleOf(s.cards.get(done.cardId)?.content ?? '')} moved to ${s.decks.get(done.deckId)?.title ?? 'the list'}`, 'info', 3000);
+    else if (done) showToast(`${s.decks.get(done.deckId)?.title ?? 'The list'} moved to ${String(area?.value.label ?? 'the area')}`, 'info', 3000);
   };
+  /**
+   * One write: the node (or the picked group `ids`, snapped by `id`) moves by (dx, dy) board units; each gets the
+   * container it now sits in, and what it holds follows. On a project board a task card dropped into another list
+   * frame moves the task (refused: it goes back); a list frame let go over another area moves the list (the frame
+   * stays until the board follows the store); a list frame never goes into a list. `at` is where a drag was let go
+   * (the pointer, board units); a keyboard move has none and uses the node's centre.
+   */
+  const moveNode = (id: string, dx: number, dy: number, at?: Point, ids: string[] = [id]) => {
+    if (!byId.has(id) || !live.current.canEdit) return;
+    const s = store.get(), pid = live.current.board.projectId;
+    const plan = planMove(nodes, ids, id, dx, dy, at ?? null, s, pid, host.id);
+    if (plan.changes.length) board.setPos(plan.changes);
+    if (plan.offline) showToast(OFFLINE_LIST, 'info', 4000);
+    for (const d of plan.drops) {
+      void saveDrop(d.node, d.parent, s, pid, host.id, {
+        holds, dispatch, revert: () => { if (doc) moveBackSync(doc, d.node.id, d.start); }, offline: () => showToast(OFFLINE_DROP, 'info', 4000),
+      }).then((done) => toastDrop(done, s));
+    }
+    for (const l of plan.lists) {
+      const from = s.decks.get(l.deckId)?.spaceId;
+      void dispatch('decks', 'update', { id: l.deckId, spaceId: l.spaceId }).then(() => {
+        // One undo step for the list move: undo sends the list back.
+        if (doc && from !== undefined) markListMove(doc, { deckId: l.deckId, from, to: l.spaceId });
+        toastDrop({ kind: 'move-list', deckId: l.deckId, spaceId: l.spaceId }, s, byId.get(l.areaId));
+      }, () => {});
+    }
+  };
+  /**
+   * Undo / redo. On a project board, a node whose frame the step changed goes through the drop path, so the project
+   * follows (undoing a drop moves the task back too; refused, the node goes back to where it was before the step), and
+   * a list move's step sends the list back (or, redone, there again).
+   */
+  const undoRedo = (redo: boolean) => {
+    const b = live.current.board;
+    const board0 = doc ? readBoard(doc) : { nodes: [], edges: [] };
+    const before = board0.nodes;
+    const moveBefore = doc ? readListMove(doc) : null;
+    if (redo) b.redo(); else b.undo();
+    if (!doc || !live.current.canEdit) return;
+    const after = readBoard(doc);
+    const s = store.get();
+    // A "waits for" or subtask line the step brought back sends its dependency or parent again (held meanwhile, so the
+    // board's upkeep does not take it away before the store has it); one the step took away takes it away again.
+    for (const c of edgeStepCalls(board0, after, s)) {
+      const token = c.restored ? holds.claim(c.edgeId) : 0;
+      const has = (x: typeof s) => (c.kind === 'dep'
+        ? [...x.cardDeps.values()].some((d) => d.lockedCardId === c.a && d.lockingCardId === c.b)
+        : x.cards.get(c.b)?.parentCardId === c.a);
+      void dispatch(c.call.ns, c.call.action, c.call.payload).then(
+        () => { if (c.restored) holds.end(c.edgeId, token, { done: has, until: Date.now() + HOLD_MS }); },
+        () => { if (c.restored) holds.end(c.edgeId, token); },
+      );
+    }
+    if (!after.projectId) return;
+    for (const { node, parent, was } of parentChanges(before, after.nodes)) {
+      void saveDrop(node, parent, s, after.projectId, host.id, {
+        holds, dispatch, revert: () => moveBackSync(doc, node.id, was.pos), offline: () => showToast(OFFLINE_DROP, 'info', 4000),
+      }).then((done) => toastDrop(done, s, parent ?? undefined));
+    }
+    const list = listMoveToSend(moveBefore, readListMove(doc), redo);
+    const deck = list ? s.decks.get(list.deckId) : undefined;
+    if (list && deck && deck.projectId === after.projectId && deck.spaceId !== list.spaceId) {
+      void dispatch('decks', 'update', { id: list.deckId, spaceId: list.spaceId }).catch(() => {});
+    }
+  };
+  const undoRef = useRef(undoRedo);
+  undoRef.current = undoRedo;
 
   /** One write: the node gets the snapped rect; a container adopts what it now encloses. */
   const resizeNode = (id: string, r: Rect) => {
@@ -438,7 +593,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || editable(e.target) || document.querySelector('dialog[open]') || (e.target as Element).closest?.('.board-card-panel')) return;
-      const { board: b, tool: t, selected: sel, selectedEdge: selE, canEdit: ce } = live.current;
+      const { tool: t, selected: sel, selectedEdge: selE, canEdit: ce } = live.current;
       const mod = e.ctrlKey || e.metaKey;
       // Editing keys act only with focus on the board (or nowhere): not from the header menus or the node toolbar.
       const tgt = e.target as Element;
@@ -447,15 +602,15 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
         if (t) { setTool(null); e.preventDefault(); } else if (live.current.multi.size) { setMulti(new Set()); e.preventDefault(); } else if (sel) { setSelected(null); e.preventDefault(); } else if (selE) { selectEdge(null); e.preventDefault(); }
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && !mod && ce && onBoard && (sel || selE || live.current.multi.size)) {
         e.preventDefault();
-        if (live.current.multi.size) { for (const id of live.current.multi) remove(id); setMulti(new Set()); } else if (sel) remove(sel); else removeEdge(selE!);
+        if (live.current.multi.size) { if (removeMany(live.current.multi)) setMulti(new Set()); } else if (sel) removeMany([sel]); else removeEdge(selE!);
       } else if (mod && !e.altKey && e.code === 'KeyZ' && ce && onBoard) {
         e.preventDefault();
-        if (e.shiftKey) b.redo(); else b.undo();
+        undoRef.current(e.shiftKey);
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [remove, removeEdge, setSelected, selectEdge]);
+  }, [removeMany, removeEdge, setSelected, selectEdge]);
 
   // Keys with focus in the canvas: arrows move (Alt: resize) the focused node or pan; Enter edits or places; +/- zoom.
   const onCanvasKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -489,7 +644,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
     }
     if (e.key === ' ' && node) { e.preventDefault(); setSelected(node.id); return; }
     if (e.key === 'Enter') {
-      if (node && canEdit && (node.type === 'text' || node.type === 'container')) { e.preventDefault(); setSelected(node.id); setEditing(node.id); }
+      if (node && canEdit && (node.type === 'text' || node.type === 'container')) { e.preventDefault(); setSelected(node.id); if (!frozen(node)) setEditing(node.id); }
       else if (node?.type === 'card') { e.preventDefault(); openCard(node.id); }
       else if (node?.type === 'filter' && canEdit) { e.preventDefault(); setupFilter(node.id); }
       else if (!node && tool && canEdit) { e.preventDefault(); place(tool, viewportCentre(), true); }
@@ -586,7 +741,10 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
-    const edgeEl = target.closest<HTMLElement>('[data-edge-id]');
+    // A label drawn above the cards (project boards) stands for its line.
+    const labelOf = target.closest<HTMLElement>('[data-label-of]')?.dataset.labelOf;
+    const edgeEl = target.closest<HTMLElement>('[data-edge-id]')
+      ?? (labelOf ? viewportRef.current?.querySelector<HTMLElement>(`[data-edge-id="${CSS.escape(labelOf)}"]`) ?? null : null);
     if (edgeEl) {
       e.preventDefault();
       setEditing(null);
@@ -617,6 +775,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
       // A node of the picked group drags the whole group; any other node becomes the selection.
       const group = multi.has(node.id) ? [...multi] : [node.id];
       if (!multi.has(node.id)) { setMulti(new Set()); setSelected(node.id); }
+      if (overview && node.type === 'container') setPressed(true);
       gesture.current = { kind: 'move', start, id: node.id, ids: [...new Set(group.flatMap((id) => [id, ...descendants(nodes, id)]))], moved: false };
     } else if (node) {
       setSelected(node.id);
@@ -645,6 +804,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
   const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const g = gesture.current;
     gesture.current = null;
+    setPressed(false);
     setDrag(null);
     setResize(null);
     setConnecting(null);
@@ -655,7 +815,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
       if (!g.moved) { setSelected(null); setMulti(new Set()); return; }
       const to = toBoard(e.clientX, e.clientY);
       const box = { x: Math.min(g.from.x, to.x), y: Math.min(g.from.y, to.y), w: Math.abs(to.x - g.from.x), h: Math.abs(to.y - g.from.y) };
-      const hit = nodes.filter((n) => n.pos.x < box.x + box.w && n.pos.x + n.pos.w > box.x && n.pos.y < box.y + box.h && n.pos.y + n.pos.h > box.y).map((n) => n.id);
+      const hit = nodes.filter((n) => isShown(n.id)).filter((n) => n.pos.x < box.x + box.w && n.pos.x + n.pos.w > box.x && n.pos.y < box.y + box.h && n.pos.y + n.pos.h > box.y).map((n) => n.id);
       if (hit.length === 1) { setMulti(new Set()); setSelected(hit[0]); } else { setSelected(null); setMulti(new Set(hit)); }
       return;
     }
@@ -679,17 +839,12 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
     if (!g.moved) { if (g.kind === 'resize') setSelected(g.id); else if (g.kind === 'move') openCard(g.id); return; }
     // moveNode / resizeNode re-check canEdit: rights can be lost in the middle of a drag.
     const px = (e.clientX - g.start.x) / view.s, py = (e.clientY - g.start.y) / view.s;
-    if (g.kind === 'move' && multi.size > 1 && multi.has(g.id)) {
-      // ponytail: a group keeps its containers as they were; dropping a group into a container does not adopt it.
-      if (!live.current.canEdit) return;
-      const self = byId.get(g.id)!;
-      const ddx = snap(self.pos.x + px) - self.pos.x, ddy = snap(self.pos.y + py) - self.pos.y;
-      board.setPos(g.ids.flatMap((id) => { const n = byId.get(id); return n ? [{ id, pos: { ...n.pos, x: n.pos.x + ddx, y: n.pos.y + ddy } }] : []; }));
-    } else if (g.kind === 'move') moveNode(g.id, px, py);
+    // A picked group moves as one (snapped by the node it was dragged by), each member dropped like a single node.
+    if (g.kind === 'move') moveNode(g.id, px, py, toBoard(e.clientX, e.clientY), multi.size > 1 && multi.has(g.id) ? g.ids : [g.id]);
     else resizeNode(g.id, resized(g.rect, g.handle, px, py));
   };
 
-  const onPointerCancel = () => { gesture.current = null; setDrag(null); setResize(null); setConnecting(null); setMarquee(null); };
+  const onPointerCancel = () => { gesture.current = null; setPressed(false); setDrag(null); setResize(null); setConnecting(null); setMarquee(null); };
   /** Right-click: a menu of what can be added, placed where the pointer is. */
   const onContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -718,10 +873,12 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
 
   /** Where a node is drawn: its preview while dragged, and for a frame that grew, its real height. */
   const rectOf = (n: BoardNode): Rect => { const r = previewOf(n) ?? n.pos, h = grown.get(n.id); return h && h > r.h ? { ...r, h } : r; };
-  const edgeGeo = selEdge && edgeGeometry(selEdge, byId, rectOf);
-  const showEdgeToolbar = edgeGeo && selEdge && editingEdge !== selEdge.id && !drag && !resize && !connecting;
+  const edgeGeo = selEdge && edgeGeometry(selEdge, byId, rectOf, projectBoard);
+  const showEdgeToolbar = edgeGeo && selEdge && editingEdge !== selEdge.id && !drag && !resize && !connecting
+    && isShown(selEdge.value.source.nodeId) && isShown(selEdge.value.target.nodeId);
   // Connect handles: on the hovered node, else the selected one; not while it is being edited, moved or resized.
-  const handleNode = canEdit && !drag && !resize && editing === null ? byId.get(hover ?? '') ?? selNode : undefined;
+  // None in the overview: per-card lines are drawn in the detail, and a frame's top handle would cover its name strip.
+  const handleNode = canEdit && !overview && !drag && !resize && editing === null ? [byId.get(hover ?? ''), selNode].find((n) => n && isShown(n.id)) : undefined;
   const handleRect = handleNode && rectOf(handleNode);
   const connectPreview: ConnectPreview | null = (() => {
     const from = connecting && byId.get(connecting.from.nodeId);
@@ -729,10 +886,12 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
   })();
 
   // Connectors sit above the containers (largest first in `ordered`) and below every other node.
-  const leaves = ordered.findIndex((n) => n.type !== 'container');
+  const leaves = shown.findIndex((n) => n.type !== 'container');
   const edgeLayer = (
     <>
-      <Edges edges={edges} byId={byId} rectOf={rectOf} selected={selectedEdge} editing={editingEdge} preview={connectPreview}
+      {overview && <MacroLinks links={overview.links} byId={byId} rectOf={rectOf} nameOf={(n) => String(n.value.label ?? '')} />}
+      <Edges edges={overview?.edges ?? edges} byId={byId} rectOf={rectOf} projectBoard={projectBoard} selected={selectedEdge} editing={editingEdge} preview={connectPreview}
+        labels={!projectBoard}
         onCommitLabel={(id, label) => board.setEdgeLabel(id, label)}
         onEndEdit={(id, refocus) => { setEditingEdge(null); if (refocus) pendingFocus.current = id; }} />
       {showEdgeToolbar && (
@@ -754,7 +913,11 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
 
   const selRect = selNode && rectOf(selNode);
   const pct = Math.round(view.s * 100);
-  const showToolbar = selNode && selRect && editing !== selNode.id && !drag && !resize;
+  const showHint = canEdit && projectBoard && !overview && !hintGone && edges.filter((e) => e.label === WAITS_FOR || e.label === SUBTASK).length < 2;
+  const handleName = handleNode?.type === 'card' ? titleOf(store.get().cards.get(String(handleNode.value.id))?.content ?? '') : '';
+  // A frame's name strip runs along its top edge, so its handles sit just outside it (a press on the strip must move the frame).
+  const out = handleNode?.type === 'container' ? 10 / view.s : 0;
+  const showToolbar = selNode && selRect && editing !== selNode.id && !drag && !resize && !(overview && pressed);
 
   return (
     <section ref={sectionRef} className={`board-canvas${tool ? ' is-placing' : ''}`} aria-label="Board">
@@ -766,19 +929,20 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
             onContextMenu={onContextMenu} onAuxClick={(e) => e.preventDefault()}
             onPointerOver={onPointerOver} onPointerLeave={() => { setHover(null); setCursor(null); }}
             onKeyDown={onCanvasKey} onFocus={onNodeFocus}>
-            <div className="board-layer" style={{ transform: `scale(${view.s}) translate(${view.x}px, ${view.y}px)`, ['--canvas-scale' as string]: view.s }}>
+            <div className={`board-layer${overview ? ' is-macro' : ''}`} style={{ transform: `scale(${view.s}) translate(${view.x}px, ${view.y}px)`, ['--canvas-scale' as string]: view.s }}>
               {marquee && <div className="bmarquee" style={{ transform: `translate(${marquee.x}px, ${marquee.y}px)`, width: marquee.w, height: marquee.h }} />}
-              {ordered.map((n, i) => (
+              {shown.map((n, i) => (
                 <Fragment key={n.id}>
                   {i === leaves && edgeLayer}
                   <NodeView node={n} preview={previewOf(n)} selected={n.id === selected || multi.has(n.id)} editing={n.id === editing} onGrow={onGrow}
+                    tasks={overview?.counts.get(n.id)}
                     onCommit={commit} onEndEdit={endEdit} onSetup={canEdit ? setupFilter : undefined} />
                   {/* Right after its node in the DOM, so Tab goes from the node to its actions. Counter-scaled to stay readable. */}
                   {showToolbar && n.id === selNode.id && (
                     <div className="btoolbar-anchor"
                       style={{ transform: `translate(${selRect.x + selRect.w / 2}px, ${selRect.y}px) scale(${1 / view.s})` }}>
                       <NodeToolbar key={selNode.id} node={selNode} canEdit={canEdit}
-                        targets={ordered.filter((o) => o.id !== selNode.id)}
+                        targets={shown.filter((o) => o.id !== selNode.id)}
                         onConnect={(targetId) => {
                           const to = byId.get(targetId);
                           if (!to) return;
@@ -786,7 +950,7 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
                           connect({ nodeId: selNode.id, side: nearestSide(selNode.pos, centre(to.pos)) },
                             { nodeId: to.id, side: nearestSide(to.pos, centre(selNode.pos)) });
                         }}
-                        onEdit={() => setEditing(selNode.id)}
+                        onEdit={frozen(selNode) ? undefined : () => setEditing(selNode.id)}
                         onOpen={() => openCard(selNode.id)}
                         smart={selNode.type === 'filter' ? {
                           display: {
@@ -799,13 +963,15 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
                         } : undefined}
                         onColor={(c) => board.setColor(selNode.id, c)}
                         onFocus={() => focusRect(selNode.pos)}
-                        onDelete={() => remove(selNode.id)}
+                        onDelete={frozen(selNode) ? undefined : () => remove(selNode.id)}
                         onClose={() => { quietFocus.current = true; pendingFocus.current = selNode.id; setSelected(null); }} />
                     </div>
                   )}
                 </Fragment>
               ))}
               {leaves < 0 && edgeLayer}
+              {/* On a project board the lines run under the cards, but their labels are drawn above every node. */}
+              {projectBoard && <EdgeLabels edges={overview?.edges ?? edges} byId={byId} rectOf={rectOf} editing={editingEdge} selected={selectedEdge} />}
               <PresenceLayer awareness={awareness} rects={peerRects} scale={view.s} />
               {/* Resize hit areas sit above every node, so a container's children never cover its corners. */}
               {canEdit && selNode && selRect && editing !== selNode.id && handlesFor(selNode.type).length > 0 && (
@@ -816,18 +982,24 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
               {canEdit && handleNode && handleRect && (
                 <div className="bconns" data-conn={handleNode.id} style={{ transform: `translate(${handleRect.x}px, ${handleRect.y}px)` }}>
                   {SIDES.map((side) => (
-                    <button key={side} type="button" className="bconn" tabIndex={-1} aria-label={`Connect from ${side}`}
+                    <button key={side} type="button" className="bconn" tabIndex={-1} aria-label={handleName ? `Connect from ${side} of ${handleName}` : `Connect from ${side}`}
                       data-connect-side={side} data-connect-node={handleNode.id}
                       style={{
                         left: side === 'left' ? 0 : side === 'right' ? handleRect.w : handleRect.w / 2,
                         top: side === 'top' ? 0 : side === 'bottom' ? handleRect.h : handleRect.h / 2,
-                        transform: `translate(-50%, -50%) scale(${1 / view.s})`,
+                        transform: `translate(${side === 'left' ? -out : side === 'right' ? out : 0}px, ${side === 'top' ? -out : side === 'bottom' ? out : 0}px) translate(-50%, -50%) scale(${1 / view.s})`,
                       }} />
                   ))}
                 </div>
               )}
             </div>
           </div>
+          {showHint && (
+            <div className="board-hint" role="note" title="From the keyboard: focus a task, Tab to its toolbar and choose Connect to…">
+              <span>Drag from a task's handle to another task to connect them.</span>
+              <button type="button" className="icon-btn" aria-label="Dismiss hint" onClick={() => { writeHintGone(); setHintGone(true); }}><Icon name="close" size={14} /></button>
+            </div>
+          )}
           {menu && canEdit && (
             <div className="menu board-menu" role="menu" aria-label="Add to the board" style={{ left: menu.left, top: menu.top }}>
               {TOOLS.map((t) => (
@@ -846,14 +1018,14 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
                   <Icon name={t.icon} />
                 </button>
               ))}
-              <button type="button" className="icon-btn" aria-label="Project tree" title="Add a project as a tree, or update the one here" onClick={() => setTreeAsk(true)}>
+              <button type="button" className="icon-btn" aria-label="Add project" title="Lay a project out on this board as frames" onClick={() => setTreeAsk(true)}>
                 <Icon name="hero" />
               </button>
               <span className="board-rail-sep" />
               <button type="button" className="icon-btn" aria-label="Undo" title="Undo (Ctrl+Z)" aria-keyshortcuts="Control+Z"
-                disabled={!board.canUndo} onClick={board.undo}><Icon name="undo" /></button>
+                disabled={!board.canUndo} onClick={() => undoRedo(false)}><Icon name="undo" /></button>
               <button type="button" className="icon-btn" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" aria-keyshortcuts="Control+Shift+Z"
-                disabled={!board.canRedo} onClick={board.redo}><Icon name="redo" /></button>
+                disabled={!board.canRedo} onClick={() => undoRedo(true)}><Icon name="redo" /></button>
             </div>
           )}
           {panelCard && (
@@ -872,16 +1044,18 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
               onAdd={(cardId) => addCardBeside(filterNode, cardId)}
               onClose={closeSetup} />
           )}
-          {treeAsk && <ProjectTreeDialog onClose={() => setTreeAsk(false)} onPick={addProjectTree} />}
+          {treeAsk && <AddProjectDialog onClose={() => setTreeAsk(false)} onPick={addProject} />}
           {linkAsk && (() => {
             const s = store.get(), ta = titleOf(s.cards.get(linkAsk.a)?.content ?? ''), tb = titleOf(s.cards.get(linkAsk.b)?.content ?? '');
             return (
               <Dialog title="What does this line mean?" onClose={() => setLinkAsk(null)} actions={<>
                 <button type="button" className="btn btn-ghost" onClick={() => setLinkAsk(null)}>Only a line</button>
-                {settings.dependenciesEnabled && <button type="button" className="btn" onClick={() => meanLink('dep')}>It waits for it</button>}
+                {waitsChoice === 'on' && <button type="button" className="btn" onClick={() => meanLink('dep')}>It waits for it</button>}
+                {waitsChoice === 'turn-on' && <button type="button" className="btn" onClick={() => meanLink('dep', true)}>It waits for it (turns on dependencies)</button>}
                 <button type="button" className="btn" onClick={() => meanLink('sub')}>It is its subtask</button>
               </>}>
                 <p><strong>{ta}</strong> → <strong>{tb}</strong></p>
+                {waitsChoice === 'ask-admin' && <p className="hint">{ASK_ADMIN}</p>}
                 <p className="hint">Waiting and subtasks are saved on the tasks themselves, so they show everywhere, not only on this board.</p>
               </Dialog>
             );
@@ -912,22 +1086,24 @@ export function Canvas({ doc, canEdit, host, awareness = null }: { doc: Y.Doc | 
   );
 }
 
-/** Picks the project to lay out as a tree. */
-function ProjectTreeDialog({ onClose, onPick }: { onClose: () => void; onPick: (projectId: string) => void }) {
+/** Picks the project to lay out as frames; says why when the board already shows another project. */
+function AddProjectDialog({ onClose, onPick }: { onClose: () => void; onPick: (projectId: string) => string | null }) {
   const projects = useStore((s) => [...s.projects.values()].filter((p) => !p.isArchived && projectVisible(s, p.id)).sort((a, b) => a.seq - b.seq));
   const [id, setId] = useState(projects[0]?.id ?? '');
+  const [error, setError] = useState<string | null>(null);
   return (
-    <Dialog title="Project tree" onClose={onClose} onSubmit={() => onPick(id)} actions={<>
+    <Dialog title="Add project" onClose={onClose} onSubmit={() => setError(onPick(id))} actions={<>
       <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
       <button type="submit" className="btn btn-primary" disabled={!id}>Add to the board</button>
     </>}>
       <label className="field">
         <span>Project</span>
-        <select value={id} onChange={(e) => setId(e.target.value)}>
+        <select value={id} onChange={(e) => { setId(e.target.value); setError(null); }}>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
       </label>
-      <p className="hint">Adds the project, its areas, lists and open tasks, joined by lines. Run it again later and only what is new is added; what you moved stays where you put it.</p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <p className="hint">Lays the project out as frames: each area a frame, each list a frame inside it, with its open tasks. A board shows one project.</p>
     </Dialog>
   );
 }

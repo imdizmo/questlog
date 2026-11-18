@@ -3,6 +3,9 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Url;
 
@@ -36,11 +39,13 @@ fn bindable(port: u16) -> bool {
 /// Default port of a Questlog team server.
 const TEAM_DEFAULT_PORT: u16 = 8780;
 
-/// The `desktop.json` choices: the local server's port and where the window connects (`"local"` or a server URL).
+/// The `desktop.json` choices: the local server's port, where the window connects (`"local"` or a server URL), and
+/// the server URL that "Use this computer" replaced (for "Use the team server" to go back to).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct DesktopConfig {
     pub port: Option<u16>,
     pub server: Option<String>,
+    pub last_server: Option<String>,
 }
 
 impl DesktopConfig {
@@ -55,8 +60,8 @@ impl DesktopConfig {
             return Some(DesktopConfig::default());
         };
         let port = v.get("port").and_then(|p| p.as_u64()).and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0);
-        let server = v.get("server").and_then(|s| s.as_str()).map(str::to_string);
-        Some(DesktopConfig { port, server })
+        let text = |k: &str| v.get(k).and_then(|s| s.as_str()).map(str::to_string);
+        Some(DesktopConfig { port, server: text("server"), last_server: text("last_server") })
     }
 
     pub fn save(&self, data: &Path) -> io::Result<()> {
@@ -66,6 +71,9 @@ impl DesktopConfig {
         }
         if let Some(s) = &self.server {
             map.insert("server".into(), s.clone().into());
+        }
+        if let Some(s) = &self.last_server {
+            map.insert("last_server".into(), s.clone().into());
         }
         let mut text = serde_json::to_string_pretty(&serde_json::Value::Object(map)).map_err(io::Error::other)?;
         text.push('\n');
@@ -114,12 +122,24 @@ pub fn address_url(value: &str) -> Option<Url> {
     saved_url(value).or_else(|| team_url(value))
 }
 
+/// Serialises this process's read-modify-write of `desktop.json` (the supervisor and the Workspace menu).
+static CONFIG_WRITE: Mutex<()> = Mutex::new(());
+
+/// Loads `desktop.json`, lets `change` make the new config from it (`None`: no file yet), and saves the result.
+pub fn update_config(
+    data: &Path,
+    change: impl FnOnce(Option<DesktopConfig>) -> DesktopConfig,
+) -> io::Result<DesktopConfig> {
+    let _guard = CONFIG_WRITE.lock().unwrap_or_else(|p| p.into_inner());
+    fs::create_dir_all(data)?;
+    let cfg = change(DesktopConfig::load(data));
+    cfg.save(data)?;
+    Ok(cfg)
+}
+
 /// Saves where the window connects (`"local"` or a server URL) in `desktop.json`, keeping the saved port.
 pub fn save_server(data: &Path, value: &str) -> io::Result<()> {
-    fs::create_dir_all(data)?;
-    let mut cfg = DesktopConfig::load(data).unwrap_or_default();
-    cfg.server = Some(value.to_string());
-    cfg.save(data)
+    update_config(data, |cfg| DesktopConfig { server: Some(value.to_string()), ..cfg.unwrap_or_default() }).map(|_| ())
 }
 
 /// Where the window connects.
@@ -128,6 +148,17 @@ pub enum Target {
     Local,
     Server(Url),
     Ask,
+}
+
+impl Target {
+    /// For desktop.log: `Local`, `Ask` or `Server <url>`.
+    pub fn log_text(&self) -> String {
+        match self {
+            Target::Local => "Local".to_string(),
+            Target::Ask => "Ask".to_string(),
+            Target::Server(url) => format!("Server {url}"),
+        }
+    }
 }
 
 /// A saved choice wins over `JATIFY_TEAM`; with neither and no `desktop.json` at all the user is asked.
@@ -150,21 +181,81 @@ pub fn resolve_target(cfg: Option<&DesktopConfig>, team: Option<&str>) -> Target
     }
 }
 
+/// The two places to work that the Workspace menu switches between.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mode {
+    Team,
+    Local,
+}
+
+/// The team server the menu's "Use the team server" goes to: a saved server URL, else the one "Use this computer"
+/// replaced (`last_server`), else `JATIFY_TEAM`.
+pub fn team_address(cfg: Option<&DesktopConfig>, team: Option<&str>) -> Option<Url> {
+    let saved = |f: fn(&DesktopConfig) -> Option<&str>| cfg.and_then(f).and_then(saved_url);
+    saved(|c| c.server.as_deref()).or_else(|| saved(|c| c.last_server.as_deref())).or_else(|| team.and_then(team_url))
+}
+
+/// The `desktop.json` that makes the next start open `want`. The port is always kept.
+/// - This computer: `"server": "local"`; a saved server URL moves to `last_server`.
+/// - The team server: a saved server URL stays; otherwise `last_server` comes back (a typed server still wins over
+///   `JATIFY_TEAM`), else the saved value is removed so `JATIFY_TEAM` applies. Without any team address the config
+///   is left as it is.
+pub fn switch_choice(cfg: Option<&DesktopConfig>, team: Option<&str>, want: Mode) -> DesktopConfig {
+    let mut next = cfg.cloned().unwrap_or_default();
+    let server_is_url = next.server.as_deref().is_some_and(|s| saved_url(s).is_some());
+    match want {
+        Mode::Local => {
+            if server_is_url {
+                next.last_server = next.server.take();
+            }
+            next.server = Some("local".to_string());
+        }
+        Mode::Team if server_is_url => {}
+        Mode::Team => {
+            if next.last_server.as_deref().is_some_and(|s| saved_url(s).is_some()) {
+                next.server = next.last_server.take();
+            } else if team.and_then(team_url).is_some() {
+                next.server = None;
+            }
+        }
+    }
+    next
+}
+
+/// The window title for where the app works: the team server's host, this computer, or plain `Questlog` while it
+/// asks.
+pub fn title_for(target: &Target) -> String {
+    match target {
+        Target::Server(url) => {
+            let host = url.host_str().unwrap_or("?");
+            match url.port().filter(|p| *p != TEAM_DEFAULT_PORT) {
+                Some(port) => format!("Questlog · Team server ({host}:{port})"),
+                None => format!("Questlog · Team server ({host})"),
+            }
+        }
+        Target::Local => "Questlog · This computer".to_string(),
+        Target::Ask => "Questlog".to_string(),
+    }
+}
+
 /// Saved port if still free, else 8790 if free, else an OS-assigned port. The choice is saved.
 pub fn choose_port(data: &Path) -> io::Result<u16> {
     choose_port_from(data, PREFERRED_PORT)
 }
 
 fn choose_port_from(data: &Path, preferred: u16) -> io::Result<u16> {
-    fs::create_dir_all(data)?;
-    let mut cfg = DesktopConfig::load(data).unwrap_or_default();
-    let port = match cfg.port.filter(|p| bindable(*p)) {
-        Some(p) => p,
-        None if bindable(preferred) => preferred,
-        None => TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port(),
-    };
-    cfg.port = Some(port);
-    cfg.save(data)?;
+    let mut chosen = Ok(0);
+    let cfg = update_config(data, |cfg| {
+        let cfg = cfg.unwrap_or_default();
+        chosen = match cfg.port.filter(|p| bindable(*p)) {
+            Some(p) => Ok(p),
+            None if bindable(preferred) => Ok(preferred),
+            None => TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map(|a| a.port()),
+        };
+        DesktopConfig { port: chosen.as_ref().ok().copied().or(cfg.port), ..cfg }
+    })?;
+    let port = chosen?;
+    debug_assert_eq!(cfg.port, Some(port));
     Ok(port)
 }
 
@@ -242,6 +333,158 @@ impl RotatingLog {
     pub fn tail(&self, n: usize) -> Vec<String> {
         self.tail.iter().skip(self.tail.len().saturating_sub(n)).cloned().collect()
     }
+}
+
+/// Name of the marker file in the data folder that exists while Questlog runs. Still there at the next start
+/// means the last run did not exit through its normal shutdown.
+pub const RUNNING_MARKER: &str = "running";
+const DESKTOP_LOG_MAX: u64 = 5 * 1024 * 1024;
+
+/// Writes a fresh running marker. True when one was already there (the last run ended badly).
+pub fn mark_running(data: &Path) -> io::Result<bool> {
+    fs::create_dir_all(data)?;
+    let marker = data.join(RUNNING_MARKER);
+    let was = marker.exists();
+    fs::write(&marker, format!("{} pid {}\n", utc_stamp(SystemTime::now()), std::process::id()))?;
+    Ok(was)
+}
+
+/// Removes the running marker (a missing one is fine).
+pub fn clear_running(data: &Path) {
+    let _ = fs::remove_file(data.join(RUNNING_MARKER));
+}
+
+/// The data folder whose marker this process wrote; `None` until `mark_running_owned` succeeds.
+static MARKED: OnceLock<PathBuf> = OnceLock::new();
+/// Set by the first `exit_clean`, so the marker is handled and "exit" logged only once.
+static EXITED: AtomicBool = AtomicBool::new(false);
+/// Whether the previous run ended badly, as seen by `mark_running_owned`.
+static LAST_RUN_ENDED_BADLY: AtomicBool = AtomicBool::new(false);
+/// Set when this run crashed (a panic, or the local server dying) even though the window may still close normally.
+static CRASHED: AtomicBool = AtomicBool::new(false);
+
+/// `mark_running` for the process that holds the data-folder lock; remembers the folder so `exit_clean` clears it,
+/// and the answer for `last_run_ended_badly`. Called at the start of each run of the supervisor (a Workspace menu
+/// switch starts a new one in the same process): each run then exits, and counts a crash, on its own.
+pub fn mark_running_owned(data: &Path) -> bool {
+    EXITED.store(false, Ordering::SeqCst);
+    CRASHED.store(false, Ordering::SeqCst);
+    let was = match mark_running(data) {
+        Ok(w) => w,
+        Err(e) => {
+            dlog(&format!("could not write the running marker: {e}"));
+            // No marker read this run: not "ended badly", whatever an earlier run in this process saw.
+            LAST_RUN_ENDED_BADLY.store(false, Ordering::SeqCst);
+            return false;
+        }
+    };
+    let _ = MARKED.set(data.to_path_buf());
+    LAST_RUN_ENDED_BADLY.store(was, Ordering::SeqCst);
+    was
+}
+
+/// True when the marker was already there at start: the last run crashed or was killed.
+pub fn last_run_ended_badly() -> bool {
+    LAST_RUN_ENDED_BADLY.load(Ordering::SeqCst)
+}
+
+/// Records that this run crashed, so the normal exit that follows (the user closing the window) keeps the marker
+/// and the next start offers a crash report.
+pub fn note_crash(reason: &str) {
+    CRASHED.store(true, Ordering::SeqCst);
+    dlog(&format!("crash: {reason}"));
+}
+
+/// Whether a normal exit removes the marker: not after a crash noted in this run.
+fn should_clear_marker(crashed: bool) -> bool {
+    !crashed
+}
+
+/// The normal end of the run: clears the marker this process wrote, unless this run crashed. Once only; a process
+/// that never took the lock leaves the other one's marker alone.
+pub fn exit_clean() {
+    if let Some(data) = MARKED.get().filter(|_| !EXITED.swap(true, Ordering::SeqCst)) {
+        if should_clear_marker(CRASHED.load(Ordering::SeqCst)) {
+            clear_running(data);
+            dlog("exit");
+        } else {
+            dlog("exit after a crash");
+        }
+    }
+}
+
+static DESKTOP_LOG: OnceLock<Mutex<RotatingLog>> = OnceLock::new();
+
+/// Opens `logs/desktop.log` for `dlog`. Later calls and failures leave things as they are.
+pub fn init_desktop_log(data: &Path) {
+    if let Ok(log) = RotatingLog::open(&data.join("logs").join("desktop.log"), DESKTOP_LOG_MAX) {
+        let _ = DESKTOP_LOG.set(Mutex::new(log));
+    }
+}
+
+/// One line in desktop.log with a UTC timestamp. Never panics; does nothing before `init_desktop_log`.
+pub fn dlog(line: &str) {
+    if let Some(log) = DESKTOP_LOG.get() {
+        let mut log = log.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = log.write_line(&format!("{} {line}", utc_stamp(SystemTime::now())));
+    }
+}
+
+/// `dlog` that gives up instead of waiting for the lock: for the panic hook, which may run on a thread that
+/// already holds the log (a panic inside a write).
+fn dlog_try(line: &str) {
+    if let Some(log) = DESKTOP_LOG.get() {
+        let guard = match log.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut log) = guard {
+            let _ = log.write_line(&format!("{} {line}", utc_stamp(SystemTime::now())));
+        }
+    }
+}
+
+/// `2026-11-17T09:05:03Z`.
+pub fn utc_stamp(t: SystemTime) -> String {
+    let secs = t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// What the panic hook writes: `panic: <message> at <location>` and the backtrace.
+pub fn panic_text(message: &str, location: &str, backtrace: &str) -> String {
+    format!("panic: {message} at {location}\n{backtrace}")
+}
+
+/// Writes panics (message, location, backtrace) to desktop.log, then runs the previous hook. Notes the crash, so
+/// the marker stays even when the window is closed normally afterwards.
+pub fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(non-text payload)".into());
+        let location = info.location().map(|l| l.to_string()).unwrap_or_else(|| "unknown location".into());
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        // Not `note_crash`: the hook may run on a thread that holds the log, so it only tries to write.
+        CRASHED.store(true, Ordering::SeqCst);
+        dlog_try(&panic_text(&message, &location, &bt));
+        prev(info);
+    }));
 }
 
 #[cfg(test)]
@@ -427,12 +670,12 @@ mod tests {
     fn save_server_keeps_port() {
         let d = Scratch::new("saveserver");
         save_server(d.path(), "local").unwrap();
-        assert_eq!(DesktopConfig::load(d.path()), Some(DesktopConfig { port: None, server: Some("local".into()) }));
-        DesktopConfig { port: Some(8791), server: None }.save(d.path()).unwrap();
+        assert_eq!(DesktopConfig::load(d.path()), Some(cfg(None, Some("local"))));
+        DesktopConfig { port: Some(8791), server: None, last_server: None }.save(d.path()).unwrap();
         save_server(d.path(), "http://nas:8780/").unwrap();
         assert_eq!(
             DesktopConfig::load(d.path()),
-            Some(DesktopConfig { port: Some(8791), server: Some("http://nas:8780/".into()) })
+            Some(DesktopConfig { port: Some(8791), server: Some("http://nas:8780/".into()), last_server: None })
         );
         // A local start afterwards keeps the saved server.
         let port = choose_port(d.path()).unwrap();
@@ -445,8 +688,22 @@ mod tests {
         let d = Scratch::new("existing");
         fs::write(d.path().join("desktop.json"), "{\"port\": 8790}").unwrap();
         let cfg = DesktopConfig::load(d.path());
-        assert_eq!(cfg, Some(DesktopConfig { port: Some(8790), server: None }));
+        assert_eq!(cfg, Some(DesktopConfig { port: Some(8790), server: None, last_server: None }));
         assert_eq!(resolve_target(cfg.as_ref(), None), Target::Local);
+    }
+
+    #[test]
+    fn last_server_round_trips_through_the_file() {
+        let d = Scratch::new("lastserver");
+        let mut c = cfg(Some(8791), Some("local"));
+        c.last_server = Some("http://typed:9/".into());
+        c.save(d.path()).unwrap();
+        assert_eq!(DesktopConfig::load(d.path()), Some(c.clone()));
+        let text = fs::read_to_string(d.path().join("desktop.json")).unwrap();
+        assert!(text.contains("\"last_server\": \"http://typed:9/\""), "{text}");
+        // A start in local mode keeps it.
+        choose_port(d.path()).unwrap();
+        assert_eq!(DesktopConfig::load(d.path()).unwrap().last_server.as_deref(), Some("http://typed:9/"));
     }
 
     #[test]
@@ -462,11 +719,11 @@ mod tests {
         let d = Scratch::new("saveserver");
         let want = free_port();
         fs::write(d.path().join("desktop.json"), format!("{{\"port\": {want}}}")).unwrap();
-        let mut cfg = DesktopConfig::load(d.path()).unwrap();
-        cfg.server = Some("http://nas:8780/".into());
-        cfg.save(d.path()).unwrap();
+        let mut saved = DesktopConfig::load(d.path()).unwrap();
+        saved.server = Some("http://nas:8780/".into());
+        saved.save(d.path()).unwrap();
         let back = DesktopConfig::load(d.path()).unwrap();
-        assert_eq!(back, DesktopConfig { port: Some(want), server: Some("http://nas:8780/".into()) });
+        assert_eq!(back, cfg(Some(want), Some("http://nas:8780/")));
         assert_eq!(choose_port_from(d.path(), free_port()).unwrap(), want);
         assert_eq!(DesktopConfig::load(d.path()).unwrap().server.as_deref(), Some("http://nas:8780/"));
     }
@@ -491,15 +748,15 @@ mod tests {
 
     #[test]
     fn saved_local_beats_team() {
-        let cfg = DesktopConfig { port: None, server: Some("local".into()) };
+        let cfg = DesktopConfig { port: None, server: Some("local".into()), last_server: None };
         assert_eq!(resolve_target(Some(&cfg), Some("nas")), Target::Local);
     }
 
     #[test]
     fn saved_url_beats_team() {
-        let cfg = DesktopConfig { port: Some(8790), server: Some("http://other:9/x?y#z".into()) };
+        let cfg = DesktopConfig { port: Some(8790), server: Some("http://other:9/x?y#z".into()), last_server: None };
         assert_eq!(resolve_target(Some(&cfg), Some("nas")), Target::Server(url("http://other:9/")));
-        let bad = DesktopConfig { port: None, server: Some("ftp://x".into()) };
+        let bad = DesktopConfig { port: None, server: Some("ftp://x".into()), last_server: None };
         assert_eq!(resolve_target(Some(&bad), None), Target::Local);
     }
 
@@ -518,5 +775,148 @@ mod tests {
         for v in ["", "  ", "http://x", "a b", "host:99999", "host/path", "host:", "u@host", "host?x", ":", "[::1"] {
             assert_eq!(team_url(v), None, "{v:?}");
         }
+    }
+
+    #[test]
+    fn marker_false_first_then_true() {
+        let d = Scratch::new("marker");
+        assert!(!mark_running(d.path()).unwrap());
+        assert!(mark_running(d.path()).unwrap());
+    }
+
+    #[test]
+    fn clean_exit_leaves_no_marker() {
+        let d = Scratch::new("marker-clean");
+        mark_running(d.path()).unwrap();
+        clear_running(d.path());
+        assert!(!d.path().join(RUNNING_MARKER).exists());
+        assert!(!mark_running(d.path()).unwrap());
+        clear_running(d.path());
+        clear_running(d.path()); // already gone
+    }
+
+    #[test]
+    fn marker_is_kept_after_a_crash() {
+        assert!(should_clear_marker(false));
+        assert!(!should_clear_marker(true));
+    }
+
+    #[test]
+    fn panic_text_has_message_and_location() {
+        let t = panic_text("boom", "src/main.rs:12:5", "bt-frames");
+        assert!(t.starts_with("panic: boom at src/main.rs:12:5"), "{t}");
+        assert!(t.contains("bt-frames"));
+    }
+
+    #[test]
+    fn dlog_try_before_init_is_a_noop() {
+        dlog_try("nothing");
+    }
+
+    #[test]
+    fn dlog_before_init_is_a_noop() {
+        dlog("nothing"); // must not panic
+    }
+
+    #[test]
+    fn utc_stamp_formats() {
+        assert_eq!(utc_stamp(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_stamp(UNIX_EPOCH + std::time::Duration::from_secs(1_784_278_503)), "2026-07-17T08:55:03Z");
+        assert_eq!(utc_stamp(UNIX_EPOCH + std::time::Duration::from_secs(951_782_400)), "2000-02-29T00:00:00Z");
+    }
+
+    fn cfg(port: Option<u16>, server: Option<&str>) -> DesktopConfig {
+        DesktopConfig { port, server: server.map(str::to_string), last_server: None }
+    }
+
+    #[test]
+    fn switch_choice_for_each_start_state() {
+        let nas = Some("nas");
+        let starts: [Option<DesktopConfig>; 5] = [
+            None,                                           // fresh install
+            Some(cfg(Some(8791), None)),                    // nothing saved: JATIFY_TEAM or local
+            Some(cfg(Some(8791), Some("local"))),           // saved local
+            Some(cfg(Some(8791), Some("http://other:9/"))), // saved server
+            Some(cfg(None, Some("ftp://bad"))),             // unusable saved value
+        ];
+        for start in &starts {
+            for team in [nas, None] {
+                let local = switch_choice(start.as_ref(), team, Mode::Local);
+                assert_eq!(local.server.as_deref(), Some("local"), "{start:?} {team:?}");
+                assert_eq!(local.port, start.as_ref().and_then(|c| c.port), "port kept");
+                assert_eq!(resolve_target(Some(&local), team), Target::Local);
+            }
+        }
+        // To the team server: JATIFY_TEAM applies unless a server URL is saved, which is kept.
+        assert_eq!(switch_choice(None, nas, Mode::Team), cfg(None, None));
+        assert_eq!(switch_choice(starts[1].as_ref(), nas, Mode::Team), cfg(Some(8791), None));
+        assert_eq!(switch_choice(starts[2].as_ref(), nas, Mode::Team), cfg(Some(8791), None));
+        assert_eq!(switch_choice(starts[3].as_ref(), nas, Mode::Team), cfg(Some(8791), Some("http://other:9/")));
+        assert_eq!(switch_choice(starts[3].as_ref(), None, Mode::Team), cfg(Some(8791), Some("http://other:9/")));
+        assert_eq!(switch_choice(starts[4].as_ref(), nas, Mode::Team), cfg(None, None));
+        for start in &starts {
+            let team = switch_choice(start.as_ref(), nas, Mode::Team);
+            assert!(matches!(resolve_target(Some(&team), nas), Target::Server(_)), "{start:?}");
+        }
+        let back = switch_choice(starts[2].as_ref(), nas, Mode::Team);
+        assert_eq!(resolve_target(Some(&back), nas), Target::Server(url("http://nas:8780/")));
+        // A typed server goes to last_server on the way to this computer, and comes back (over JATIFY_TEAM).
+        let mut moved = cfg(Some(8791), Some("local"));
+        moved.last_server = Some("http://other:9/".into());
+        for team in [nas, None] {
+            let local = switch_choice(starts[3].as_ref(), team, Mode::Local);
+            assert_eq!(local, moved, "{team:?}");
+            assert_eq!(team_address(Some(&local), team), Some(url("http://other:9/")));
+            let back = switch_choice(Some(&local), team, Mode::Team);
+            assert_eq!(back, cfg(Some(8791), Some("http://other:9/")), "{team:?}");
+            assert_eq!(resolve_target(Some(&back), team), Target::Server(url("http://other:9/")));
+        }
+        // A saved local or JATIFY_TEAM server is not remembered: there is nothing to remember.
+        assert_eq!(switch_choice(starts[1].as_ref(), nas, Mode::Local).last_server, None);
+        // No team address at all: nothing to switch to, the config stays.
+        for start in &starts[..3] {
+            assert_eq!(switch_choice(start.as_ref(), None, Mode::Team), start.clone().unwrap_or_default());
+        }
+    }
+
+    #[test]
+    fn team_address_is_saved_url_or_team() {
+        assert_eq!(team_address(None, None), None);
+        assert_eq!(team_address(Some(&cfg(None, Some("local"))), None), None);
+        assert_eq!(team_address(Some(&cfg(None, Some("local"))), Some("nas")), Some(url("http://nas:8780/")));
+        assert_eq!(team_address(Some(&cfg(None, Some("http://other:9/x"))), Some("nas")), Some(url("http://other:9/")));
+        assert_eq!(team_address(None, Some("bad value")), None);
+        let mut c = cfg(None, Some("local"));
+        c.last_server = Some("http://typed:9/".into());
+        assert_eq!(team_address(Some(&c), Some("nas")), Some(url("http://typed:9/")), "before JATIFY_TEAM");
+    }
+
+    #[test]
+    fn titles_say_where_you_work() {
+        assert_eq!(title_for(&Target::Server(url("http://nas:8780/"))), "Questlog · Team server (nas)");
+        let t = |u: &str| title_for(&Target::Server(url(u)));
+        assert_eq!(t("http://[fd7a::5]:9000/"), "Questlog · Team server ([fd7a::5]:9000)");
+        assert_eq!(t("http://127.0.0.1:18781/"), "Questlog · Team server (127.0.0.1:18781)");
+        assert_eq!(t("https://team.example.com/"), "Questlog · Team server (team.example.com)");
+        assert_eq!(title_for(&Target::Local), "Questlog · This computer");
+        assert_eq!(title_for(&Target::Ask), "Questlog");
+    }
+
+    #[test]
+    fn update_config_keeps_what_it_is_not_told_to_change() {
+        let d = Scratch::new("update");
+        let saved = update_config(d.path(), |c| switch_choice(c.as_ref(), Some("nas"), Mode::Local)).unwrap();
+        assert_eq!(saved, cfg(None, Some("local")));
+        let port = choose_port_from(d.path(), free_port()).unwrap();
+        assert_eq!(DesktopConfig::load(d.path()), Some(cfg(Some(port), Some("local"))));
+        update_config(d.path(), |c| switch_choice(c.as_ref(), Some("nas"), Mode::Team)).unwrap();
+        assert_eq!(DesktopConfig::load(d.path()), Some(cfg(Some(port), None)));
+    }
+
+    #[test]
+    fn target_log_text_is_plain() {
+        assert_eq!(Target::Local.log_text(), "Local");
+        assert_eq!(Target::Ask.log_text(), "Ask");
+        assert_eq!(Target::Server("http://127.0.0.1:8796/".parse().unwrap()).log_text(), "Server http://127.0.0.1:8796/");
     }
 }

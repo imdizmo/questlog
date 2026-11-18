@@ -631,6 +631,45 @@ h3.sub { font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform
 .focus-inner .field { grid-template-rows: minmax(0, 1fr); }
 .focus-textarea { height: 100%; resize: none; font-size: 17px; line-height: 1.7; padding: 20px 24px; }
 
+/* ---------- lore editor (CodeMirror, marks hidden away from the caret) ---------- */
+.lore-editor .md-editor-bar { flex-wrap: wrap; }
+.lore-toolbar { display: flex; flex-wrap: wrap; gap: 2px; }
+.lore-editor .cm-editor {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; color: #e6e6ea;
+}
+.lore-editor .cm-editor.cm-focused { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.lore-editor .cm-editor .cm-scroller { font: inherit; line-height: 1.6; }
+.lore-editor .cm-editor .cm-content { padding: 10px 6px; min-height: calc(var(--lore-rows, 12) * 1.6em); caret-color: var(--text); }
+.lore-editor .cm-editor .cm-line { padding: 0 6px; }
+.lore-editor .cm-editor .cm-placeholder { color: var(--mute); }
+.lore-editor .field > span { cursor: default; }
+.lore-loading { min-height: 120px; padding: 10px 12px; }
+.lore-editor .cm-editor ::selection { background: rgba(236, 130, 25, .3); }
+/* Line 1 is the title, as on the card page; headings scale as in the reader. */
+.lore-editor .cm-line.lore-title { font-size: 26px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.3; color: var(--text); padding-bottom: 4px; }
+.lore-editor .cm-line.lore-h1, .lore-editor .cm-line.lore-h2, .lore-editor .cm-line.lore-h3 { font-weight: 700; line-height: 1.3; letter-spacing: -0.01em; color: var(--text); padding-top: .45em; padding-bottom: .15em; }
+.lore-editor .cm-line.lore-h1 { font-size: 22px; }
+.lore-editor .cm-line.lore-h2 { font-size: 19px; }
+.lore-editor .cm-line.lore-h3 { font-size: 16px; }
+.lore-editor .cm-line.lore-quote { border-left: 3px solid var(--line); padding-left: 12px; color: var(--dim); }
+.lore-bold { font-weight: 700; color: var(--text); }
+.lore-italic { font-style: italic; }
+.lore-code { font: 13px/1.5 ui-monospace, 'JetBrains Mono', monospace; background: var(--raised2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.lore-bullet { display: inline-block; width: 19px; margin-right: 6px; color: var(--dim); text-align: center; }
+.lore-check {
+  display: inline-grid; place-items: center; width: 15px; height: 15px; margin: 0 8px 0 2px; padding: 0; vertical-align: -2px;
+  border: 1.5px solid var(--dim); border-radius: 4px; background: transparent; cursor: pointer; color: var(--accent-ink);
+}
+.lore-check:hover { border-color: var(--accent); }
+.lore-check.is-checked { background: var(--accent); border-color: var(--accent); }
+.lore-check.is-checked::after { content: ''; width: 4px; height: 8px; border: solid currentColor; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
+.lore-chip { cursor: text; }
+.lore-image { display: inline-block; max-width: 100%; max-height: 320px; height: auto; border-radius: 8px; border: 1px solid var(--line); vertical-align: top; }
+.focus-inner .lore-focus, .focus-inner .lore-host { height: 100%; min-height: 0; }
+.focus-inner .lore-host .cm-editor { height: 100%; }
+.focus-inner .lore-host .cm-scroller { font-size: 17px; line-height: 1.7; }
+.focus-inner .lore-host .cm-content { padding: 20px 18px; }
+
 /* ---------- relations: sub cards, dependencies, attachments ---------- */
 .side-tabs .tabs { flex-wrap: wrap; }
 .side-tabs .tab { white-space: nowrap; }
@@ -1070,11 +1109,28 @@ body.has-selection main { padding-bottom: 120px; }
 .bedge.is-selected .bedge-line, .bedge:focus-visible .bedge-line { stroke-width: 4; }
 .bedge:focus-visible .bedge-line { stroke: var(--accent); }
 .bedge-label { fill: var(--text); font-size: 13px; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; pointer-events: auto; cursor: pointer; user-select: none; }
+/* The project overview (zoomed out below MACRO_BELOW): a list frame shows its name and tasks left, big enough to read
+   at the threshold (40px board = 16px on screen at 0.4) and never under 10px / 9px on screen further out; thick
+   accent arrows with a count join lists that wait on each other. Sizes are board units, so text stays in its frame. */
+.bnode.is-macro .bmacro { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 24px; overflow: hidden; background: color-mix(in srgb, var(--bc-fill) 80%, transparent); }
+.bnode.is-macro .bmacro-title { padding: 0; font-size: max(40px, calc(10px / var(--canvas-scale, 1))); font-weight: 700; line-height: 1.05; color: var(--text);
+  white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.bnode.is-macro .bmacro-left { font-size: max(28px, calc(9px / var(--canvas-scale, 1))); color: var(--dim); white-space: nowrap; }
+.board-layer.is-macro .bnode-container:not(.is-macro) > .bnode-frame > .bnode-label { font-size: 30px; line-height: 32px; padding: 4px 12px; color: var(--text); }
+.board-layer.is-macro .bnode.is-header { font-size: 30px; line-height: 40px; }
+.board-layer.is-macro .bnode.is-header .bnode-copy { font-size: inherit; line-height: inherit; padding-block: 0; white-space: nowrap; text-overflow: ellipsis; }
+.bmacro-line { fill: none; stroke: var(--accent); stroke-width: max(10px, calc(4px / var(--canvas-scale, 1))); stroke-linecap: round; }
+.bmacro-marker path { fill: var(--accent); }
+.bmacro-count { fill: var(--accent); font-size: max(40px, calc(14px / var(--canvas-scale, 1))); font-weight: 700; text-anchor: middle; dominant-baseline: central;
+  paint-order: stroke; stroke: var(--bg); stroke-width: max(12px, calc(5px / var(--canvas-scale, 1))); stroke-linejoin: round; user-select: none; }
+.bedge.is-waits .bedge-line { stroke-dasharray: 8 6; }
 .bedge-preview { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
 .bedge-edit { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 3; }
 .bedge-edit .bnode-input { position: absolute; width: 160px; height: 30px; padding: 4px 8px; transform: translate(-50%, -50%); }
 .bconns { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 3; }
 .bconn { position: absolute; width: 14px; height: 14px; padding: 0; border-radius: 50%; border: 2px solid var(--bg); background: var(--accent); cursor: crosshair; }
+.board-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 5; display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 12px; max-width: calc(100% - 120px); font-size: 13px; color: var(--dim); background: var(--panel, var(--bg)); border: 1px solid var(--line); border-radius: 999px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.15); }
+.bconn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .bconn:hover { background: var(--text); }
 .bconnect-list { flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; min-width: 180px; }
 .bconnect-list .bswatch-btn { white-space: nowrap; text-align: left; }

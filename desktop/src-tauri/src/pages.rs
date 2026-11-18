@@ -196,6 +196,124 @@ pub fn unreachable(address: &str, err: &str) -> String {
     )
 }
 
+/// The question asked after a run that ended badly, when a team server is set.
+pub fn crash_prompt() -> String {
+    document(
+        "Questlog",
+        &format!(
+            "<main>{ICON}<h1>Questlog closed unexpectedly. Send the report to the team?</h1>\
+             <p>The report holds Questlog's logs from this computer, the version and the operating system. \
+             It goes to your team's server.</p>\
+             <div class=\"row\"><a class=\"btn primary\" href=\"{SHELL}/crash-send\">Send</a>\
+             <a class=\"btn\" href=\"{SHELL}/crash-skip\">Don't send</a>\
+             <a class=\"btn\" href=\"{SHELL}/crash-view\">See what is sent</a></div></main>"
+        ),
+    )
+}
+
+/// Shown while the report is built and uploaded.
+pub fn crash_sending() -> String {
+    document(
+        "Questlog",
+        &format!("<div class=\"center\" role=\"status\">{ICON}<p>Sending…</p><div class=\"bar\"></div></div>"),
+    )
+}
+
+/// How much text the details page shows at most, across all files: their last parts.
+pub const DETAILS_SHOWN: usize = 400 * 1024;
+/// The largest details page, as a `data:` URL; WebView2 refuses data: URLs over about 2 MiB.
+pub const DETAILS_URL_MAX: usize = 1536 * 1024;
+
+fn size_text(n: usize) -> String {
+    if n < 1024 {
+        format!("{n} bytes")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// The report's files as text for the details page: each file under its name. Together they show at most `budget`
+/// bytes: each file gets a fair share (short files give their slack to longer ones) and keeps its newest lines.
+pub fn details_text(files: &[(String, Vec<u8>)], budget: usize) -> String {
+    let mut keep = vec![0usize; files.len()];
+    let mut order: Vec<usize> = (0..files.len()).collect();
+    order.sort_by_key(|&i| files[i].1.len());
+    let (mut left, mut count) = (budget, files.len());
+    for i in order {
+        keep[i] = (left / count).min(files[i].1.len());
+        left -= keep[i];
+        count -= 1;
+    }
+    let mut out = String::new();
+    for ((name, bytes), keep) in files.iter().zip(keep) {
+        let shown = if bytes.len() > keep {
+            let part = &bytes[bytes.len() - keep..];
+            let start = part.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1);
+            let _ = writeln!(out, "== {name} (last {} shown) ==", size_text(part.len() - start));
+            &part[start..]
+        } else {
+            let _ = writeln!(out, "== {name} ==");
+            &bytes[..]
+        };
+        out.push_str(&String::from_utf8_lossy(shown));
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// What the report holds: its files with their sizes and their text. All text is HTML-escaped.
+pub fn crash_details(files: &[(String, usize)], log_text: &str) -> String {
+    let mut list = String::from("<ul>");
+    for (name, size) in files {
+        let _ = write!(list, "<li><code>{}</code> {}</li>", escape(name), size_text(*size));
+    }
+    list.push_str("</ul>");
+    document(
+        "What is sent",
+        &format!(
+            "<main>{ICON}<h1>What is sent</h1><p>The report is a zip of these files:</p>{list}\
+             <pre>{}</pre>\
+             <div class=\"row\"><a class=\"btn primary\" href=\"{SHELL}/crash-back\">Back</a></div></main>",
+            escape(log_text)
+        ),
+    )
+}
+
+/// The details page for these report files, with as much of their text as keeps its `data:` URL under
+/// `DETAILS_URL_MAX` (escaping and percent-encoding can make text ten times larger).
+pub fn crash_details_for(files: &[(String, Vec<u8>)]) -> String {
+    let sizes: Vec<(String, usize)> = files.iter().map(|(n, b)| (n.clone(), b.len())).collect();
+    let mut budget = DETAILS_SHOWN;
+    loop {
+        let html = crash_details(&sizes, &details_text(files, budget));
+        if budget == 0 || data_url(&html).len() <= DETAILS_URL_MAX {
+            return html;
+        }
+        budget /= 2;
+    }
+}
+
+/// The outcome of sending the report; `Ok` holds the server's id for it, `Err` the reason it was not sent.
+pub fn crash_result(result: Result<String, String>) -> String {
+    let line = match result {
+        Ok(_) => "The report was sent.".to_string(),
+        Err(e) => format!("The report could not be sent: {e}"),
+    };
+    document(
+        "Questlog",
+        &format!(
+            "<main>{ICON}<h1>{}</h1>\
+             <div class=\"row\"><a class=\"btn primary\" href=\"{SHELL}/continue\">Continue</a></div></main>",
+            escape(&line)
+        ),
+    )
+}
+
 fn exit_text(code: Option<i32>) -> String {
     match code {
         Some(c) => format!("exit code {c}"),
@@ -281,6 +399,93 @@ mod tests {
         }
         assert!(html.contains("Use this computer") && html.contains("Change server") && html.contains("Retry"));
         assert!(!html.contains("<script"));
+    }
+
+    #[test]
+    fn crash_prompt_asks_with_three_actions() {
+        let html = crash_prompt();
+        assert!(html.contains("Questlog closed unexpectedly. Send the report to the team?"), "{html}");
+        for (action, label) in [("crash-send", "Send"), ("crash-skip", "Don't send"), ("crash-view", "See what is sent")] {
+            assert!(html.contains(&format!("href=\"http://questlog-shell.invalid/{action}\">{label}</a>")), "{action}: {html}");
+        }
+        assert!(!html.contains("<script"));
+    }
+
+    #[test]
+    fn crash_details_lists_files_and_escapes_text() {
+        let files = vec![("report.json".to_string(), 50), ("desktop.log".to_string(), 3 * 1024)];
+        let html = crash_details(&files, "<script>alert('x')</script> & \"q\"");
+        assert!(html.contains("<code>report.json</code> 50 bytes"), "{html}");
+        assert!(html.contains("<code>desktop.log</code> 3.0 KB"), "{html}");
+        assert!(html.contains("<pre>&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; &quot;q&quot;</pre>"), "{html}");
+        assert!(!html.contains("<script"));
+        assert!(html.contains("href=\"http://questlog-shell.invalid/crash-back\">Back</a>"), "{html}");
+        let html = crash_details(&[("<b>".to_string(), 1)], "");
+        assert!(html.contains("<code>&lt;b&gt;</code>") && !html.contains("<b>"), "{html}");
+    }
+
+    #[test]
+    fn details_text_shows_each_file_and_only_the_end_of_long_ones() {
+        let mut long = b"first line\n".to_vec();
+        long.extend(std::iter::repeat_n(b'a', DETAILS_SHOWN));
+        long.extend_from_slice(b"\nlast line\n");
+        let files = vec![("report.json".to_string(), b"{\"tool\":\"questlog\"}".to_vec()), ("server.log".to_string(), long)];
+        let text = details_text(&files, DETAILS_SHOWN);
+        assert!(text.starts_with("== report.json ==\n{\"tool\":\"questlog\"}\n"), "{}", &text[..80]);
+        assert!(text.contains("== server.log (last "), "{}", &text[..200]);
+        assert!(!text.contains("first line"));
+        assert!(text.contains("last line"));
+        assert!(text.len() < DETAILS_SHOWN + 200);
+    }
+
+    #[test]
+    fn details_budget_is_shared_across_files() {
+        let big = |c: u8| (0..300_000).map(|i| if i % 100 == 99 { b'\n' } else { c }).collect::<Vec<u8>>();
+        let files = vec![
+            ("report.json".to_string(), b"{}".to_vec()),
+            ("desktop.log".to_string(), big(b'd')),
+            ("server.log".to_string(), big(b's')),
+        ];
+        let text = details_text(&files, 100_000);
+        assert!(text.contains("{}"));
+        let d = text.bytes().filter(|&b| b == b'd').count();
+        let s = text.bytes().filter(|&b| b == b's').count();
+        assert!((45_000..50_000).contains(&d) && (45_000..50_000).contains(&s), "{d} {s}");
+        assert!(text.len() < 100_000 + 200);
+    }
+
+    #[test]
+    fn details_url_stays_under_the_webview_limit() {
+        // Quotes and non-ASCII grow the most: &quot; percent-encoded is 10 bytes, ë is 6.
+        let line = "\"q\" ë <&> 'x' ünïcödé \"quoted\"\n".as_bytes().to_vec();
+        let log: Vec<u8> = line.iter().copied().cycle().take(20 * 1024 * 1024).collect();
+        let files: Vec<(String, Vec<u8>)> = std::iter::once(("report.json".to_string(), b"{}".to_vec()))
+            .chain(["desktop.log", "desktop.log.1", "server.log", "server.log.1"].map(|n| (n.to_string(), log.clone())))
+            .collect();
+        drop(log);
+        let html = crash_details_for(&files);
+        let url = data_url(&html);
+        assert!(url.len() <= DETAILS_URL_MAX, "{}", url.len());
+        assert!(html.contains("ünïcödé") && html.contains("&quot;quoted&quot;"));
+        assert!(html.contains("<code>server.log</code> 20.0 MB"), "{}", &html[..html.len().min(3000)]);
+    }
+
+    #[test]
+    fn crash_result_says_what_happened_and_continues() {
+        let ok = crash_result(Ok("questlog/x.zip".into()));
+        assert!(ok.contains("The report was sent."), "{ok}");
+        let err = crash_result(Err("connection refused <x>".into()));
+        assert!(err.contains("The report could not be sent: connection refused &lt;x&gt;"), "{err}");
+        for html in [ok, err] {
+            assert!(html.contains("href=\"http://questlog-shell.invalid/continue\">Continue</a>"), "{html}");
+            assert!(!html.contains("<script") && !html.contains("<x>"));
+        }
+    }
+
+    #[test]
+    fn crash_sending_is_busy_without_actions() {
+        let html = crash_sending();
+        assert!(html.contains("Sending…") && !html.contains("questlog-shell.invalid"), "{html}");
     }
 
     #[test]

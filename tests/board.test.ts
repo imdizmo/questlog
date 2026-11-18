@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   COLORS, DEFAULT_SIZE, GRID, NODE_TYPES, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
-  adoptAfterResize, containerAt, edgePath, filterSize, imageSize, newId, newNodeAt,
+  adoptAfterResize, autoSides, containerAt, edgePath, filterSize, imageSize, newId, newNodeAt,
   nearestSide, nodesToDelete, parseYouTube, smartAggregate, snap, spotBeside,
   type BoardEdge, type BoardNode,
 } from '../shared/board';
@@ -209,5 +209,23 @@ describe('spotBeside', () => {
     const nodes = [node('a', 100, 100, 100, 100), node('b', 220, 100, 120, 160)];
     const at = spotBeside(nodes, anchor, { w: 120, h: 160 });
     expect(at).toEqual({ x: 220, y: 280 });
+  });
+});
+
+describe('autoSides', () => {
+  const r = (x: number, y: number, w = 120, h = 160) => ({ x, y, w, h });
+  it('stacked (overlapping in x): the upper one\'s bottom to the lower one\'s top, either way round', () => {
+    expect(autoSides(r(0, 0), r(40, 300))).toEqual({ from: 'bottom', to: 'top' });
+    expect(autoSides(r(40, 300), r(0, 0))).toEqual({ from: 'top', to: 'bottom' });
+    // Only just overlapping in x still counts as stacked; even overlapping rects pick by their centres.
+    expect(autoSides(r(0, 0), r(119, 500))).toEqual({ from: 'bottom', to: 'top' });
+    expect(autoSides(r(0, 0), r(0, 10))).toEqual({ from: 'bottom', to: 'top' });
+  });
+  it('side by side: the facing sides', () => {
+    expect(autoSides(r(0, 0), r(300, 0))).toEqual({ from: 'right', to: 'left' });
+    expect(autoSides(r(300, 0), r(0, 0))).toEqual({ from: 'left', to: 'right' });
+    // Far below but not overlapping in x is still side by side.
+    expect(autoSides(r(0, 0), r(120, 900))).toEqual({ from: 'right', to: 'left' });
+    expect(autoSides(r(500, 900), r(0, 0))).toEqual({ from: 'left', to: 'right' });
   });
 });

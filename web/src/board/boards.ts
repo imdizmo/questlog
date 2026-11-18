@@ -1,6 +1,11 @@
 import type { Card, VisionBoard, BoardState } from '../../../shared/types';
+import type { BoardEdge, BoardNode } from '../../../shared/board';
+import { derivedStatus } from '../../../shared/cards';
 import { canEditCard, canManageProject, isAdmin, store, type State } from '../store';
 import { dispatch } from '../api';
+import { openByCard } from '../cards';
+import { spaceLabel } from '../spaces';
+import type { FrameInput } from './projectFrames';
 
 /** Mirrors server/boards.ts boardAccess for the signed-in user (the store only holds cards they can see). */
 export function boardLevel(s: State, board: VisionBoard): 'none' | 'view' | 'edit' {
@@ -90,8 +95,80 @@ export async function createBoard(card: Card): Promise<number> {
 }
 
 /**
+ * What the frame layout needs to know about a project: its areas, lists (in order), open tasks (not done, archived,
+ * deleted or lore) and dependencies, with the board as it is. `gone` (see goneTasks) is empty for a one-off layout,
+ * which removes no task. Null when the project is not loaded.
+ */
+export function frameInput(s: State, projectId: string, nodes: BoardNode[], edges: BoardEdge[], gone: Set<string> = new Set()): FrameInput | null {
+  const project = s.projects.get(projectId);
+  if (!project) return null;
+  const open = openByCard(s.resolvables.values());
+  const decks = [...s.decks.values()].filter((d) => d.projectId === projectId).sort((x, y) => x.sortIndex - y.sortIndex || x.seq - y.seq);
+  const inDeck = new Set(decks.map((d) => d.id));
+  const cards = [...s.cards.values()].filter((c) => c.deckId && inDeck.has(c.deckId) && c.visibility === 'default' && !c.isDoc
+    && derivedStatus(c, open.get(c.id) ?? new Set()) !== 'done');
+  return {
+    project, spaces: project.spaces, decks, cards, gone, deps: [...s.cardDeps.values()], nodes, edges,
+    deckOf: (id) => s.cards.get(id)?.deckId ?? undefined,
+    areaName: (id) => { const sp = project.spaces.find((x) => x.id === id); return sp ? spaceLabel(sp) : ''; },
+  };
+}
+
+/**
+ * The project a board belongs to: the project of its host card's list. A board follows, lays out or arranges only this
+ * project, so nothing of a project the board's other editors may not see is ever written into it.
+ */
+export function hostProject(s: State, hostId: string): string | null {
+  const c = s.cards.get(hostId), deck = c?.deckId ? s.decks.get(c.deckId) : undefined;
+  return deck?.projectId ?? null;
+}
+
+export const OTHER_PROJECT = 'A board can only show the project it belongs to.';
+
+/** Why "Add project" / "Arrange as frames" may not show `projectId` on the board hosted by `hostId`, or null. */
+export function refuseProject(s: State, hostId: string, projectId: string): string | null {
+  return hostProject(s, hostId) === projectId ? null : OTHER_PROJECT;
+}
+
+/**
+ * The tasks whose cards must leave this project's board, and the project's tasks as of now (pass them back as `known`
+ * next time). Gone is only what the store says about tasks of this project, never "anything not open":
+ * - a task of the project that is done or archived (the snapshot and live events keep those in the store);
+ * - a task that was in the project at the last call (`known`) and no longer is: deleted (a deleted card leaves the
+ *   store), moved to another project, or out of sight;
+ * - with `nodes`, a card sitting in one of this project's list frames whose task the store does not have (deleted
+ *   while the board was closed). Only pass `nodes` when the store is live (current): a stale store misses new tasks.
+ * Loose cards (outside every frame) whose task the store never saw in this project are not gone. Lore pages never are.
+ */
+export function goneTasks(s: State, projectId: string, known: ReadonlySet<string>, nodes: BoardNode[] = []): { gone: Set<string>; now: Set<string> } {
+  const open = openByCard(s.resolvables.values());
+  const gone = new Set<string>(), now = new Set<string>();
+  for (const c of s.cards.values()) {
+    const deck = c.deckId ? s.decks.get(c.deckId) : undefined;
+    if (deck?.projectId !== projectId || c.isDoc) continue;
+    now.add(c.id);
+    if (c.visibility !== 'default' || derivedStatus(c, open.get(c.id) ?? new Set()) === 'done') gone.add(c.id);
+  }
+  for (const id of known) if (!now.has(id) && !s.cards.get(id)?.isDoc) gone.add(id);
+  // This project's list frames: a frame of one of its lists, or any list frame inside one of its area frames.
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const ref = (n: BoardNode | undefined) => (n?.type === 'container' && typeof n.value.ref === 'string' ? n.value.ref : '');
+  const ownList = (id: string | null) => {
+    const f = id ? byId.get(id) : undefined, r = ref(f);
+    if (!r.startsWith('deck:')) return false;
+    return s.decks.get(r.slice(5))?.projectId === projectId || ref(byId.get(f!.pos.parent ?? '')).startsWith(`area:${projectId}:`);
+  };
+  for (const n of nodes) {
+    if (n.type !== 'card' || typeof n.value.id !== 'string' || s.cards.has(n.value.id)) continue;
+    if (ownList(n.pos.parent)) gone.add(n.value.id);
+  }
+  return { gone, now };
+}
+
+/**
  * A board for a whole project: a lore page in the project's first list hosts it (boards live on tasks), and the
- * board opens with `?tree=<project>` so the canvas lays the project out as a tree straight away.
+ * board opens with `?tree=<project>` so the canvas lays the project out as frames straight away and remembers it as
+ * the board's project.
  */
 export async function createProjectBoard(projectId: string): Promise<string> {
   const s = store.get(), project = s.projects.get(projectId);

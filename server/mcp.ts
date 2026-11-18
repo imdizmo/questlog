@@ -10,6 +10,7 @@
  * - Tool failures are `isError: true` results; protocol errors are JSON-RPC errors; auth and limits are HTTP errors.
  */
 import { z } from 'zod';
+import pkg from '../package.json' with { type: 'json' };
 import { toCamel, tx, type Db } from './db';
 import { AppError } from './errors';
 import { now } from './auth';
@@ -30,7 +31,7 @@ import { colors } from '../shared/schedule';
 import { DEFAULT_SETTINGS, type AccountSettings, type Card, type ResolvableContext } from '../shared/types';
 
 export const MCP_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
-export const MCP_SERVER_INFO = { name: 'questlog', version: '0.1.0' } as const;
+export const MCP_SERVER_INFO = { name: 'questlog', version: pkg.version } as const;
 export const MCP_LIMITS = {
   /** Text of one tool result. */
   resultBytes: 50 * 1024,

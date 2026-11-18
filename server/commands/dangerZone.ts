@@ -44,7 +44,7 @@ export const EXIT_DETAIL_MAX = 2000;
 export const DISABLED_GATE = {
   allow: ['/api/status', '/api/login', '/api/logout', '/dispatch/dangerZone/reactivate', '/api/billing/stripe-webhook', '/email/unsubscribe'],
   hidden: ['/open', '/api/open', '/dispatch/open/signUp'],
-  locked: ['/api/', '/dispatch/', '/mcp', '/user-report/', '/integrations'],
+  locked: ['/api/', '/dispatch/', '/mcp', '/user-report/', '/integrations', '/team/members', '/team/requests'],
 } as const;
 
 const under = (path: string, prefix: string) =>

@@ -12,6 +12,7 @@ import { SmartBody } from './SmartNode';
 import { Picture, isStartFrame } from '../components/wiki/Builder';
 import { entryExcerpt } from '../wiki';
 import { WORKS_ON } from '../../../shared/wiki';
+import { tasksLeft } from './macro';
 
 /** What the tool rail calls each type, and how a node is announced. */
 export const TYPE_LABEL: Record<NodeType, string> = {
@@ -57,11 +58,14 @@ export interface NodeViewProps {
   onSetup?: (id: string) => void;
   /** A storyboard frame grows with what it shows: its drawn height, whenever that changes. Not stored; lines and the selection use it. */
   onGrow?: (id: string, height: number) => void;
+  /** The project overview (zoomed out): this list frame's tasks left, shown large instead of its cards. */
+  tasks?: number;
 }
 
 /** One node on the board layer. Stored pos goes in data-x/y/w/h/parent/color (the e2e reads those). */
-export const NodeView = memo(function NodeView({ node, preview, selected, editing, onCommit, onEndEdit, onSetup, onGrow }: NodeViewProps) {
+export const NodeView = memo(function NodeView({ node, preview, selected, editing, onCommit, onEndEdit, onSetup, onGrow, tasks }: NodeViewProps) {
   const r = preview ?? node.pos;
+  const macro = node.type === 'container' && tasks !== undefined;
   // A frame is as tall as its title, text and links need; its stored height is only the least it can be.
   const scene = node.type === 'card' && node.value.mode === 'scene';
   const box = useRef<HTMLDivElement>(null);
@@ -74,14 +78,16 @@ export const NodeView = memo(function NodeView({ node, preview, selected, editin
   }, [scene, node.id, onGrow]);
   return (
     <div ref={box}
-      className={`bnode bnode-${node.type}${scene ? ' is-scene' : ''}${selected ? ' is-selected' : ''}${node.color ? ` bc-${node.color}` : ''}`}
+      className={`bnode bnode-${node.type}${scene ? ' is-scene' : ''}${macro ? ' is-macro' : ''}${node.type === 'text' && str(node.value.ref).startsWith('project:') ? ' is-header' : ''}${selected ? ' is-selected' : ''}${node.color ? ` bc-${node.color}` : ''}`}
       style={{ transform: `translate(${r.x}px, ${r.y}px)`, width: r.w, ...(scene ? { minHeight: r.h } : { height: r.h }) }}
-      role="group" aria-label={nodeName(node)} tabIndex={0}
-      data-node-id={node.id} data-node-type={node.type}
+      role="group" aria-label={macro ? `${str(node.value.label) || 'List'}, ${tasksLeft(tasks ?? 0)}` : nodeName(node)} tabIndex={0}
+      data-node-id={node.id} data-node-type={node.type} data-tasks-left={macro ? tasks : undefined}
       data-x={node.pos.x} data-y={node.pos.y} data-w={node.pos.w} data-h={node.pos.h}
       data-parent={node.pos.parent ?? ''} data-color={node.color ?? ''}
     >
-      <NodeBody node={node} editing={editing} onCommit={onCommit} onEndEdit={onEndEdit} onSetup={onSetup} />
+      {macro && !editing
+        ? <div className="bnode-frame bmacro"><div className="bnode-label bmacro-title" title={str(node.value.label)}>{str(node.value.label)}</div><div className="bmacro-left">{tasksLeft(tasks ?? 0)}</div></div>
+        : <NodeBody node={node} editing={editing} onCommit={onCommit} onEndEdit={onEndEdit} onSetup={onSetup} />}
     </div>
   );
 });

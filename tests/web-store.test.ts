@@ -357,3 +357,170 @@ describe('runs in the store', () => {
     expect(s.get().sprints.has('s1')).toBe(true);
   });
 });
+
+describe('Store live flag', () => {
+  class FakeSocket {
+    static all: FakeSocket[] = [];
+    onmessage: ((m: { data: string }) => void) | null = null;
+    onclose: ((e: { code: number }) => void) | null = null;
+    constructor(public url: string) { FakeSocket.all.push(this); }
+    close() { this.onclose?.({ code: 1000 }); }
+  }
+
+  it('is true only once the snapshot after a (re)connect is applied; false while the socket is down or a reload runs', async () => {
+    FakeSocket.all = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'x' });
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const f = vi.fn(async (url: string) => {
+        if (String(url).includes('/api/status')) return new Response('{}', { status: 200 });
+        await gate;
+        return new Response(JSON.stringify(snapshot()), { status: 200 });
+      });
+      vi.stubGlobal('fetch', f);
+      const s = new Store();
+      expect(s.get().live).toBe(false);
+      s.start();
+      const ws = FakeSocket.all[0];
+      ws.onmessage!({ data: JSON.stringify({ type: 'uuid' }) });
+      expect(s.get().live).toBe(false); // the snapshot is still on its way
+      release();
+      await vi.waitFor(() => expect(s.get().status).toBe('ready'));
+      expect(s.get().live).toBe(true);
+
+      // The socket drops: the data we hold may be stale; still 'ready' (the page keeps working).
+      ws.onclose!({ code: 1006 });
+      expect(s.get().status).toBe('ready');
+      expect(s.get().live).toBe(false);
+
+      // Reconnect: live again only after the new snapshot lands.
+      let release2!: () => void;
+      const gate2 = new Promise<void>((r) => { release2 = r; });
+      f.mockImplementation(async (url: string) => {
+        if (String(url).includes('/api/status')) return new Response('{}', { status: 200 });
+        await gate2;
+        return new Response(JSON.stringify(snapshot()), { status: 200 });
+      });
+      await vi.advanceTimersByTimeAsync(600);
+      const ws2 = FakeSocket.all[1];
+      ws2.onmessage!({ data: JSON.stringify({ type: 'uuid' }) });
+      expect(s.get().live).toBe(false);
+      release2();
+      await vi.waitFor(() => expect(s.get().live).toBe(true));
+
+      // A reload asked for by an event (access change) is in flight: not live until it lands.
+      let release3!: () => void;
+      const gate3 = new Promise<void>((r) => { release3 = r; });
+      f.mockImplementation(async () => { await gate3; return new Response(JSON.stringify(snapshot()), { status: 200 }); });
+      s.apply([{ model: 'project', op: 'access', row: { id: P1 } } as any]);
+      expect(s.get().live).toBe(false);
+      release3();
+      await vi.waitFor(() => expect(s.get().live).toBe(true));
+      s.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a reload that fails while the socket is up is retried after 1, 2, 4 s … until it succeeds; a close stops the retries', async () => {
+    FakeSocket.all = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'x' });
+    vi.useFakeTimers();
+    try {
+      let failing = false;
+      const snapshots: number[] = [];
+      const f = vi.fn(async (url: string) => {
+        if (String(url).includes('/api/status')) return new Response('{}', { status: 200 });
+        snapshots.push(Date.now());
+        return failing ? new Response('no', { status: 500 }) : new Response(JSON.stringify(snapshot()), { status: 200 });
+      });
+      vi.stubGlobal('fetch', f);
+      const s = new Store();
+      s.start();
+      FakeSocket.all[0].onmessage!({ data: JSON.stringify({ type: 'uuid' }) });
+      await vi.waitFor(() => expect(s.get().live).toBe(true));
+
+      failing = true;
+      snapshots.length = 0;
+      const t0 = Date.now();
+      s.apply([{ model: 'project', op: 'access', row: { id: P1 } } as any]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(snapshots).toHaveLength(1);
+      expect(s.get().live).toBe(false);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(snapshots).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1); // 1 s
+      expect(snapshots).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(2000); // 2 s more
+      expect(snapshots).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(4000); // 4 s more
+      expect(snapshots).toHaveLength(4);
+      expect(snapshots.map((x) => x - t0)).toEqual([0, 1000, 3000, 7000]);
+      // It caps at 30 s.
+      await vi.advanceTimersByTimeAsync(8000 + 16000 + 30000);
+      expect(snapshots.map((x) => x - t0).slice(4)).toEqual([15000, 31000, 61000]);
+      expect(s.get().live).toBe(false);
+      failing = false;
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(s.get().live).toBe(true);
+      expect(s.get().status).toBe('ready');
+
+      // Failing again, then the socket closes: no more snapshot requests until it reconnects.
+      failing = true;
+      s.apply([{ model: 'project', op: 'access', row: { id: P1 } } as any]);
+      await vi.advanceTimersByTimeAsync(0);
+      const n = snapshots.length;
+      FakeSocket.all[0].onclose!({ code: 1006 });
+      await vi.advanceTimersByTimeAsync(400); // before the socket's own retry (500 ms)
+      await vi.advanceTimersByTimeAsync(60_000);
+      // Only reconnect attempts, which never say hello here: no snapshot was asked for.
+      expect(snapshots).toHaveLength(n);
+      s.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a load started before a reconnect never sets live; the reconnect gets a load of its own', async () => {
+    FakeSocket.all = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'x' });
+    vi.useFakeTimers();
+    try {
+      const gates: Array<() => void> = [];
+      const f = vi.fn(async (url: string) => {
+        if (String(url).includes('/api/status')) return new Response('{}', { status: 200 });
+        await new Promise<void>((r) => gates.push(r));
+        return new Response(JSON.stringify(snapshot()), { status: 200 });
+      });
+      vi.stubGlobal('fetch', f);
+      const s = new Store();
+      s.start();
+      FakeSocket.all[0].onmessage!({ data: JSON.stringify({ type: 'uuid' }) });
+      gates.shift()!();
+      await vi.waitFor(() => expect(s.get().live).toBe(true));
+
+      // A reload is in flight when the socket drops and comes back.
+      s.apply([{ model: 'project', op: 'access', row: { id: P1 } } as any]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gates).toHaveLength(1);
+      FakeSocket.all[0].onclose!({ code: 1006 });
+      await vi.advanceTimersByTimeAsync(600);
+      FakeSocket.all[1].onmessage!({ data: JSON.stringify({ type: 'uuid' }) });
+      // The old load lands: its data is used, but it is not live; a new load starts.
+      gates.shift()!();
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      expect(s.get().status).toBe('ready');
+      expect(s.get().live).toBe(false);
+      gates.shift()!();
+      await vi.waitFor(() => expect(s.get().live).toBe(true));
+      s.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

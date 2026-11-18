@@ -40,6 +40,7 @@ const MESSAGES: Record<string, string> = {
   not_tailscale: "This device isn't signed in through Tailscale.",
   already_linked: 'That Tailscale account is already linked to someone else.',
   already_setup: 'This workspace is already set up. Log in instead.',
+  setup_token: 'This server is set up from the Jatify Launcher (it needs the admin token), not from this page.',
   invalid_input: 'Please fill in every field.',
   too_many_attempts: 'Too many attempts. Wait a few minutes and try again.',
   invite_invalid: 'This invite link is not valid.',

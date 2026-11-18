@@ -29,6 +29,11 @@ export interface ChangeEvent { model: ModelName; op: ChangeOp; row: any }
 export interface State {
   /** 'disabled': the workspace was disabled in the Danger Zone (423 / socket close 4423). */
   status: 'idle' | 'loading' | 'ready' | 'unauthenticated' | 'error' | 'disabled';
+  /**
+   * The data is current: the push socket is up and the snapshot loaded after it (re)connected has been applied. False
+   * while the socket is down and while a reload is in flight, when a 'ready' store may still hold data from before.
+   */
+  live: boolean;
   me: User | null;
   account: Account | null;
   users: Map<string, User>;
@@ -76,7 +81,7 @@ export interface State {
 /** People: users without the service users behind org API tokens (member lists and pickers). */
 export const people = (users: Map<string, User>): User[] => [...users.values()].filter((u) => u.kind !== 'service');
 
-type Coll = Exclude<keyof State, 'status' | 'me' | 'account'>;
+type Coll = Exclude<keyof State, 'status' | 'live' | 'me' | 'account'>;
 
 /** model → collection + key function. Remove events carry at least the key fields. */
 const MODELS: Record<Exclude<ModelName, 'account'>, { coll: Coll; key: (r: any) => string }> = {
@@ -120,7 +125,7 @@ const MODELS: Record<Exclude<ModelName, 'account'>, { coll: Coll; key: (r: any) 
 };
 
 const empty = (): State => ({
-  status: 'idle', me: null, account: null,
+  status: 'idle', live: false, me: null, account: null,
   users: new Map(), accountRoles: new Map(), projects: new Map(), projectAccess: new Map(), projectPrefs: new Map(),
   decks: new Map(), cards: new Map(), resolvables: new Map(), entries: new Map(), reactions: new Map(), notifications: new Map(), handCards: new Map(),
   cardDeps: new Map(), files: new Map(), userCardTags: new Map(), presets: new Map(),
@@ -204,6 +209,9 @@ export function cascadeProjectRemove(s: State, projectIds: Set<string>): Partial
   };
 }
 
+const RELOAD_RETRY_MIN = 1000;
+const RELOAD_RETRY_MAX = 30_000;
+
 export class Store {
   private state: State = empty();
   private listeners = new Set<() => void>();
@@ -215,6 +223,16 @@ export class Store {
   private queued: ChangeEvent[] | null = null;
   private stopped = true;
   private reloadWarned = false;
+  /** The push socket has said hello (uuid) and not closed since: a snapshot loaded now is current. */
+  private connected = false;
+  /**
+   * Bumped on every hello and every close of the push socket: a load started under an older generation may hold data
+   * from before the reconnect, so it never sets `live` (a new load is started instead).
+   */
+  private gen = 0;
+  /** A failed reload while the socket is up is retried after this long (doubling up to RELOAD_RETRY_MAX). */
+  private reloadRetryMs = RELOAD_RETRY_MIN;
+  private reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   get = (): State => this.state;
 
@@ -231,18 +249,24 @@ export class Store {
   /** Fetches the snapshot and replaces the whole state. Concurrent calls share one request. */
   load(): Promise<void> {
     if (this.loading) return this.loading;
-    if (this.state.status !== 'ready') this.set({ ...this.state, status: 'loading' });
+    if (this.state.status !== 'ready') this.set({ ...this.state, status: 'loading', live: false });
+    else if (this.state.live) this.set({ ...this.state, live: false });
     this.queued = [];
+    this.clearReloadRetry();
+    const gen = this.gen;
     this.loading = (async () => {
       try {
         const res = await fetch('/api/snapshot', { credentials: 'same-origin' });
         if (res.status === 401) { this.reset('unauthenticated'); return; }
         if (res.status === 423) { this.reset('disabled'); return; }
-        if (!res.ok) { this.loadFailed(); return; }
+        if (!res.ok) { this.loadFailed(gen); return; }
         const s = await res.json();
         this.reloadWarned = false;
+        this.reloadRetryMs = RELOAD_RETRY_MIN;
+        // Started before the socket reconnected: the data may predate the reconnect, so it is not live; load again.
         this.set({
           status: 'ready',
+          live: this.connected && gen === this.gen,
           me: s.me,
           account: s.account ?? null,
           users: byKey<User>(s.users, MODELS.user.key),
@@ -284,29 +308,43 @@ export class Store {
           entryLinks: byKey<EntryLink>(s.entryLinks, MODELS.entryLink.key),
         });
       } catch {
-        this.loadFailed();
+        this.loadFailed(gen);
       } finally {
         this.loading = null;
         const q = this.queued;
         this.queued = null;
         // Signed out: the queue is moot. Otherwise replay; it may itself ask for another reload.
         if (q?.length && this.state.status !== 'unauthenticated') this.apply(q);
+        // Started before the socket (re)connected (failed or not): this connection gets a load of its own.
+        if (gen !== this.gen && this.connected && !this.loading && !this.stopped) void this.load();
       }
     })();
     return this.loading;
   }
 
+  private clearReloadRetry() {
+    if (this.reloadTimer) clearTimeout(this.reloadTimer);
+    this.reloadTimer = null;
+  }
+
   /**
-   * Only the first load may show the error screen. A failed reload keeps the data we have
-   * (warning once); the next reconnect loads again.
+   * Only the first load may show the error screen. A failed reload keeps the data we have (warning once) and, while the
+   * socket is still up, is tried again with backoff (1 s, 2 s, 4 s, … up to 30 s) until it succeeds or the socket
+   * closes; after a close, the next reconnect loads again.
    */
-  private loadFailed() {
-    if (this.state.status === 'ready') {
-      if (!this.reloadWarned) showToast("Couldn't refresh your workspace. Retrying when the connection comes back.");
-      this.reloadWarned = true;
-      return;
-    }
-    this.set({ ...this.state, status: 'error' });
+  private loadFailed(gen: number) {
+    if (this.state.status !== 'ready') { this.set({ ...this.state, status: 'error' }); return; }
+    if (!this.reloadWarned) showToast("Couldn't refresh your workspace. Retrying when the connection comes back.");
+    this.reloadWarned = true;
+    if (!this.connected || this.stopped) return;
+    const wait = this.reloadRetryMs;
+    this.reloadRetryMs = Math.min(this.reloadRetryMs * 2, RELOAD_RETRY_MAX);
+    this.clearReloadRetry();
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      // Only while the same connection is up: a reconnect starts its own load.
+      if (this.connected && !this.stopped && gen === this.gen) void this.load();
+    }, wait);
   }
 
   apply(events: ChangeEvent[]): void {
@@ -442,7 +480,11 @@ export class Store {
     this.retryTimer = null;
     const s = this.socket;
     this.socket = null;
+    this.connected = false;
+    this.gen++;
+    this.clearReloadRetry();
     s?.close();
+    if (this.state.live) this.set({ ...this.state, live: false });
   }
 
   private async checkDisabled(): Promise<void> {
@@ -468,6 +510,9 @@ export class Store {
       try { data = JSON.parse(String(msg.data)); } catch { return; }
       if (data?.type === 'uuid') {
         this.retryMs = 500;
+        this.connected = true;
+        this.gen++;
+        this.reloadRetryMs = RELOAD_RETRY_MIN;
         void this.load();
       } else if (data?.type === 'events' && Array.isArray(data.events)) {
         this.apply(data.events);
@@ -476,6 +521,10 @@ export class Store {
     ws.onclose = (ev) => {
       if (this.socket !== ws) return;
       this.socket = null;
+      this.connected = false;
+      this.gen++;
+      this.clearReloadRetry();
+      if (this.state.live) this.set({ ...this.state, live: false });
       if (ev.code === 4401) { this.reset('unauthenticated'); return; }
       if (ev.code === 4423) { this.reset('disabled'); return; }
       if (this.stopped) return;

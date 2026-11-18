@@ -1,7 +1,7 @@
 import { Dialog } from './Dialog';
 import { SCOPE_LABEL, SHORTCUTS, type ShortcutScope } from '../shortcuts';
 
-const SCOPES: ShortcutScope[] = ['global', 'deck', 'card'];
+const SCOPES: ShortcutScope[] = ['global', 'deck', 'card', 'board'];
 
 /** Every registered shortcut, grouped by where it works. Entries that aren't wired yet are greyed. */
 export function ShortcutPanel({ onClose }: { onClose: () => void }) {

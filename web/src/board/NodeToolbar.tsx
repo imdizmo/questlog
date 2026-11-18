@@ -16,7 +16,8 @@ export interface NodeToolbarProps {
   targets?: BoardNode[];
   onConnect?: (targetId: string) => void;
   canEdit: boolean;
-  onEdit: () => void;
+  /** Absent: no Edit (a project board's frames, whose names follow the project). */
+  onEdit?: () => void;
   /** Card nodes: show the card in the side panel. */
   onOpen?: () => void;
   /** Smart Nodes: Display, Set up filter and Open as search. Without edit rights only Open as search is offered. */
@@ -28,7 +29,8 @@ export interface NodeToolbarProps {
   };
   onColor: (c: BoardColor | undefined) => void;
   onFocus: () => void;
-  onDelete: () => void;
+  /** Absent: no Delete (a project board's frames and header follow the project). */
+  onDelete?: () => void;
   /** Esc with no popover open: deselect, focus back on the node. */
   onClose: () => void;
 }
@@ -74,7 +76,7 @@ export function NodeToolbar({ node, edge, targets = [], onConnect, canEdit, onEd
   });
   const t = node?.type;
   const color = (node ?? edge)?.color;
-  const edit = canEdit && (!!edge || t === 'text' || t === 'container' || t === 'filter');
+  const edit = canEdit && !!onEdit && (!!edge || t === 'text' || t === 'container' || t === 'filter');
   const open = t === 'card' && !!onOpen;
 
   // Opening a popover puts focus on its first useful item: the current colour, or the first target.
@@ -119,7 +121,7 @@ export function NodeToolbar({ node, edge, targets = [], onConnect, canEdit, onEd
           onClick={() => setPop(connect ? null : 'connect')}>Connect to…</button>
       )}
       <button type="button" className="btn btn-sm btn-ghost" onClick={onFocus}><Icon name="focus" size={14} /> Focus</button>
-      {canEdit && <button type="button" className="btn btn-sm btn-ghost" onClick={onDelete}><Icon name="trash" size={14} /> Delete</button>}
+      {canEdit && onDelete && <button type="button" className="btn btn-sm btn-ghost" onClick={onDelete}><Icon name="trash" size={14} /> Delete</button>}
       {display && smart && (
         <div ref={displayMenu} className="bcolors bsmart-menu" role="group" aria-label="Display">
           <DisplayMenu {...smart.display} />

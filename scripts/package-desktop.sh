@@ -26,10 +26,8 @@ if want win; then
 fi
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-node_ver=$(tr -d '[:space:]' <"$root/scripts/node-version.txt")
-node_ver=${node_ver#v}
-[[ "$node_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "bad version in scripts/node-version.txt: '$node_ver'"
-dist_cache="$HOME/.cache/gametracker/node-dist"
+# shellcheck source=lib/node-dist.sh
+source "$root/scripts/lib/node-dist.sh"
 # Heavy steps run under a memory cap; CI runners (no user systemd) set QUESTLOG_NO_CAP=1.
 cap() {
   if [[ -n "${QUESTLOG_NO_CAP:-}" ]]; then "$@"; else systemd-run --user --scope -q -p MemoryMax=3G -p MemorySwapMax=0 "$@"; fi
@@ -52,29 +50,6 @@ if want linux; then
 fi
 
 # --- Node runtime ------------------------------------------------------------------------------------------------
-# Downloads into the shared cache once; every use re-checks the file against SHASUMS256.txt.
-fetch_node() {
-  local file=$1 base="https://nodejs.org/dist/v$node_ver"
-  local dir="$dist_cache/v$node_ver"
-  mkdir -p "$dir"
-  if [[ ! -s "$dir/SHASUMS256.txt" ]]; then
-    curl -fsSL --retry 3 -o "$dir/SHASUMS256.txt.part" "$base/SHASUMS256.txt"
-    mv "$dir/SHASUMS256.txt.part" "$dir/SHASUMS256.txt"
-  fi
-  if [[ ! -s "$dir/$file" ]]; then
-    echo "package: downloading $file" >&2
-    curl -fsSL --retry 3 -o "$dir/$file.part" "$base/$file"
-    mv "$dir/$file.part" "$dir/$file"
-  fi
-  local line
-  line=$(grep -E "^[0-9a-f]{64}  $file\$" "$dir/SHASUMS256.txt") || die "$file is not listed in SHASUMS256.txt"
-  if ! (cd "$dir" && echo "$line" | sha256sum -c --status); then
-    rm -f "$dir/$file"
-    die "checksum mismatch for $file (deleted from the cache; run again to re-download)"
-  fi
-  echo "$dir/$file"
-}
-
 # Writes the crates compiled into the shell for one target triple (normal dependencies reachable from the
 # questlog crate, as resolved from Cargo.lock): name, version, licence, source.
 rust_notices() {

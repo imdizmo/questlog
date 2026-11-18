@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { openDb, newId, type Db } from '../server/db';
 import { buildApp } from '../server/app';
 import { setClock, _resetLimiter } from '../server/auth';
+import pkg from '../package.json' with { type: 'json' };
 import { MCP_TOOL_NAMES } from '../server/mcp';
 
 const HOST = 'localhost:8780';
@@ -93,6 +94,7 @@ describe('MCP server', () => {
     expect(body.jsonrpc).toBe('2.0');
     expect(body.result.protocolVersion).toBe('2025-06-18');
     expect(body.result.serverInfo.name).toBe('questlog');
+    expect(body.result.serverInfo.version).toBe(pkg.version);
     expect(body.result.capabilities.tools).toEqual({});
     // An unknown version gets our latest one.
     const old = await rpc(token, 'initialize', { protocolVersion: '1999-01-01', capabilities: {}, clientInfo: { name: 'X' } });

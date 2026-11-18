@@ -19,6 +19,7 @@ import { HistoryTab } from '../components/HistoryTab';
 import { QuickBar } from '../components/QuickBar';
 import { PropertiesPanel } from '../components/PropertiesPanel';
 import { Editor } from '../components/Editor';
+import { LazyLoreEditor as LoreEditor } from '../lore/LazyLoreEditor';
 import { MarkdownView } from '../components/MarkdownView';
 import { queueContentSave } from '../contentSave';
 import { setCheckLine, splitTitle } from '../markdown';
@@ -499,8 +500,11 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
             <p>Save again to replace it with yours, or Cancel to keep theirs.</p>
           </div>
         )}
-        <Editor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label={card.isDoc ? 'Text' : 'Task text'}
-          projectId={projectId} images={images} onSetProperties={onSetProperties} />
+        {card.isDoc
+          ? <LoreEditor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Text"
+              projectId={projectId} images={images} onSetProperties={onSetProperties} />
+          : <Editor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Task text"
+              projectId={projectId} images={images} onSetProperties={onSetProperties} />}
         <div className="row">
           <span className="hint foot-hint">Ctrl+Enter saves · Esc cancels</span>
           <button type="button" className="btn btn-ghost" onClick={cancel}>Cancel</button>

@@ -1,15 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Y from 'yjs';
-import { COLORS, isFileUrl, isVideoId, NODE_TYPES, nodesToDelete, validSmartValue, type BoardColor, type BoardEdge, type BoardNode, type NodePos } from '../../../shared/board';
+import { COLORS, isEdgeKind, isFileUrl, isVideoId, NODE_TYPES, nodesToDelete, validSmartValue, type BoardColor, type BoardEdge, type BoardNode, type EdgeKind, type NodePos } from '../../../shared/board';
+import type { BoardPatch } from './projectFrames';
 
 /** Origin of this client's own writes; the undo manager tracks only these, so undo never reverts someone else's change. */
 export const LOCAL = Symbol('local');
+/**
+ * Origin of the board's own upkeep (following the project, fixing parents of deleted frames): not in the undo history,
+ * so undo never brings back a task that left the project, nor removes one the board added for it.
+ */
+export const SYNC = Symbol('sync');
 /** Undo steps kept per session; older ones are dropped so a board left open for hours keeps memory flat. */
 export const UNDO_LIMIT = 200;
 
 export interface BoardApi {
   nodes: BoardNode[];
   edges: BoardEdge[];
+  /** The project a project board shows (`meta.projectId`), or null for any other board. */
+  projectId: string | null;
+  setProjectId: (id: string) => void;
+  /**
+   * A planned change in one transaction with `origin` (LOCAL: one undo step). With `projectId`, the board's project is
+   * set in the same transaction, so one undo reverts both.
+   */
+  applyPatch: (patch: BoardPatch, origin?: unknown, projectId?: string) => void;
   canUndo: boolean;
   canRedo: boolean;
   undo: () => void;
@@ -25,8 +39,8 @@ export interface BoardApi {
   /** Removes the node, every edge touching it, and the parent link of its children (nodesToDelete). */
   deleteNode: (id: string) => void;
   addEdge: (edge: BoardEdge) => void;
-  /** An empty label removes it. */
-  setEdgeLabel: (id: string, label: string) => void;
+  /** An empty label removes it. With `kind`, the line also stands for that in the project (same transaction). */
+  setEdgeLabel: (id: string, label: string, kind?: EdgeKind) => void;
   setEdgeColor: (id: string, color: BoardColor | undefined) => void;
   deleteEdge: (id: string) => void;
 }
@@ -48,6 +62,87 @@ export function trimUndo(um: Y.UndoManager, limit: number): void {
     for (const step of gone) Y.iterateDeletedStructs(tr, step.deletions, (s) => { if (s instanceof Y.Item) s.keep = false; });
   });
   if (doc.gc) for (const step of gone) Y.tryGc(step.deletions, doc.store, doc.gcFilter);
+}
+
+/** The board's three maps: nodes, edges, and meta (board-wide settings such as `projectId`). */
+export interface BoardMaps {
+  nodes: Y.Map<Y.Map<unknown>>;
+  edges: Y.Map<Y.Map<unknown>>;
+  meta: Y.Map<unknown>;
+}
+
+export const boardMaps = (doc: Y.Doc): BoardMaps => ({
+  nodes: doc.getMap<Y.Map<unknown>>('nodes'),
+  edges: doc.getMap<Y.Map<unknown>>('edges'),
+  meta: doc.getMap<unknown>('meta'),
+});
+
+/** `meta.projectId` when it is a non-empty string (anyone who may edit can write anything there). */
+export const readProjectId = (meta: Y.Map<unknown>): string | null => {
+  const v = meta.get('projectId');
+  return typeof v === 'string' && v ? v : null;
+};
+
+/**
+ * The undo manager of one client: tracks only LOCAL writes; meta is in scope, so a step that sets the board's project
+ * (a layout or "Arrange as frames") is undone as a whole.
+ */
+export function boardUndo(maps: BoardMaps): Y.UndoManager {
+  // captureTimeout 0: every transaction is its own undo step (a drop, a delete, a colour).
+  return new Y.UndoManager([maps.nodes, maps.edges, maps.meta], { trackedOrigins: new Set([LOCAL]), captureTimeout: 0 });
+}
+
+const yNode = (n: BoardNode) => {
+  const y = new Y.Map<unknown>();
+  y.set('type', n.type);
+  y.set('value', n.value);
+  y.set('pos', n.pos);
+  if (n.color) y.set('color', n.color);
+  return y;
+};
+const yEdge = (e: BoardEdge) => {
+  const y = new Y.Map<unknown>();
+  y.set('value', e.value);
+  if (e.label) y.set('label', e.label);
+  if (e.color) y.set('color', e.color);
+  return y;
+};
+
+/** Writes a planned patch (and optionally the board's project) in one transaction with `origin`. */
+export function writePatch(doc: Y.Doc, maps: BoardMaps, patch: BoardPatch, origin: unknown, projectId?: string): void {
+  doc.transact(() => {
+    for (const id of patch.removeEdges) maps.edges.delete(id);
+    for (const id of patch.remove) maps.nodes.delete(id);
+    for (const n of patch.add) maps.nodes.set(n.id, yNode(n));
+    for (const m of patch.move) maps.nodes.get(m.id)?.set('pos', m.pos);
+    for (const u of patch.update) maps.nodes.get(u.id)?.set('value', u.value);
+    for (const e of patch.addEdges) maps.edges.set(e.id, yEdge(e));
+    for (const u of patch.updateEdges ?? []) maps.edges.get(u.id)?.set('value', u.value);
+    if (projectId) maps.meta.set('projectId', projectId);
+  }, origin);
+}
+
+/**
+ * Nodes whose parent no longer exists (an undo removed the frame that reconcile had filled) become loose: `parent`
+ * null, positions as they are. One SYNC transaction; returns how many changed.
+ */
+export function unparentOrphans(doc: Y.Doc, maps: BoardMaps): number {
+  const orphans: Array<[Y.Map<unknown>, NodePos]> = [];
+  maps.nodes.forEach((m) => {
+    const pos = m instanceof Y.Map ? m.get('pos') : undefined;
+    if (isObject(pos) && typeof pos.parent === 'string' && !maps.nodes.has(pos.parent)) orphans.push([m, pos as unknown as NodePos]);
+  });
+  if (orphans.length) doc.transact(() => { for (const [m, pos] of orphans) m.set('pos', { ...pos, parent: null }); }, SYNC);
+  return orphans.length;
+}
+
+/** The board as it is in the document now (React may not have drawn the latest nodes yet). */
+export function readBoard(doc: Y.Doc): { nodes: BoardNode[]; edges: BoardEdge[]; projectId: string | null } {
+  const maps = boardMaps(doc);
+  const nodes: BoardNode[] = [], edges: BoardEdge[] = [];
+  maps.nodes.forEach((m, id) => { const n = m instanceof Y.Map ? readNode(id, m) : null; if (n) nodes.push(n); });
+  maps.edges.forEach((m, id) => { const e = m instanceof Y.Map ? readEdge(id, m) : null; if (e) edges.push(e); });
+  return { nodes, edges, projectId: readProjectId(maps.meta) };
 }
 
 function validPos(v: unknown): v is NodePos {
@@ -85,7 +180,8 @@ export const readEdge = (id: string, m: Y.Map<unknown>): BoardEdge | null => {
   if (!isObject(value) || !validEnd(value.source) || !validEnd(value.target)) return null;
   if (label !== undefined && typeof label !== 'string') return null;
   if (color !== undefined && !isColor(color)) return null;
-  return { id, value: { source: value.source, target: value.target }, ...(label ? { label } : {}), ...(color ? { color } : {}) };
+  const kind = isEdgeKind(value.kind) ? { kind: value.kind } : {};
+  return { id, value: { source: value.source, target: value.target, ...kind }, ...(label ? { label } : {}), ...(color ? { color } : {}) };
 };
 
 /**
@@ -122,29 +218,29 @@ function mirror<T>(map: Y.Map<Y.Map<unknown>>, read: (id: string, m: Y.Map<unkno
 export function useBoard(doc: Y.Doc | null): BoardApi {
   const [nodes, setNodes] = useState<BoardNode[]>([]);
   const [edges, setEdges] = useState<BoardEdge[]>([]);
+  const [projectId, setProject] = useState<string | null>(null);
   const [stack, setStack] = useState({ undo: false, redo: false });
 
-  const maps = useMemo(() => doc && {
-    nodes: doc.getMap<Y.Map<unknown>>('nodes'),
-    edges: doc.getMap<Y.Map<unknown>>('edges'),
-  }, [doc]);
+  const maps = useMemo(() => doc && boardMaps(doc), [doc]);
 
   // Made in an effect (not a memo) so StrictMode's mount, unmount, mount gets a live manager, not a destroyed one.
   const [undoManager, setUndoManager] = useState<Y.UndoManager | null>(null);
 
   useEffect(() => {
-    if (!maps) { setNodes([]); setEdges([]); return; }
+    if (!maps) { setNodes([]); setEdges([]); setProject(null); return; }
     const offNodes = mirror(maps.nodes, readNode, setNodes);
     const offEdges = mirror(maps.edges, readEdge, setEdges);
-    // captureTimeout 0: every transaction is its own undo step (a drop, a delete, a colour).
-    const um = new Y.UndoManager([maps.nodes, maps.edges], { trackedOrigins: new Set([LOCAL]), captureTimeout: 0 });
+    const onMeta = () => setProject(readProjectId(maps.meta));
+    onMeta();
+    maps.meta.observe(onMeta);
+    const um = boardUndo(maps);
     const sync = () => setStack({ undo: um.canUndo(), redo: um.canRedo() });
     um.on('stack-item-added', () => { trimUndo(um, UNDO_LIMIT); sync(); });
     um.on('stack-item-popped', sync);
     um.on('stack-cleared', sync);
     setUndoManager(um);
     sync();
-    return () => { offNodes(); offEdges(); um.destroy(); setUndoManager(null); setStack({ undo: false, redo: false }); };
+    return () => { offNodes(); offEdges(); maps.meta.unobserve(onMeta); um.destroy(); setUndoManager(null); setStack({ undo: false, redo: false }); };
   }, [maps]);
 
   return useMemo((): BoardApi => {
@@ -152,18 +248,14 @@ export function useBoard(doc: Y.Doc | null): BoardApi {
     return {
       nodes,
       edges,
+      projectId,
+      setProjectId: (id) => write(({ meta }) => { meta.set('projectId', id); }),
+      applyPatch: (patch, origin = LOCAL, project) => { if (doc && maps) writePatch(doc, maps, patch, origin, project); },
       canUndo: stack.undo,
       canRedo: stack.redo,
       undo: () => { undoManager?.undo(); },
       redo: () => { undoManager?.redo(); },
-      addNode: (n) => write(({ nodes: m }) => {
-        const y = new Y.Map<unknown>();
-        y.set('type', n.type);
-        y.set('value', n.value);
-        y.set('pos', n.pos);
-        if (n.color) y.set('color', n.color);
-        m.set(n.id, y);
-      }),
+      addNode: (n) => write(({ nodes: m }) => { m.set(n.id, yNode(n)); }),
       addMany: (ns, es) => write(({ nodes: m, edges: e }) => {
         for (const n of ns) { const y = new Y.Map<unknown>(); y.set('type', n.type); y.set('value', n.value); y.set('pos', n.pos); m.set(n.id, y); }
         for (const x of es) { const y = new Y.Map<unknown>(); y.set('value', x.value); if (x.label) y.set('label', x.label); e.set(x.id, y); }
@@ -194,10 +286,12 @@ export function useBoard(doc: Y.Doc | null): BoardApi {
         if (edge.color) y.set('color', edge.color);
         m.set(edge.id, y);
       }),
-      setEdgeLabel: (id, label) => write(({ edges: m }) => {
+      setEdgeLabel: (id, label, kind) => write(({ edges: m }) => {
         const y = m.get(id);
         if (!y) return;
         if (label) y.set('label', label); else y.delete('label');
+        const v = y.get('value');
+        if (kind && isObject(v)) y.set('value', { ...v, kind });
       }),
       setEdgeColor: (id, color) => write(({ edges: m }) => {
         const y = m.get(id);
@@ -206,5 +300,5 @@ export function useBoard(doc: Y.Doc | null): BoardApi {
       }),
       deleteEdge: (id) => write(({ edges: m }) => { m.delete(id); }),
     };
-  }, [doc, maps, nodes, edges, stack, undoManager]);
+  }, [doc, maps, nodes, edges, projectId, stack, undoManager]);
 }

@@ -24,9 +24,16 @@ export interface BoardNode {
   color?: BoardColor;
 }
 export interface EdgeEnd { nodeId: string; side: Side }
+/**
+ * What a line between two task cards stands for in the project: 'dep' a "waits for" (source waits for target), 'sub' a
+ * subtask (source is the parent). Set only by the board's own upkeep and by the "What does this line mean?" choice, so
+ * a line the user merely labels "waits for" stays the user's line.
+ */
+export type EdgeKind = 'dep' | 'sub';
+export const isEdgeKind = (v: unknown): v is EdgeKind => v === 'dep' || v === 'sub';
 export interface BoardEdge {
   id: string;
-  value: { source: EdgeEnd; target: EdgeEnd };
+  value: { source: EdgeEnd; target: EdgeEnd; kind?: EdgeKind };
   label?: string;
   color?: BoardColor;
 }
@@ -178,6 +185,18 @@ export function nearestSide(rect: Rect, point: Point): Side {
     if (d < bestD) { best = s; bestD = d; }
   }
   return best;
+}
+
+/**
+ * The sides a project board draws a "waits for" or subtask line between, worked out from where the two nodes are now
+ * (nothing stored): stacked (overlapping in x), the upper one's bottom to the lower one's top; otherwise the facing
+ * sides, right to left when the target is to the right, left to right when it is to the left.
+ */
+export function autoSides(a: Rect, b: Rect): { from: Side; to: Side } {
+  if (a.x < b.x + b.w && b.x < a.x + a.w) {
+    return a.y + a.h / 2 <= b.y + b.h / 2 ? { from: 'bottom', to: 'top' } : { from: 'top', to: 'bottom' };
+  }
+  return a.x + a.w / 2 <= b.x + b.w / 2 ? { from: 'right', to: 'left' } : { from: 'left', to: 'right' };
 }
 
 const num = (n: number) => String(Math.round(n * 100) / 100 + 0);

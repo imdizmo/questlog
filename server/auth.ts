@@ -11,7 +11,7 @@ export function setClock(fn: () => number): void {
 }
 export const now = (): number => clock();
 
-const SESSION_MS = 30 * 24 * 3600 * 1000;
+export const SESSION_MS = 30 * 24 * 3600 * 1000;
 const DEVICE_MS = 365 * 24 * 3600 * 1000;
 const MAX_DEVICES = 20;
 export const INVITE_MS = 7 * 24 * 3600 * 1000;
@@ -132,7 +132,7 @@ export const _resetLimiter = () => {
 export const _noteFailure = (ip: string) => ipLimiter.fail(ip);
 
 // ---- helpers ----
-function publicUser(row: Record<string, unknown>): User {
+export function publicUser(row: Record<string, unknown>): User {
   const { passwordHash: _p, ...u } = toCamel<User & { passwordHash: string }>(row);
   return u;
 }
@@ -158,6 +158,8 @@ function insertUser(db: Db, role: OrgRole, f: { name: string; email: string; pas
 export function setupWorkspace(
   db: Db,
   f: { workspaceName: string; name: string; email: string; password: string },
+  /** A proven Tailscale login for the owner (server/app.ts decides when a login counts as proven), or null. */
+  tailscaleLogin: string | null = null,
 ): User {
   return tx(db, () => {
     const n = (db.prepare('SELECT COUNT(*) c FROM users').get() as { c: number }).c;
@@ -165,7 +167,12 @@ export function setupWorkspace(
     db.prepare('INSERT INTO account (id,name,settings_json,created_at) VALUES (?,?,?,?)')
       // A new workspace starts simple: sprints are a switch under Workspace settings. Dependencies are on, the vision board draws them.
       .run(newId(), f.workspaceName, JSON.stringify({ ...DEFAULT_SETTINGS, sprintsEnabled: false, dependenciesEnabled: true }), clock());
-    return insertUser(db, 'owner', f);
+    const owner = insertUser(db, 'owner', f);
+    if (!tailscaleLogin) return owner;
+    db.prepare('UPDATE users SET tailscale_login=? WHERE id=?').run(tailscaleLogin, owner.id);
+    // The owner is on the team now, so a join request they left before setup goes.
+    db.prepare('DELETE FROM access_requests WHERE login=?').run(tailscaleLogin);
+    return publicUser(db.prepare('SELECT * FROM users WHERE id=?').get(owner.id) as Record<string, unknown>);
   });
 }
 

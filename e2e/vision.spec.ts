@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { ensureWorkspace, newPerson, run, snapshot, unique } from './helpers';
+import * as Y from 'yjs';
+import { ensureWorkspace, newPerson, run, SHOTS, snapshot, unique, writeBoard } from './helpers';
 
 test('vision board: create from a card, nav link, read only for a member, delete', async ({ page, browser }) => {
   await ensureWorkspace(page);
@@ -760,16 +761,26 @@ test('vision board presence: named cursor, selection outline, avatar stack, leav
   await expect(stackA.getByRole('img', { name })).toHaveCount(0);
 });
 
-test('a project board lays the project out as a tree, and updates without duplicates', async ({ page }) => {
+/** The board node (frame, label, card) whose own text is `text`, by type. */
+const frame = (page: import('@playwright/test').Page, text: string) => page.locator('[data-node-type="container"]').filter({ has: page.locator('.bnode-label', { hasText: text }) });
+const inside = (o: { x: number; y: number; width: number; height: number }, i: { x: number; y: number; width: number; height: number }) =>
+  i.x >= o.x - 1 && i.y >= o.y - 1 && i.x + i.width <= o.x + o.width + 1 && i.y + i.height <= o.y + o.height + 1;
+
+test('a project board lays the project out as frames, and shows one project', async ({ page }) => {
   await ensureWorkspace(page);
-  const name = unique('Tree project');
+  const name = unique('Frame project');
   const project = await run(page, 'projects', 'create', { name });
-  const deck = await run(page, 'decks', 'create', { title: unique('Tree list'), projectId: project.id });
-  const a = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Tree task A' })).id as string;
-  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Tree task B' });
-  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Tree sub of A', parentCardId: a });
-  const done = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Tree finished' })).id as string;
+  await run(page, 'projects', 'update', { id: project.id, spaces: [{ id: 1, name: 'First area', icon: null, defaultDeckType: 'mixed' }] });
+  const listTitle = unique('Frame list');
+  const deck = await run(page, 'decks', 'create', { title: listTitle, projectId: project.id, spaceId: 1 });
+  const a = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Frame task A' })).id as string;
+  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Frame task B' });
+  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Frame sub of A', parentCardId: a });
+  const done = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Frame finished' })).id as string;
   await run(page, 'cards', 'update', { id: done, status: 'done' });
+  const otherName = unique('Other project');
+  const other = await run(page, 'projects', 'create', { name: otherName });
+  await run(page, 'decks', 'create', { title: unique('Other list'), projectId: other.id });
 
   await page.goto('/vision');
   await page.getByRole('button', { name: 'Project board' }).click();
@@ -778,23 +789,110 @@ test('a project board lays the project out as a tree, and updates without duplic
   await dlg.getByRole('button', { name: 'Create board' }).click();
   await expect(page).toHaveURL(/\/vision\/\d+$/);
   const canvas = page.getByRole('region', { name: 'Board' });
-  // Open tasks only: A, B and A's subtask, not the finished one.
+  // Open tasks only, each inside its list frame, which sits inside its area frame. No list-to-task lines.
   await expect(canvas.locator('.bcard')).toHaveCount(3);
   await expect(canvas).toContainText(name);
-  await expect(canvas).toContainText('Tree sub of A');
-  await expect(canvas).not.toContainText('Tree finished');
+  await expect(canvas).not.toContainText('Frame finished');
+  await expect(frame(page, 'First area')).toHaveCount(1);
+  await expect(frame(page, listTitle)).toHaveCount(1);
+  const area = (await frame(page, 'First area').boundingBox())!, list = (await frame(page, listTitle).boundingBox())!;
+  expect(inside(area, list)).toBe(true);
+  for (const t of ['Frame task A', 'Frame task B', 'Frame sub of A']) {
+    expect(inside(list, (await page.locator('[data-node-type="card"]').filter({ hasText: t }).boundingBox())!)).toBe(true);
+  }
+  await expect(page.locator('[data-edge-id]')).toHaveCount(1); // A → its subtask
+  await expect(page.locator('[data-edge-id][data-label="subtask"]')).toHaveCount(1);
 
-  // A task added later comes in with "Project tree"; nothing already there is added twice.
-  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Tree task C' });
-  await page.getByRole('button', { name: 'Project tree' }).click();
-  const again = page.getByRole('dialog', { name: 'Project tree' });
-  await again.getByRole('combobox').selectOption({ label: name });
-  await again.getByRole('button', { name: 'Add to the board' }).click();
-  await expect(canvas.locator('.bcard')).toHaveCount(4);
-  await expect(page.getByRole('status').getByText('Added 1 task and 1 line')).toBeVisible();
+  // The project's frames follow the project: no Edit or Delete for them, and the Delete key says why and keeps them.
+  await frame(page, listTitle).locator('.bnode-label').click();
+  const actions = page.getByRole('toolbar', { name: 'Node actions' });
+  await expect(actions.getByRole('button', { name: 'Focus' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+  await expect(actions.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+  await page.keyboard.press('Enter'); // no name editor either
+  await expect(page.getByRole('textbox', { name: 'Container label' })).toHaveCount(0);
+  await page.keyboard.press('Delete');
+  await expect(page.getByRole('status').getByText('Project frames follow the project; delete the list or area from the project instead.')).toBeVisible();
+  await expect(frame(page, listTitle)).toHaveCount(1);
+  await expect(canvas.locator('.bcard')).toHaveCount(3);
+  await page.keyboard.press('Escape');
+
+  // The board shows this project: adding another is refused, in the dialog.
+  await page.getByRole('button', { name: 'Add project' }).click();
+  const add = page.getByRole('dialog', { name: 'Add project' });
+  await add.getByRole('combobox').selectOption({ label: otherName });
+  await add.getByRole('button', { name: 'Add to the board' }).click();
+  await expect(add.getByRole('alert')).toHaveText(`This board shows ${name}; make a new project board for another.`);
+  await add.getByRole('button', { name: 'Cancel' }).click();
+  await expect(canvas.locator('.bcard')).toHaveCount(3);
+  // No old tree here: nothing to arrange.
+  await page.getByRole('button', { name: 'More' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Arrange as frames' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
 });
 
-test('lines on a project board change the project: a task waits for another, and moves to another list', async ({ page }) => {
+test('"Arrange as frames" turns a board made with the old tree into frames; one undo restores it', async ({ page }) => {
+  await ensureWorkspace(page);
+  const name = unique('Old tree project');
+  const project = await run(page, 'projects', 'create', { name });
+  const listTitle = unique('Old tree list');
+  const deck = await run(page, 'decks', 'create', { title: listTitle, projectId: project.id, spaceId: 1 });
+  const a = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Old task A' })).id as string;
+  const b = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Old task B' })).id as string;
+  const host = (await run(page, 'cards', 'create', { deckId: deck.id, content: unique('Old tree board'), isDoc: true })).id as string;
+  const board = await run<{ id: string; accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host });
+  // The board as the old tree layout left it: labels joined by lines, a line from the list to each task, a note
+  // joined to the list label, and the user's own "just a line" between the two tasks.
+  await writeBoard(page, board.id, (doc) => {
+    const nodes = doc.getMap<Y.Map<unknown>>('nodes'), edges = doc.getMap<Y.Map<unknown>>('edges');
+    const node = (id: string, type: string, value: object, x: number, y: number, w = 200, h = 40) => {
+      const m = new Y.Map<unknown>(); m.set('type', type); m.set('value', value); m.set('pos', { x, y, w, h, parent: null }); nodes.set(id, m);
+    };
+    const line = (id: string, s: string, t: string) => {
+      const m = new Y.Map<unknown>(); m.set('value', { source: { nodeId: s, side: 'right' }, target: { nodeId: t, side: 'left' } }); edges.set(id, m);
+    };
+    node('lp', 'text', { content: name, ref: `project:${project.id}` }, 0, 0);
+    node('la', 'text', { content: 'Old area', ref: `area:${project.id}:1` }, 260, 0);
+    node('ll', 'text', { content: listTitle, ref: `deck:${deck.id}` }, 520, 0);
+    node('ca', 'card', { id: a, mode: 'mini' }, 560, 80, 200, 80);
+    node('cb', 'card', { id: b, mode: 'mini' }, 780, 80, 200, 80);
+    node('note', 'text', { content: 'Remember the boss fight' }, 260, 120, 200, 80);
+    line('e1', 'lp', 'la'); line('e2', 'la', 'll'); line('e3', 'll', 'ca'); line('e4', 'll', 'cb'); line('e5', 'ca', 'cb'); line('e6', 'note', 'll');
+  });
+
+  await page.goto(`/vision/${board.accountSeq}`);
+  const canvas = page.getByRole('region', { name: 'Board' });
+  const labels = page.locator('[data-node-type="text"]');
+  await expect(labels).toHaveCount(4); // project, area, list, note
+  await expect(page.locator('[data-edge-id]')).toHaveCount(6);
+  await expect(page.locator('[data-node-type="container"]')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'More' }).click();
+  await page.getByRole('menuitem', { name: 'Arrange as frames' }).click();
+  // Frames now; the area and list labels and their lines are gone; the project label is the header; the note stays,
+  // its line now on the list frame; the plain line between the tasks stays.
+  await expect(frame(page, listTitle)).toHaveCount(1);
+  await expect(page.locator('[data-node-type="container"]')).toHaveCount(2);
+  await expect(labels).toHaveCount(2);
+  await expect(canvas.locator('.bcard')).toHaveCount(2);
+  await expect(page.locator('[data-edge-id]')).toHaveCount(2);
+  const list = (await frame(page, listTitle).boundingBox())!;
+  for (const t of ['Old task A', 'Old task B']) expect(inside(list, (await page.locator('[data-node-type="card"]').filter({ hasText: t }).boundingBox())!)).toBe(true);
+  await page.getByRole('button', { name: 'More' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Arrange as frames' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // One undo brings the tree back as it was.
+  await page.getByRole('group', { name: 'Node tools' }).getByRole('button', { name: 'Undo' }).click();
+  await expect(page.locator('[data-node-type="container"]')).toHaveCount(0);
+  await expect(labels).toHaveCount(4);
+  await expect(page.locator('[data-edge-id]')).toHaveCount(6);
+  await page.getByRole('button', { name: 'More' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Arrange as frames' })).toBeVisible();
+  await page.keyboard.press('Escape');
+});
+
+test('lines on a project board: a task waits for another; a line from a task to a list is only a line', async ({ page }) => {
   await ensureWorkspace(page);
   const name = unique('Line project');
   const project = await run(page, 'projects', 'create', { name });
@@ -827,32 +925,39 @@ test('lines on a project board change the project: a task waits for another, and
   await expect(edges).toHaveCount(before + 1);
   await expect(page.locator('[data-edge-id][data-label="waits for"]')).toHaveCount(1);
 
-  // A → the other list: the task moves there, and its line to the old list goes away.
+  // A → the other list: on a project board that is only a line (dropping the card into the frame moves it).
   await node('Line task A').hover();
   from = await centre(page.getByRole('button', { name: 'Connect from bottom' }));
   to = (await node(l2title).boundingBox())!;
   await drag(page, from, { x: to.x + 20 - from.x, y: to.y + to.height / 2 - from.y });
-  await expect.poll(async () => (await snapshot(page)).cards.find((c: any) => c.id === a).deckId).toBe(l2.id);
-  await expect(page.getByRole('status').getByText(`Line task A moved to ${l2title}`)).toBeVisible();
-  await expect(edges).toHaveCount(before + 1); // one line added (to the new list), one removed (from the old list)
+  await expect(edges).toHaveCount(before + 2);
+  await page.waitForTimeout(600);
+  expect((await snapshot(page)).cards.find((c: any) => c.id === a).deckId).toBe(l1.id);
+  expect(inside((await frame(page, l2title).boundingBox())!, (await page.locator('[data-node-type="card"]').filter({ hasText: 'Line task A' }).boundingBox())!)).toBe(false);
 
   // Removing the "waits for" line removes the dependency from the task too.
   await page.locator('[data-edge-id][data-label="waits for"]').focus();
   await page.keyboard.press('Delete');
-  await expect(edges).toHaveCount(before);
+  await expect(edges).toHaveCount(before + 1);
   await expect.poll(async () => (await snapshot(page)).cardDeps.some((d: any) => d.lockedCardId === a)).toBe(false);
 });
 
-test('a line from a list to another area moves the list there', async ({ page }) => {
+/** Drags a node so its stored top-left lands on (x, y) in board units (the view may be zoomed). */
+async function dragTo(page: import('@playwright/test').Page, node: import('@playwright/test').Locator, grip: { x: number; y: number }, at: { x: number; y: number }) {
+  const p = await posOf(node), box = (await node.boundingBox())!, s = box.width / p.w;
+  await drag(page, { x: box.x + grip.x, y: box.y + grip.y }, { x: (at.x - p.x) * s, y: (at.y - p.y) * s });
+}
+
+test('dragging a list frame onto another area moves the list there, even onto that area\'s list; never into a list', async ({ page }) => {
   await ensureWorkspace(page);
   const name = unique('Area project');
   const project = await run(page, 'projects', 'create', { name });
   await run(page, 'projects', 'update', { id: project.id, spaces: [{ id: 1, name: null, icon: null, defaultDeckType: 'mixed' }, { id: 2, name: 'Second area', icon: null, defaultDeckType: 'mixed' }] });
-  const t1 = unique('Area list one');
+  const t1 = unique('Area list one'), t2 = unique('Area list two');
   const l1 = await run(page, 'decks', 'create', { title: t1, projectId: project.id, spaceId: 1 });
-  const l2 = await run(page, 'decks', 'create', { title: unique('Area list two'), projectId: project.id, spaceId: 2 });
-  await run(page, 'cards', 'create', { deckId: l1.id, content: 'Area task one' });
-  await run(page, 'cards', 'create', { deckId: l2.id, content: 'Area task two' });
+  const l2 = await run(page, 'decks', 'create', { title: t2, projectId: project.id, spaceId: 2 });
+  for (let i = 1; i <= 5; i++) await run(page, 'cards', 'create', { deckId: l1.id, content: `Area task ${i}` });
+  await run(page, 'cards', 'create', { deckId: l2.id, content: 'Area task other' });
 
   await page.goto('/vision');
   await page.getByRole('button', { name: 'Project board' }).click();
@@ -860,16 +965,340 @@ test('a line from a list to another area moves the list there', async ({ page })
   await dlg.getByRole('combobox').selectOption({ label: name });
   await dlg.getByRole('button', { name: 'Create board' }).click();
   await expect(page).toHaveURL(/\/vision\/\d+$/);
-  const node = (text: string) => page.locator('[data-node-type="text"]').filter({ hasText: text });
-  await expect(node('Second area')).toHaveCount(1);
-  const edges = page.locator('[data-edge-id]');
-  const before = await edges.count();
+  await expect(frame(page, 'Second area')).toHaveCount(1);
+  await expect(page.locator('[data-node-type="card"]').filter({ hasText: /Area task/ })).toHaveCount(6);
 
-  await node(t1).hover();
-  const from = await centre(page.getByRole('button', { name: 'Connect from left' }));
-  const to = (await node('Second area').boundingBox())!;
-  await drag(page, from, { x: to.x + to.width / 2 - from.x, y: to.y + to.height / 2 - from.y });
+  // By the list frame's name strip, let go with the pointer over the other area's list (too small to hold it whole).
+  const area = await posOf(frame(page, 'Second area')), other = await posOf(frame(page, t2));
+  const grip = (await frame(page, t1).boundingBox())!, target = (await frame(page, t2).boundingBox())!;
+  await drag(page, { x: grip.x + 10, y: grip.y + 10 }, { x: target.x + target.width / 2 - grip.x - 10, y: target.y + target.height / 2 - grip.y - 10 });
   await expect.poll(async () => (await snapshot(page)).decks.find((d: any) => d.id === l1.id).spaceId).toBe(2);
   await expect(page.getByRole('status').getByText(`${t1} moved to Second area`)).toBeVisible();
-  await expect(edges).toHaveCount(before); // one line added (to the new area), one removed (from the old area)
+  // The board follows: the list frame goes to the bottom of that area (not into the list it was dropped on), tasks with it.
+  await expect.poll(async () => (await posOf(frame(page, t1))).parent).toBe(area.id);
+  expect((await posOf(frame(page, t1))).y).toBeGreaterThan(other.y + other.h - 1);
+  for (let i = 1; i <= 5; i++) {
+    expect(inside((await frame(page, t1).boundingBox())!, (await page.locator('[data-node-type="card"]').filter({ hasText: `Area task ${i}` }).boundingBox())!)).toBe(true);
+  }
+  expect(inside((await frame(page, 'Second area').boundingBox())!, (await frame(page, t1).boundingBox())!)).toBe(true);
+});
+
+test('dropping a task card into another list frame moves the task; a drag inside its own frame changes nothing', async ({ page }) => {
+  await ensureWorkspace(page);
+  const name = unique('Drop project');
+  const project = await run(page, 'projects', 'create', { name });
+  const t1 = unique('Drop list one'), t2 = unique('Drop list two');
+  const l1 = await run(page, 'decks', 'create', { title: t1, projectId: project.id });
+  const l2 = await run(page, 'decks', 'create', { title: t2, projectId: project.id });
+  const a = (await run(page, 'cards', 'create', { deckId: l1.id, content: 'Drop task A' })).id as string;
+  await run(page, 'cards', 'create', { deckId: l2.id, content: 'Drop task B' });
+
+  await page.goto('/vision');
+  await page.getByRole('button', { name: 'Project board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await dlg.getByRole('combobox').selectOption({ label: name });
+  await dlg.getByRole('button', { name: 'Create board' }).click();
+  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  const cardA = page.locator('[data-node-type="card"]').filter({ hasText: 'Drop task A' });
+  await expect(cardA).toHaveCount(1);
+  await expect(page.locator('[data-node-type="card"]').filter({ hasText: 'Drop task B' })).toHaveCount(1);
+  let saves = 0;
+  page.on('request', (r) => { if (r.url().includes('/dispatch/cards/update')) saves++; });
+
+  // Inside its own frame (into the list's free second slot): only the position changes.
+  const one = await posOf(frame(page, t1)), before = await posOf(cardA);
+  await dragTo(page, cardA, { x: before.w / 2, y: before.h / 2 }, { x: one.x + one.w - 20 - before.w, y: before.y });
+  await expect.poll(async () => (await posOf(cardA)).x).toBe(one.x + one.w - 20 - before.w);
+  await page.waitForTimeout(900);
+  expect(await posOf(cardA)).toMatchObject({ y: before.y, parent: one.id });
+  expect(saves).toBe(0);
+  expect((await snapshot(page)).cards.find((c: any) => c.id === a).deckId).toBe(l1.id);
+
+  // Into the other list's frame (its free second slot): the task moves to that list, and the card stays where dropped.
+  const two = await posOf(frame(page, t2));
+  const spot = { x: two.x + two.w - 20 - before.w, y: two.y + 40 };
+  await dragTo(page, cardA, { x: before.w / 2, y: before.h / 2 }, spot);
+  await expect.poll(async () => (await snapshot(page)).cards.find((c: any) => c.id === a).deckId).toBe(l2.id);
+  await expect(page.getByRole('status').getByText(`Drop task A moved to ${t2}`)).toBeVisible();
+  expect(saves).toBe(1);
+  await page.waitForTimeout(900); // a follow pass has run
+  expect(await posOf(cardA)).toMatchObject({ ...spot, parent: two.id });
+});
+
+test('an open project board follows the project: new task, task moved to another list, task done; undo leaves that alone', async ({ page }) => {
+  await ensureWorkspace(page);
+  const name = unique('Follow project');
+  const project = await run(page, 'projects', 'create', { name });
+  const t1 = unique('Follow list one'), t2 = unique('Follow list two');
+  const l1 = await run(page, 'decks', 'create', { title: t1, projectId: project.id });
+  const l2 = await run(page, 'decks', 'create', { title: t2, projectId: project.id });
+  await run(page, 'cards', 'create', { deckId: l1.id, content: 'Follow task A' });
+
+  await page.goto('/vision');
+  await page.getByRole('button', { name: 'Project board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await dlg.getByRole('combobox').selectOption({ label: name });
+  await dlg.getByRole('button', { name: 'Create board' }).click();
+  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  const cardNode = (text: string) => page.locator('[data-node-type="card"]').filter({ hasText: text });
+  await expect(cardNode('Follow task A')).toHaveCount(1);
+
+  // The user's own last step: the header moves one grid step right.
+  const header = page.locator('[data-node-type="text"]').filter({ hasText: name });
+  const headerX = (await header.boundingBox())!.x;
+  await header.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(async () => (await header.boundingBox())!.x).toBeGreaterThan(headerX);
+
+  // A task added elsewhere shows up in its list frame.
+  const b = (await run(page, 'cards', 'create', { deckId: l1.id, content: 'Follow task B' })).id as string;
+  await expect(cardNode('Follow task B')).toHaveCount(1);
+  await expect.poll(async () => inside((await frame(page, t1).boundingBox())!, (await cardNode('Follow task B').boundingBox())!)).toBe(true);
+
+  // Moved to the other list elsewhere: the card moves into that list's frame.
+  await run(page, 'cards', 'update', { id: b, deckId: l2.id });
+  await expect.poll(async () => inside((await frame(page, t2).boundingBox())!, (await cardNode('Follow task B').boundingBox())!)).toBe(true);
+
+  // Done elsewhere: the card leaves.
+  await run(page, 'cards', 'update', { id: b, status: 'done' });
+  await expect(cardNode('Follow task B')).toHaveCount(0);
+
+  // Undo takes back the user's step only: the header returns; task B stays off, task A stays in its list.
+  await header.focus();
+  await page.keyboard.press('Control+z');
+  await expect.poll(async () => (await header.boundingBox())!.x).toBe(headerX);
+  await page.waitForTimeout(600); // a follow pass would have run by now
+  await expect(cardNode('Follow task B')).toHaveCount(0);
+  await expect(cardNode('Follow task A')).toHaveCount(1);
+  expect(inside((await frame(page, t1).boundingBox())!, (await cardNode('Follow task A').boundingBox())!)).toBe(true);
+  await expect(frame(page, t2)).toHaveCount(1);
+});
+
+test("a board shows only its own task's project: adding another is refused, its own is laid out", async ({ page }) => {
+  await ensureWorkspace(page);
+  const name = unique('Host project');
+  const project = await run(page, 'projects', 'create', { name });
+  const deck = await run(page, 'decks', 'create', { title: unique('Host list'), projectId: project.id });
+  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Host project task' });
+  const host = (await run(page, 'cards', 'create', { deckId: deck.id, content: unique('Moodboard') })).id as string;
+  const otherName = unique('Not this project');
+  const other = await run(page, 'projects', 'create', { name: otherName });
+  const od = await run(page, 'decks', 'create', { title: unique('Not this list'), projectId: other.id });
+  await run(page, 'cards', 'create', { deckId: od.id, content: 'Not this task' });
+  const board = await run<{ id: string; accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host });
+
+  await page.goto(`/vision/${board.accountSeq}`);
+  const canvas = page.getByRole('region', { name: 'Board' });
+  await page.getByRole('button', { name: 'Add project' }).click();
+  let add = page.getByRole('dialog', { name: 'Add project' });
+  await add.getByRole('combobox').selectOption({ label: otherName });
+  await add.getByRole('button', { name: 'Add to the board' }).click();
+  await expect(page.getByRole('status').getByText('A board can only show the project it belongs to.')).toBeVisible();
+  await page.waitForTimeout(600);
+  await expect(canvas.locator('[data-node-id]')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Add project' }).click();
+  add = page.getByRole('dialog', { name: 'Add project' });
+  await add.getByRole('combobox').selectOption({ label: name });
+  await add.getByRole('button', { name: 'Add to the board' }).click();
+  await expect(page.locator('[data-node-type="card"]').filter({ hasText: 'Host project task' })).toHaveCount(1);
+  await expect(canvas).not.toContainText('Not this task');
+});
+
+test('zoomed out, a project board shows its lists with tasks left and one thick arrow per pair of lists; zooming changes nothing', async ({ page }) => {
+  await ensureWorkspace(page);
+  const name = unique('Macro project');
+  const project = await run(page, 'projects', 'create', { name });
+  await run(page, 'projects', 'update', { id: project.id, spaces: [{ id: 1, name: 'Macro area one', icon: null, defaultDeckType: 'mixed' }, { id: 2, name: 'Macro area two', icon: null, defaultDeckType: 'mixed' }] });
+  const t1 = unique('Macro list one'), t2 = unique('Macro list two');
+  const l1 = await run(page, 'decks', 'create', { title: t1, projectId: project.id, spaceId: 1 });
+  const l2 = await run(page, 'decks', 'create', { title: t2, projectId: project.id, spaceId: 2 });
+  await run(page, 'decks', 'create', { title: unique('Macro list three'), projectId: project.id, spaceId: 1 });
+  const a = (await run(page, 'cards', 'create', { deckId: l1.id, content: 'Macro task A' })).id as string;
+  await run(page, 'cards', 'create', { deckId: l1.id, content: 'Macro task B' });
+  const c = (await run(page, 'cards', 'create', { deckId: l2.id, content: 'Macro task C' })).id as string;
+  await run(page, 'cards', 'update', { id: a, inDeps: [c] }); // A (list one) waits for C (list two)
+
+  // Board writes sent to the server (y-protocols sync update frames), to show zooming sends none.
+  let writes = 0;
+  page.on('websocket', (ws) => ws.on('framesent', (f) => { const b = f.payload; if (typeof b !== 'string' && b[0] === 0 && b[1] === 2) writes++; }));
+  await page.goto('/vision');
+  await page.getByRole('button', { name: 'Project board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await dlg.getByRole('combobox').selectOption({ label: name });
+  await dlg.getByRole('button', { name: 'Create board' }).click();
+  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  const cards = page.locator('[data-node-type="card"]');
+  await expect(cards).toHaveCount(3);
+  const waits = page.locator('[data-edge-id][data-label="waits for"]');
+  await expect(waits).toHaveCount(1);
+  // On a project board "waits for" is dashed in the accent (nothing stored: the line has no colour of its own).
+  await expect(waits).toHaveClass(/\bis-waits\b/);
+  await expect(waits).toHaveClass(/\bbc-orange\b/);
+  await expect(waits).toHaveAttribute('data-color', '');
+  // Drawn by where its ends are: the cross-area arrow runs between the cards' facing sides, not up over the header.
+  const header = page.locator('.bnode.is-header');
+  await expect(header).toHaveCount(1);
+  const headerBottom = (await header.boundingBox())!.y + (await header.boundingBox())!.height;
+  expect((await waits.locator('.bedge-line').boundingBox())!.y).toBeGreaterThan(headerBottom);
+  const one = await posOf(frame(page, t1)), two = await posOf(frame(page, t2));
+  await page.waitForTimeout(900); // the follow pass has run
+  const stored = await page.locator('[data-node-id]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-node-id'), e.getAttribute('data-x'), e.getAttribute('data-y')].join()).sort());
+  const sent = writes;
+
+  // Zoom out with the keyboard until the overview shows.
+  await page.getByTestId('board-viewport').focus();
+  for (let i = 0; i < 6; i++) await page.keyboard.press('-');
+  await expect(page.getByText('40%', { exact: true })).toBeVisible();
+  await expect(frame(page, t1)).toHaveAttribute('aria-label', `${t1}, 2 tasks left`);
+  await expect(frame(page, t2)).toHaveAttribute('aria-label', `${t2}, 1 task left`);
+  await expect(frame(page, t1).getByText('2 tasks left', { exact: true })).toBeVisible();
+  await expect(frame(page, t2).getByText('1 task left', { exact: true })).toBeVisible();
+  await expect(cards).toHaveCount(0);
+  await expect(page.locator('[data-edge-id][data-label="waits for"]')).toHaveCount(0);
+  const thick = page.locator('.bmacro-link');
+  await expect(thick).toHaveCount(1);
+  await expect(thick).toHaveAttribute('data-macro-from', one.id);
+  await expect(thick).toHaveAttribute('data-macro-to', two.id);
+  await expect(thick).toHaveAttribute('data-count', '1');
+  await expect(page.getByRole('img', { name: `${t1} waits for ${t2}: 1 task` })).toHaveCount(1);
+  // The thick arrow is not a connector: it can't be focused or picked.
+  await expect(thick).not.toHaveAttribute('tabindex', /.*/);
+  // Readable at the threshold: the list name is drawn at 16px or more on screen.
+  const px = await frame(page, t1).locator('.bmacro-title').evaluate((e) => e.getBoundingClientRect().height);
+  expect(px).toBeGreaterThanOrEqual(16);
+  await page.screenshot({ path: `${SHOTS}/board-macro.png` });
+
+  // At the least zoom the list names still fit inside their frames, and carry the full name.
+  await page.keyboard.press('-'); await page.keyboard.press('-');
+  await expect(page.getByText('20%', { exact: true })).toBeVisible();
+  for (const t of [t1, t2]) {
+    const f = (await frame(page, t).boundingBox())!, title = frame(page, t).locator('.bmacro-title');
+    await expect(title).toHaveAttribute('title', t);
+    expect(inside(f, (await title.boundingBox())!)).toBe(true);
+    expect(inside(f, (await frame(page, t).locator('.bmacro-left').boundingBox())!)).toBe(true);
+  }
+  await page.keyboard.press('+'); await page.keyboard.press('+');
+  await expect(page.getByText('40%', { exact: true })).toBeVisible();
+
+  // Zooming wrote nothing: no board update went out, every drawn node is where it was stored.
+  await page.waitForTimeout(600);
+  expect(writes).toBe(sent);
+  const now = await page.locator('[data-node-id]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-node-id'), e.getAttribute('data-x'), e.getAttribute('data-y')].join()).sort());
+  expect(now).toHaveLength(stored.length - 3); // the three cards are not drawn
+  expect(stored).toEqual(expect.arrayContaining(now));
+
+  // Back in: the cards and their arrow return.
+  for (let i = 0; i < 6; i++) await page.keyboard.press('+');
+  await expect(page.getByText('100%', { exact: true })).toBeVisible();
+  await expect(cards).toHaveCount(3);
+  await expect(page.locator('[data-edge-id][data-label="waits for"]')).toHaveCount(1);
+  await expect(thick).toHaveCount(0);
+  await expect(page.getByText('tasks left')).toHaveCount(0);
+  await page.mouse.move(1, 1); // off the board: no hover handles in the picture
+  // The cross-list "waits for" label is drawn above the cards: what is at its centre is the label itself.
+  const waitsId = await page.locator('[data-edge-id][data-label="waits for"]').getAttribute('data-edge-id');
+  const label = page.locator(`[data-label-of="${waitsId}"]`);
+  await expect(label).toHaveText('waits for');
+  const lb = (await label.boundingBox())!;
+  expect(await page.evaluate(({ x, y, id }) => document.elementFromPoint(x, y)?.getAttribute('data-label-of') === id,
+    { x: lb.x + lb.width / 2, y: lb.y + lb.height / 2, id: waitsId })).toBe(true);
+  await page.screenshot({ path: `${SHOTS}/board-detail.png` });
+
+  // Frames can still be dragged in the overview: list one, by its name, onto the other area moves the list there.
+  for (let i = 0; i < 6; i++) await page.keyboard.press('-');
+  await expect(cards).toHaveCount(0);
+  const grip = (await frame(page, t1).boundingBox())!, target = (await frame(page, 'Macro area two').boundingBox())!;
+  await drag(page, { x: grip.x + 20, y: grip.y + 20 }, { x: target.x + target.width / 2 - grip.x - 20, y: target.y + target.height - 10 - grip.y - 20 });
+  await expect.poll(async () => (await snapshot(page)).decks.find((d: any) => d.id === l1.id).spaceId).toBe(2);
+});
+
+test('an area frame drags by the middle of its name, at 100% and in the overview, and stays where it was let go', async ({ page }) => {
+  await ensureWorkspace(page);
+  const name = unique('Grip project');
+  const project = await run(page, 'projects', 'create', { name });
+  await run(page, 'projects', 'update', { id: project.id, spaces: [{ id: 1, name: 'Grip area', icon: null, defaultDeckType: 'mixed' }] });
+  const deck = await run(page, 'decks', 'create', { title: unique('Grip list'), projectId: project.id, spaceId: 1 });
+  await run(page, 'cards', 'create', { deckId: deck.id, content: 'Grip task' });
+
+  await page.goto('/vision');
+  await page.getByRole('button', { name: 'Project board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await dlg.getByRole('combobox').selectOption({ label: name });
+  await dlg.getByRole('button', { name: 'Create board' }).click();
+  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await expect(page.locator('[data-node-type="card"]')).toHaveCount(1);
+  const area = frame(page, 'Grip area');
+  await page.waitForTimeout(900); // the follow pass has run
+
+  const dragByName = async () => {
+    await expect(page.locator('.bnode.is-selected')).toHaveCount(0);
+    const was = await posOf(area), label = (await area.locator('.bnode-label').first().boundingBox())!;
+    await drag(page, { x: label.x + label.width / 2, y: label.y + label.height / 2 }, { x: 120, y: 0 });
+    await expect.poll(async () => (await posOf(area)).x).toBeGreaterThan(was.x);
+    const moved = await posOf(area);
+    await page.waitForTimeout(900);
+    expect(await posOf(area)).toEqual(moved);
+  };
+  await dragByName();
+  await page.keyboard.press('Escape');
+  await page.getByTestId('board-viewport').focus();
+  for (let i = 0; i < 6; i++) await page.keyboard.press('-');
+  await expect(page.getByText('40%', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-tasks-left]')).toHaveCount(1);
+  await dragByName();
+});
+
+test('project board: a handle on each task draws an arrow; the hint goes away for good; frame handles stay off the name strip', async ({ page }, testInfo) => {
+  await ensureWorkspace(page);
+  const name = unique('Handle project');
+  const project = await run(page, 'projects', 'create', { name });
+  await run(page, 'projects', 'update', { id: project.id, spaces: [{ id: 1, name: 'Handle area', icon: null, defaultDeckType: 'mixed' }] });
+  const deck = await run(page, 'decks', 'create', { title: unique('Handle list'), projectId: project.id, spaceId: 1 });
+  const a = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Handle task A' })).id as string;
+  const b = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Handle task B' })).id as string;
+
+  await page.goto('/vision');
+  await page.getByRole('button', { name: 'Project board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await dlg.getByRole('combobox').selectOption({ label: name });
+  await dlg.getByRole('button', { name: 'Create board' }).click();
+  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  const node = (text: string) => page.locator('[data-node-type="card"]').filter({ hasText: text });
+  await expect(node('Handle task B')).toHaveCount(1);
+
+  // The hint shows (fewer than two arrows); a hovered card shows a handle named after its task.
+  const hint = page.getByText("Drag from a task's handle to another task to connect them.");
+  await expect(hint).toBeVisible();
+  await node('Handle task A').hover();
+  const handle = page.getByRole('button', { name: 'Connect from right of Handle task A' });
+  await expect(handle).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('board-handles.png') });
+
+  // Drag from it to the other card: the board asks what the line means; "Waits for" saves the dependency and draws a dashed accent line.
+  const from = await centre(handle);
+  const to = (await node('Handle task B').boundingBox())!;
+  await drag(page, from, { x: to.x + 10 - from.x, y: to.y + to.height / 2 - from.y });
+  await page.getByRole('dialog', { name: 'What does this line mean?' }).getByRole('button', { name: 'It waits for it' }).click();
+  await expect.poll(async () => (await snapshot(page)).cardDeps.some((d: any) => d.lockedCardId === a && d.lockingCardId === b)).toBe(true);
+  const line = page.locator('.bedge.is-waits .bedge-line');
+  await expect(line).toHaveCount(1);
+  expect(await line.evaluate((el) => getComputedStyle(el).strokeDasharray)).not.toBe('none');
+
+  // Frames: a press in the middle of the name strip moves the frame, it does not start an arrow.
+  const area = frame(page, 'Handle area');
+  await expect(area).toHaveCount(1);
+  const before = await posOf(area);
+  const box = (await area.boundingBox())!;
+  expect(box.width / before.w).toBeCloseTo(1, 1); // 100 % zoom
+  await drag(page, { x: box.x + box.width / 2, y: box.y + 14 }, { x: 40, y: 30 });
+  await expect.poll(async () => (await posOf(area)).x).not.toBe(before.x);
+  await expect(page.locator('.bedge-preview')).toHaveCount(0);
+
+  // Dismissed once, gone after a reload.
+  await page.getByRole('button', { name: 'Dismiss hint' }).click();
+  await expect(hint).toHaveCount(0);
+  await page.reload();
+  await expect(node('Handle task A')).toHaveCount(1);
+  await expect(hint).toHaveCount(0);
 });

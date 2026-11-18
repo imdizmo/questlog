@@ -14,6 +14,7 @@ import { EffortField } from './EffortField';
 import { TagToggles } from './TagToggles';
 import { eligibleOwners, OwnerPicker } from './OwnerPicker';
 import { Editor } from './Editor';
+import { LazyLoreEditor as LoreEditor } from '../lore/LazyLoreEditor';
 
 /** A labelled on/off switch. */
 export function Toggle({ label, checked, onChange, disabled, title }: {
@@ -63,8 +64,11 @@ export function AddCardPanel({ deckId: initialDeck, onClose }: { deckId: string;
   const [another, setAnother] = useState(false);
   const [isDocChoice, setIsDoc] = useState(docDeck);
   const isDoc = docDeck || isDocChoice;
+  /** Once Lore was switched, the newly mounted editor leaves focus on the switch. */
+  const [switched, setSwitched] = useState(false);
   const [busy, setBusy] = useState(false);
-  const area = useRef<HTMLTextAreaElement>(null);
+  /** The text editor (the textarea, or the lore editor while Lore is on), for focusing it again. */
+  const area = useRef<{ focus(): void } | null>(null);
   const empty = text.trim() === '';
   const projectTags = (deck && projects.get(deck.projectId)?.tags) || [];
   const presetList = [...presets.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -120,18 +124,28 @@ export function AddCardPanel({ deckId: initialDeck, onClose }: { deckId: string;
       <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
       <button type="submit" className="btn btn-primary" disabled={empty || busy || !deck}>Add task</button>
     </>}>
-      <Editor
-        textareaRef={area} autoFocus rows={8} placeholder="First line is the title"
-        value={text} onChange={setText} onSave={() => void save()}
-        projectId={deck?.projectId ?? null}
-        onSetProperties={() => document.getElementById(presetId)?.focus()}
-      />
+      {/* The text lives here, so switching Lore on or off keeps it (the caret goes to the end). */}
+      {isDoc ? (
+        <LoreEditor
+          editorRef={area} autoFocus={!switched} rows={8} placeholder="First line is the title"
+          value={text} onChange={setText} onSave={() => void save()}
+          projectId={deck?.projectId ?? null}
+          onSetProperties={() => document.getElementById(presetId)?.focus()}
+        />
+      ) : (
+        <Editor
+          textareaRef={(el) => { area.current = el; }} autoFocus={!switched} rows={8} placeholder="First line is the title"
+          value={text} onChange={setText} onSave={() => void save()}
+          projectId={deck?.projectId ?? null}
+          onSetProperties={() => document.getElementById(presetId)?.focus()}
+        />
+      )}
       <div className="add-options">
         <div className="quick-field">
           <span>List</span>
           <DeckPicker value={deckId} isDoc={isDoc} onChange={setDeckId} />
         </div>
-        <Toggle label="Lore" checked={isDoc} disabled={docDeck} onChange={setIsDoc}
+        <Toggle label="Lore" checked={isDoc} disabled={docDeck} onChange={(v) => { setSwitched(true); setIsDoc(v); }}
           title={docDeck ? 'Everything in a lore list is lore' : undefined} />
         <Toggle label="Create another" checked={another} onChange={setAnother} />
       </div>

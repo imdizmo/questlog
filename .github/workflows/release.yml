@@ -120,5 +120,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ls -l dist
+          # The notes are this version's section of CHANGELOG.md, so the file and the release never differ.
+          awk -v v="${TAG#v}" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md > notes.md
+          grep -q . notes.md || { echo "CHANGELOG.md has no section for ${TAG#v}"; exit 1; }
           # Only the archives and their checksums: the download step also leaves a web/ folder in dist.
-          gh release create "$TAG" dist/Questlog-v* --verify-tag --notes-from-tag
+          gh release create "$TAG" dist/Questlog-v* --verify-tag --title "Questlog ${TAG#v}" --notes-file notes.md

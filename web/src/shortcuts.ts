@@ -1,4 +1,4 @@
-export type ShortcutScope = 'global' | 'card' | 'deck';
+export type ShortcutScope = 'global' | 'card' | 'deck' | 'board';
 
 export interface Shortcut {
   /** Stable name that code uses to look the entry up. */
@@ -28,9 +28,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'card.conversations', keys: 'n', label: 'Conversations tab', scope: 'card' },
   { id: 'deck.order', keys: 'o', label: 'Order panel', scope: 'deck' },
   { id: 'deck.tags', keys: 't', label: 'Tag panel', scope: 'deck' },
+  { id: 'board.move', keys: 'Arrow keys', label: 'Move the focused node (Shift: five steps; Alt: resize)', scope: 'board' },
+  { id: 'board.moveTask', keys: 'Arrow keys', label: "On a project board, moving a task card into another list's frame also moves the task to that list", scope: 'board' },
 ];
 
-export const SCOPE_LABEL: Record<ShortcutScope, string> = { global: 'Everywhere', deck: 'In a list', card: 'On a task' };
+export const SCOPE_LABEL: Record<ShortcutScope, string> = { global: 'Everywhere', deck: 'In a list', card: 'On a task', board: 'On a board' };
 
 /** The keys of one entry (throws on a misspelt id, which is a programming error). */
 export function keysOf(id: string): string {

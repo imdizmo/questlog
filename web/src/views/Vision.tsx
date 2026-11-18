@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type DragEvent } from 'react';
 import type * as Y from 'yjs';
 import type { VisionBoard } from '../../../shared/types';
 import { titleOf } from '../../../shared/cards';
@@ -55,7 +55,7 @@ export function VisionHome() {
             <CardPicker label="Pick task" trigger={<><Icon name="plus" size={14} /> Pick task</>} triggerClass="btn btn-primary"
               candidates={candidates} empty="No tasks you can add a board to"
               onPick={(c) => void createBoard(c).then((seq) => navigate(boardPath(seq))).catch(() => {})} />
-            <p>Or start with a whole project laid out as a tree.</p>
+            <p>Or start with a whole project laid out as frames.</p>
             <ProjectBoardButton primary />
           </>
         ) : <p>Boards are switched off in the workspace settings.</p>}
@@ -116,6 +116,9 @@ function BoardPage({ board }: { board: VisionBoard }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [varsOpen, setVarsOpen] = useState(false);
+  /** "Arrange as frames", while the canvas holds an old project tree. */
+  const [arrange, setArrange] = useState<(() => void) | null>(null);
+  const onArrange = useCallback((run: (() => void) | null) => setArrange(() => run), []);
   const story = isStoryline(s, card);
   const canEdit = level === 'edit' && !(status === 'offline' && reason);
   /** An entry dragged from the cast panel onto a frame card links the two. */
@@ -133,6 +136,7 @@ function BoardPage({ board }: { board: VisionBoard }) {
 
   const items: MenuItem[] = [
     { label: 'Go to task', onSelect: () => navigate(href) },
+    ...(arrange ? [{ label: 'Arrange as frames', onSelect: arrange }] : []),
     ...(manage ? STATES.map((st): MenuItem => ({
       label: STATE_LABEL[st], hint: STATE_HINT[st], checked: board.state === st,
       onSelect: () => { if (board.state !== st) void dispatch('visionBoard', 'updateBoard', { id: board.id, state: st }).catch(() => {}); },
@@ -165,7 +169,7 @@ function BoardPage({ board }: { board: VisionBoard }) {
       <div className="story-layout" onDragOver={(e) => { if (e.dataTransfer.types.includes('text/ql-entry')) e.preventDefault(); }} onDrop={dropCast}>
         {story && canEdit && <CastPanel story={card} />}
         <ErrorBoundary what="This board" resetKey={board.id}>
-          <Canvas doc={conn?.doc ?? null} canEdit={canEdit} host={card} awareness={conn?.awareness ?? null} />
+          <Canvas doc={conn?.doc ?? null} canEdit={canEdit} host={card} awareness={conn?.awareness ?? null} onArrange={onArrange} />
         </ErrorBoundary>
       </div>
       {varsOpen && conn && <StoryVarsDialog doc={conn.doc} canEdit={canEdit} onClose={() => setVarsOpen(false)} />}
@@ -189,7 +193,7 @@ function BoardPage({ board }: { board: VisionBoard }) {
 const readOnlyWhy = (state: VisionBoard['state']) =>
   state === 'locked' ? 'It is locked.' : state === 'read_only' ? 'Only the person who made it can edit it.' : 'You can\'t edit its task.';
 
-/** Starts a board for a whole project, laid out as its tree. */
+/** Starts a board for a whole project, laid out as frames. */
 function ProjectBoardButton({ primary }: { primary?: boolean }) {
   const projects = useStore((s) => [...s.projects.values()].filter((p) => !p.isArchived && [...s.decks.values()].some((d) => d.projectId === p.id)).sort((a, b) => a.seq - b.seq));
   const [open, setOpen] = useState(false);
@@ -207,7 +211,7 @@ function ProjectBoardButton({ primary }: { primary?: boolean }) {
             <span>Project</span>
             <select value={pick} onChange={(e) => setId(e.target.value)}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
           </label>
-          <p className="hint">Makes a board with the whole project as a tree: areas, lists and open tasks, joined by lines. Move anything, add notes, and draw a line from a task to a list or to another task to change the project.</p>
+          <p className="hint">Makes a board with the whole project as frames: each area a frame, each list a frame inside it, with its open tasks. Move anything, add notes; drop a task into another list's frame to move it; drag from a task's handle to connect tasks.</p>
         </Dialog>
       )}
     </>

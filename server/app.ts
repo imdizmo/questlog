@@ -10,6 +10,7 @@ import { AppError } from './errors';
 import { acceptInvite, confirmPassword, createSession, login, logout, now, sessionUser, sessionVia, setupWorkspace } from './auth';
 import { askOwnerPage, viaProxy, inTailscaleRange, peerAddress, signInExempt, tailscaleSettings, whois, type TailscalePerson } from './tailscale';
 import { syncTeamFile } from './teamFile';
+import { adminTokenSent, directLoopback, registerTeamApi, teamErrorBody } from './teamApi';
 import { assertTokenScope, dispatch, nextActionId, type ChangeEvent } from './dispatch';
 import { can, isGuest, sessionActor, visibleProjectIds, type Actor } from './permissions';
 import { bearerOf, tokenActor, TokenRateLimiter } from './tokens';
@@ -175,7 +176,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   // Host allow-list on every request (API, websocket upgrade, static): defeats DNS rebinding.
   app.addHook('onRequest', async (req, reply) => {
     const host = (req.headers.host ?? '').toLowerCase();
-    if (!allowed.has(host)) return reply.code(421).send({ error: 'bad_host' });
+    if (!allowed.has(host)) return reply.code(421).send(teamErrorBody(req.url, 'bad_host'));
     // User report endpoints (server/reports.ts) are called by game builds from anywhere: no Origin check, no cookies.
     const cfg = req.routeOptions?.config as { publicCors?: boolean; tokenOnly?: boolean } | undefined;
     if (cfg?.publicCors) return;
@@ -193,7 +194,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
         try { o = new URL(origin); } catch { /* invalid */ }
         ok = ok && !!o && allowed.has(o.host.toLowerCase()) && o.host.toLowerCase() === host && o.protocol === `${req.protocol}:`;
       }
-      if (!ok) return reply.code(403).send({ error: 'cross_origin' });
+      if (!ok) return reply.code(403).send(teamErrorBody(req.url, 'cross_origin'));
     }
   });
 
@@ -213,7 +214,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const verdicts = [disabledGate(decoded), disabledGate(raw), ...(route ? [disabledGate(route)] : [])];
     const verdict = verdicts.reduce((a, b) => (rank[b] > rank[a] ? b : a));
     if (verdict === 'hidden') return reply.code(404).send({ error: 'not_found' });
-    if (verdict === 'locked') return reply.code(423).send({ error: 'workspace_disabled' });
+    if (verdict === 'locked') return reply.code(423).send(teamErrorBody(req.url, 'workspace_disabled'));
   });
 
   const secure = (req: FastifyRequest) => req.protocol === 'https';
@@ -332,12 +333,32 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     disabled: isWorkspaceDisabled(db),
   }));
 
+  /**
+   * The first setup. With JATIFY_ADMIN_TOKEN set, it needs X-Jatify-Token equal to it from any peer (the one place the
+   * token counts over the network: a fresh server in a container is set up from the tailnet), else 403 setup_token.
+   * The owner is linked to a Tailscale login when one is proven: this connection's whois (switch on, no proxy), or else
+   * the body's `tailscaleLogin` from loopback with a valid token (never with JT_LOOPBACK_TRUST=0). Any other
+   * `tailscaleLogin` is ignored.
+   */
   app.post('/api/setup', async (req, reply) => {
+    // Already set up: 409 before the token check, so this route never tells whether a token is right.
+    if ((db.prepare('SELECT COUNT(*) c FROM users').get() as { c: number }).c > 0) throw new AppError(409, 'already_setup');
+    const tokenOk = adminTokenSent(req);
+    if (process.env.JATIFY_ADMIN_TOKEN && !tokenOk) {
+      return reply.code(403).send({ error: 'setup_token', message: 'This server needs its admin token (X-Jatify-Token) to be set up.' });
+    }
     const b = body(req);
     const f = { workspaceName: str(b.workspaceName), name: str(b.name), email: str(b.email), password: str(b.password) };
     if (!f.workspaceName.trim()) throw new AppError(400, 'invalid_input');
-    setupWorkspace(db, f);
+    let tsLogin = (await tailscalePeer(req))?.login ?? null;
+    if (!tsLogin && tokenOk && directLoopback(req) && b.tailscaleLogin !== undefined && b.tailscaleLogin !== null && b.tailscaleLogin !== '') {
+      const v = typeof b.tailscaleLogin === 'string' ? b.tailscaleLogin.trim() : '';
+      if (!v || v.length > 320) throw new AppError(400, 'invalid_input');
+      tsLogin = v;
+    }
+    setupWorkspace(db, f, tsLogin);
     syncBillingMode(db, !!stripe);
+    if (tsLogin) syncTeamFile(db);
     return { user: logIn(req, reply, f.email, f.password) };
   });
 
@@ -413,8 +434,16 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     if (!person) return reply.code(404).send({ error: 'not_tailscale' });
     const u = db.prepare(`SELECT r.role AS role FROM users u JOIN account_roles r ON r.user_id=u.id
       WHERE u.tailscale_login=? AND u.disabled=0 AND u.kind='person'`).get(person.login) as { role: string } | undefined;
-    return { login: person.login, name: person.displayName, role: u?.role ?? null, service: 'questlog', version: VERSION };
+    // teamServer: the address of the Jatify team server this Questlog belongs to, when it runs as one (env JATIFY_TEAM_SERVER).
+    const teamServer = process.env.JATIFY_TEAM_SERVER;
+    return {
+      login: person.login, name: person.displayName, role: u?.role ?? null, service: 'questlog', version: VERSION,
+      ...(teamServer ? { teamServer } : {}),
+    };
   });
+
+  // The team members API for the Jatify Launcher (server/teamApi.ts): same identity as /team/whoami.
+  registerTeamApi(app, { db, hub, tailscalePeer });
 
   const inviteRow = (token: string) => {
     const r = db.prepare('SELECT role, expires_at, disabled FROM invites WHERE token_hash=?')
@@ -818,16 +847,18 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   });
 
   // ---- static + SPA fallback ----
+  /** An unknown Team API route says so in its own code, so a client can tell an older server from a missing member. */
+  const routeMissing = (url: string) => (url.toLowerCase().startsWith('/team/') ? 'no_route' : 'not_found');
   if (opts.webRoot && existsSync(opts.webRoot)) {
     app.register(fastifyStatic, { root: opts.webRoot });
     app.setNotFoundHandler((req, reply) => {
-      if (req.method === 'GET' && !req.url.startsWith('/api/') && !req.url.startsWith('/dispatch/') && !req.url.startsWith('/user-report/')) {
+      if (req.method === 'GET' && !req.url.startsWith('/api/') && !req.url.startsWith('/dispatch/') && !req.url.startsWith('/user-report/') && !req.url.toLowerCase().startsWith('/team/')) {
         return reply.sendFile('index.html');
       }
-      return reply.code(404).send({ error: 'not_found' });
+      return reply.code(404).send(teamErrorBody(req.url, routeMissing(req.url), 'No such Team API route.'));
     });
   } else {
-    app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not_found' }));
+    app.setNotFoundHandler((req, reply) => reply.code(404).send(teamErrorBody(req.url, routeMissing(req.url), 'No such Team API route.')));
   }
 
   const sweeper = setInterval(() => { hub.sweep(); rooms.refreshAll(); }, 60_000);

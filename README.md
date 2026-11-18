@@ -46,7 +46,7 @@ To install it from the Jatify launcher, add this entry to the launcher's `apps.j
 
 It holds the database, attachments and covers, `secret.key`, `desktop.json` (the port it uses: 8790 if that was free
 on the first start, otherwise another free port, then always the same one) and `logs/server.log` (rotated at 5 MB,
-one old copy kept as `server.log.1`). Starting Questlog a second time brings the open window to the front instead.
+one old copy kept as `server.log.1`) beside `logs/desktop.log` (the app's own log, rotated the same way). Starting Questlog a second time brings the open window to the front instead.
 Closing the window stops the server.
 
 **Connecting to a team server.** The app can also open a Questlog server on your network instead of its own
@@ -54,11 +54,27 @@ workspace. The Jatify Launcher sets `JATIFY_TEAM` to the server's address (`host
 you leave it out, and the connection is plain http). Without it, a fresh install asks **Where is your workspace?**:
 **this computer** or **a server**, where you type the address. A choice saved in `desktop.json` (`"server": "local"`
 or an address) wins over `JATIFY_TEAM`. If the server is down, the app says "Questlog can't reach the server" and
-offers **Retry**, **Change server** and **Use this computer**. **Use this computer** is remembered: to go back to the
-team server, close Questlog and remove the `"server"` entry from `desktop.json` in the data folder
-(`~/.local/share/questlog/desktop.json` on Linux, `%LOCALAPPDATA%\Questlog\desktop.json` on Windows). The workspace on
+offers **Retry**, **Change server** and **Use this computer**. **Use this computer** is remembered. The workspace on
 this computer is separate from the server's: nothing syncs between them. A server that redirects to a different
 address opens in your system browser instead of the app window.
+
+**Where you are working.** The window title says it: `Questlog · Team server (<host>)` or `Questlog · This computer`
+(plain `Questlog` while it asks or shows an error). The **Workspace** menu switches: **Use the team server** (only when
+`JATIFY_TEAM` or a server address you typed gives one; a typed server is remembered across **Use this computer** and
+still wins over `JATIFY_TEAM`), **Use this computer**, and **Change server…** (the chooser). A switch saves the choice
+in `desktop.json` (`~/.local/share/questlog/` on Linux, `%LOCALAPPDATA%\Questlog\` on Windows) and the window
+restarts (the local server stops first); no data is moved or deleted.
+
+**Crash reports.** If Questlog ends unexpectedly (the app itself crashes, the local server stops on its own, also
+while starting, or the app is killed), the next start asks "Questlog closed unexpectedly. Send the report to the
+team?" with **Send**, **Don't send** and **See what is sent**. After the local server stops, closing the window still
+counts as a crash. A database from a newer Questlog is not a crash. This only happens when the Jatify Launcher passes
+a team server (`JATIFY_TEAM`); closing the window at the question counts as **Don't send**. The report is a zip of the logs plus
+`report.json` (tool, version, OS, and the memory limit if the launcher passes `JATIFY_MEMORY_MAX`), at most 20 MB. It
+goes to the team's library service on port 8781 of the team host, only to a private or Tailscale address, and only
+when you choose Send. Errors inside the page that do not end the app, and the team server's own errors (they are in
+the server's logs), are not reported. A `running` file in the data folder says whether the last run ended cleanly:
+it is there while Questlog runs and removed by a clean exit. Deleting it is harmless (the next start just does not ask).
 
 **Backups.** Before a new version changes the database, the app saves a copy in `backups/` inside the data folder,
 named `jt-<migration>-<YYYYMMDD-HHMMSS>.db`; the newest three are kept. To back up by hand, close Questlog and copy
@@ -82,7 +98,7 @@ by us. If you try it, please check:
 - A message box saying WebView2 is missing: install the Evergreen runtime from the link it shows, then start Questlog
   again.
 - A window that shows an error page: the page says what failed and names the log. Send
-  `%LOCALAPPDATA%\Questlog\logs\server.log` (and `server.log.1` if present) along with a screenshot of the page.
+  `%LOCALAPPDATA%\Questlog\logs\desktop.log` and `server.log` beside it (and the `.1` copies if present) along with a screenshot of the page.
 
 **Build from source.** You need Node and pnpm (as above), Rust with `cargo install tauri-cli --locked --version '^2'`,
 and on Linux the WebKitGTK 4.1 development packages. Then:
@@ -149,7 +165,8 @@ JT_HOST=100.x.y.z JT_HOSTS=nas:8780 JT_TAILSCALE_AUTH=1 JT_TEAM_FILE=/path/to/te
 - `JT_TEAM_FILE` names a shared team list. Questlog writes it at start and after every team change, with each person
   who has a Tailscale login (version 1 format). At start it first takes in people already in an existing file. A file it
   cannot read or does not understand is left as it is.
-- `GET /team/whoami` tells you who the server thinks you are.
+- `GET /team/whoami` tells you who the server thinks you are. When the server runs as part of a Jatify team server,
+  set `JATIFY_TEAM_SERVER` to that team server's address and the answer includes it as `teamServer`.
 
 **Who gets in.** Only members whose account is linked to their Tailscale login are signed in automatically when they
 open the page. Anyone else sees a page that says to ask the owner, with a link to the normal password sign-in. People
@@ -162,6 +179,149 @@ signs them in. Nobody can set a login for someone else: owners and admins can on
 can unlink the owner. Unlinking someone who was added from **Waiting to join** is safe: they have no password, so their
 next visit asks to join again, and adding that request reconnects the same account (same tasks, same history). Logging
 out on a Tailscale device signs you straight back in.
+
+### Team members API
+
+Other Jatify tools on the tailnet (the Jatify Launcher's Server tab) list and manage the team over HTTP. The caller is
+their Tailscale identity, worked out the same way as `/team/whoami`. Anyone not on the team gets 403 `not_member`. Any
+member can read the member list. Only the owner and admins can see join requests and change anything.
+
+| Route | Who | Answer |
+| --- | --- | --- |
+| `GET /team/members` | any member | `{"members":[{"login","name","role","since","lastSeen"}]}`: enabled people only; `login` is null for password-only people |
+| `GET /team/requests` | owner, admin | `{"requests":[{"login","name","at"}]}`, newest first |
+| `POST /team/members` `{"login","name"?,"role"}` | owner, admin | 201 with the entry. Re-adding a removed (disabled) login re-enables them with the role (200). 409 `already_member` if they are already on the team |
+| `PATCH /team/members/<login>` `{"role"}` | owner, admin | 200 with the entry |
+| `DELETE /team/members/<login>` | owner, admin | 204. Disables the person: their sessions end and they leave `team.json`; their history stays |
+| `POST /team/requests/<login>/approve` `{"role"}` | owner, admin | 201 with the entry |
+| `POST /team/requests/<login>/deny` | owner, admin | 204 |
+
+- `lastSeen` is their latest sign-in, taken from their open sessions, or null. `since` is when their account was made.
+- Without a `name`, someone added by `POST /team/members` gets the display name from their join request, if there is
+  one, else their login.
+- Errors are `{"error": code, "message": text}`, and the message can be shown as is.
+- An unknown member or request is 404 `not_found`; a route this server doesn't have is 404 `no_route` (an older server).
+- Writes must send `X-Jatify: 1` and `Content-Type: application/json` (also on DELETE and deny, with an empty body) and
+  must not send an `Origin` header. Anything else gets 403 `cross_origin`, so a web page on the tailnet can't change the
+  team.
+- Roles follow the Members page: the same seat limits, and observers only on plans that include them. On top of that:
+  - Ownership never moves here: role `owner` gets 409 `owner_transfer`. It moves in Questlog's settings (Danger zone).
+  - The owner can't be changed, removed or relinked here: 409 `last_owner`.
+  - Through this API an admin only adds, changes and removes members and observers. Making or unmaking an admin needs
+    the owner (403 `forbidden`). This limit is for the API only: on Questlog's own Members page admins manage roles as
+    before.
+- While the workspace is disabled, these routes answer 423 `workspace_disabled`. `/team/whoami` keeps working.
+
+**`JATIFY_ADMIN_TOKEN`.** When this is set to a non-empty value, a request from loopback (`127.0.0.1` or `::1`) with
+the header `X-Jatify-Token: <value>` acts as the owner. A request through a proxy (any of the proxy headers above)
+never qualifies. Unset or empty, this way in is off. This is how a launcher on the same machine manages a local server
+without Tailscale. Loopback only means "from this machine", so two caveats:
+
+- Behind a reverse proxy or any TCP forwarder on the same machine (`tailscale serve --tcp`, `socat`, `ssh -L`), every
+  request reaches Questlog from loopback. A forwarder sends no proxy headers, and a proxy may strip them, so there the
+  token is the only check: keep it secret and long.
+- Inside Docker's bridge network, the host's requests arrive from the bridge gateway, not loopback, so the token is
+  never accepted there. Use the Tailscale identity instead.
+
+One exception: the first setup (`POST /api/setup`). With `JATIFY_ADMIN_TOKEN` set, setup needs the matching
+`X-Jatify-Token` from every caller, on loopback or not, and anything else gets 403 `setup_token`. So a fresh server in a
+container can be set up over the tailnet by whoever holds the token, and nobody else can claim it first. Everywhere
+else the token stays loopback-only. Without the variable, setup works as before (whoever opens the page first).
+
+The owner is linked to a Tailscale login at setup when that login is proven: with `JT_TAILSCALE_AUTH=1`, the Tailscale
+person on the connection (as `/team/whoami` sees them); else, from loopback with a valid token, the optional body field
+`tailscaleLogin` (never with `JT_LOOPBACK_TRUST=0`, as in the Docker image). The team file is written right away. Any
+other `tailscaleLogin` is ignored. Once a workspace exists, setup answers 409 `already_setup` whatever the token.
+
+## Run a Questlog server with Docker
+
+The `Dockerfile` at the top of the repository builds an image with the server and the web app on Node's slim image (no
+dev tools, no secrets). It runs as an unprivileged user and keeps everything in `/data`: the database
+(`/data/questlog.db`), attachments (`/data/files`) and the server's secret key. Put `/data` on a volume.
+
+```sh
+docker build -t questlog-server .
+docker volume create questlog-data
+docker run -d --name questlog -p 8780:8780 -v questlog-data:/data \
+  -e JT_HOSTS=myserver:8780 -e JATIFY_ADMIN_TOKEN=<a long random value> questlog-server
+```
+
+- `JT_HOSTS` must list every name and port people type in the browser ([Host names](#host-names)). Inside the
+  container the server only knows its own names, so without it every request from outside gets 421. If you publish a
+  different port (`-p 9000:8780`), list that port (`myserver:9000`).
+- Set up the workspace with the token (see [`JATIFY_ADMIN_TOKEN`](#team-members-api)); the Jatify Launcher does this for
+  you. By hand:
+
+  ```sh
+  curl -H 'Content-Type: application/json' -H 'X-Jatify-Token: <token>' \
+    -d '{"workspaceName":"Studio","name":"You","email":"you@example.com","password":"..."}' http://myserver:8780/api/setup
+  ```
+
+- The image has a health check on `/healthz` (`docker ps` shows `healthy`). Stopping the container stops the server
+  cleanly. With podman or buildah, build with `--format docker`: their default OCI format drops the health check.
+- Backups: set `JT_BACKUP_BEFORE_MIGRATE=1` and the server copies the database into `/data/backups` before it applies an
+  update's migrations. For your own backups, stop the container and copy the volume ([Data and backups](#data-and-backups)).
+- Settings are the environment variables of this README (`PORT`, `JT_HOSTS`, the email and Stripe ones and so on).
+  `JT_DB`, `JT_FILES`, `JT_HOST=0.0.0.0`, `PORT=8780` and `JT_LOOPBACK_TRUST=0` (see below) are set in the image.
+
+With Compose:
+
+```yaml
+services:
+  questlog:
+    build: .
+    ports: ["8780:8780"]
+    volumes: ["questlog-data:/data"]
+    environment:
+      JT_HOSTS: myserver:8780
+      JATIFY_ADMIN_TOKEN: ${JATIFY_ADMIN_TOKEN}
+      JT_BACKUP_BEFORE_MIGRATE: "1"
+    restart: unless-stopped
+volumes:
+  questlog-data:
+```
+
+**With Tailscale.** Sign-in by Tailscale needs each caller's real Tailscale address and the Tailscale daemon's socket.
+The recommended way is host networking on a machine that runs Tailscale, with the host's socket folder mounted:
+
+```yaml
+services:
+  questlog:
+    build: .
+    network_mode: host
+    volumes:
+      - questlog-data:/data
+      - /var/run/tailscale:/var/run/tailscale
+      - /srv/jatify-team:/team
+    environment:
+      JT_TAILSCALE_AUTH: "1"
+      JT_HOSTS: myserver:8780
+      JT_TEAM_FILE: /team/team.json
+      JATIFY_ADMIN_TOKEN: ${JATIFY_ADMIN_TOKEN}
+    restart: unless-stopped
+volumes:
+  questlog-data:
+```
+
+- The socket must be readable by the container's user (uid 10001). Set `JT_TAILSCALE_SOCKET` if it lives elsewhere.
+- Add the MagicDNS name and port to `JT_HOSTS`.
+- For the team file, mount its **folder**, not the file, as above. Questlog replaces the file by writing a new one beside
+  it and renaming it, which a single-file mount does not allow. The folder must be writable by uid 10001.
+- `JT_HOST` can be the machine's Tailscale address so nobody outside the tailnet reaches the server. The health check
+  asks `127.0.0.1`, so it then reports unhealthy; leave `JT_HOST=0.0.0.0` if you rely on it.
+- On Docker's default bridge network, callers arrive from the bridge, not from their Tailscale address, and are never
+  recognised.
+
+A Tailscale sidecar container also works, but only with kernel networking: the `tailscale/tailscale` image defaults to
+userspace networking, which hands every tailnet caller to Questlog from `127.0.0.1`. Set `TS_USERSPACE=false`, give it
+`/dev/net/tun` and `cap_add: [NET_ADMIN]`, run Questlog with `network_mode: service:tailscale`, and share the socket
+through a named volume (`TS_SOCKET=/var/run/tailscale/tailscaled.sock`, the volume mounted at `/var/run/tailscale` in
+both), not a host path.
+
+In a container the members-API token is off (the image sets `JT_LOOPBACK_TRUST=0`), so manage members over Tailscale
+as the owner. `JT_LOOPBACK_TRUST=0` means a loopback caller is never trusted, because in a container `127.0.0.1` can be
+a forwarded remote caller: `JATIFY_ADMIN_TOKEN` then never acts as the owner on `/team/*`, and setup ignores the body
+`tailscaleLogin`. The token is still required for the first setup, and the Tailscale link at setup still works.
 
 ## Data and backups
 
@@ -294,6 +454,30 @@ This removes the attachments and covers the database knows about, one by one, th
 counted; the folder itself goes only if it ends up empty. Use the same `JT_DB` and `JT_FILES` as
 the server. It refuses while the server is running or the workspace is still active.
 
+## Project boards
+
+**Vision > Project board** makes a board for a project, shown as frames: one frame per area side by side, the lists
+stacked inside it, and each list's open tasks as cards in "waits for" order (what a task waits for comes first), six
+to a row, with subtasks after their parent. Only "waits for" (dashed, accent colour) and "subtask" arrows are drawn.
+A board shows only the project of the task it belongs to.
+
+- **It follows the project** while it is open: new tasks, lists and areas appear in their frame; done, archived and
+  deleted tasks leave; a task moved to another list moves into that frame; renames update. Positions you dragged are
+  kept. Undo never undoes what the board did by itself.
+- **Zoom out** for the overview: each list shows its name and "N tasks left", and thick arrows count the "waits for"
+  links between lists. Zoom in for the tasks and their arrows.
+- **Drop to move.** Drop a task card into another list's frame to move the task there, or a list onto another area to
+  move the list. A move the project refuses goes back with a message; undoing a drop moves the task back.
+- **Draw arrows.** Hover or select a task to see its handles, drag from one to another task and choose "It waits for
+  it", "It is its subtask" or "Only a line" (waiting and subtasks are saved on the tasks, so they show everywhere).
+  From the keyboard, use the toolbar's **Connect to…**. "It waits for it" needs dependencies on (Settings >
+  Features): while they are off, an admin's first use turns them on for the workspace ("It waits for it (turns on
+  dependencies)"); anyone else is told an admin can turn them on in Settings.
+- The project's area and list frames and its header follow the project: their names can't be edited on the board, and
+  they can't be deleted there (delete the list or area from the project instead).
+- A project board made with the older tree layout gets **Arrange as frames** in its menu: one undo step, keeping your
+  notes and arrows.
+
 ## Game wiki and export
 
 Each project has a **Wiki** (sidebar): lore entries with an entry type (Item, Creature, Recipe…), typed fields,
@@ -301,6 +485,21 @@ typed links between entries (drops, sells…) and checks. **Entity types** in th
 kinds; an empty project offers a small starter set (Character, Creature, Faction, Place, Item, Quest, History,
 Storyline and six links). The RPG extras (recipes, abilities, shops, dungeons, weapon and armour types…) are added
 from the Wiki's first page or under Entity types.
+
+### Writing lore
+
+Lore (wiki entries and lore pages) is written in a live-preview editor. Headings, bold, italic, code, bullets,
+checklists (tick them in place), quotes, task codes, @mentions, #tags and your own images show formatted. The Markdown
+marks are hidden until needed: heading and title marks show while the caret is anywhere on that line, other marks
+while the caret touches them. Lore keeps your exact Markdown: only your own typing, the formatting bar, shortcuts and
+ticking a checkbox change the text, and opening and saving without edits stores it byte for byte.
+
+- A formatting bar offers Heading, Bold, Italic, List, Checklist, Quote and Link. Shortcuts: Ctrl+B, Ctrl+I and
+  Ctrl+Alt+1/2/3 for heading levels. The `/` menu and the reference pickers work as in the task editor.
+- Ctrl+Enter saves, Esc cancels, and focus mode gives the text the whole window.
+- Tasks keep the plain editor. If the lore editor can't load, the plain editor takes over.
+- Limits: numbered lists show their raw numbers, and Enter in the middle of a numbered list adds a plain line (no
+  renumbering).
 
 Tasks show an id such as `LH-127`: the project's initials and the task's number. Links and `$code` references in
 text keep the short code underneath.

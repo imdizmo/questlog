@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { networkInterfaces } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { resolveWebRoot } from './webRoot';
 import { openDb, NewerDatabaseError } from './db';
 import { buildApp } from './app';
 import { sweepFilesDir } from './files';
@@ -9,6 +11,9 @@ import { deleteWorkspace } from './commands/dangerZone';
 import { emailConfig } from './email';
 import { loadSecret } from './secret';
 import { startTeamFile } from './teamFile';
+import { installFatalHandlers } from './fatal';
+
+installFatalHandlers(process, (line) => console.error(line));
 
 const port = Number(process.env.PORT ?? 8780);
 const dbPath = process.env.JT_DB ?? 'data/jt.db';
@@ -44,7 +49,9 @@ const swept = sweepFilesDir(db, filesDir);
 if (swept.tmp || swept.orphans) console.log(`files: removed ${swept.tmp} partial upload(s), ${swept.orphans} orphaned file(s)`);
 startTeamFile(db);
 const email = emailConfig();
-const app = buildApp({ db, webRoot: resolve(process.env.JT_WEB ?? 'dist/web'), port, filesDir, email: { ...email, secret: loadSecret(dirname(resolve(dbPath))) } });
+const web = resolveWebRoot(process.env, dirname(fileURLToPath(import.meta.url)));
+console.log(`web: serving ${web.root} (${web.from})`);
+const app = buildApp({ db, webRoot: web.root, port, filesDir, email: { ...email, secret: loadSecret(dirname(resolve(dbPath))) } });
 const host = process.env.JT_HOST;
 await app.listen({ host: host ?? '0.0.0.0', port });
 console.log(`QUESTLOG_LISTENING ${port}`);

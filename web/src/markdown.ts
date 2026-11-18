@@ -156,7 +156,7 @@ function build(): MarkdownIt {
 }
 
 /** An attachment served by this app (the id as the picker inserts it). */
-const OWN_FILE = /^\/api\/files\/[A-Za-z0-9_-]+$/;
+export const OWN_FILE = /^\/api\/files\/[A-Za-z0-9_-]+$/;
 
 let instance: MarkdownIt | null = null;
 
