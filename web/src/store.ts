@@ -1,7 +1,8 @@
 import { useRef, useSyncExternalStore } from 'react';
 import { showToast } from './toast';
+import { clearDrafts, pruneDrafts } from './drafts';
 import type {
-  Account, AccountRole, ApiToken, Bookmark, DonePileEntry, AccountSettings, Card, Deck, HandCard, Journey, VisionBoard, VisionQuery, Milestone, MilestoneProgress, MilestoneZone, Sprint, SprintConfig, SprintProgress, TimeSegment, OrgRole, PresetData, Project, ProjectAccess, Resolvable, ResolvableEntry, Reaction, ResolvableNotification, SavedSearch, User, OnboardingStep, EntryType, LinkKind, EntryLink,
+  Account, AccountRole, ApiToken, Bookmark, DonePileEntry, AccountSettings, Card, Deck, HandCard, Journey, VisionBoard, VisionQuery, Milestone, MilestoneProgress, MilestoneZone, Sprint, SprintConfig, SprintProgress, TimeSegment, OrgRole, PresetData, Project, ProjectAccess, Resolvable, ResolvableEntry, Reaction, ResolvableNotification, SavedSearch, User, OnboardingStep, EntryType, EntryFamily, LinkKind, EntryLink,
 } from '../../shared/types';
 import { DEFAULT_SETTINGS } from '../../shared/types';
 import { featureAllowed, type PlanFeature } from '../../shared/plans';
@@ -20,7 +21,7 @@ export interface ProjectPref { userId: string; projectId: string; visible: boole
 export type ModelName =
   | 'account' | 'user' | 'accountRole' | 'project' | 'projectAccess' | 'projectPref'
   | 'deck' | 'card' | 'resolvable' | 'resolvableEntry' | 'reaction' | 'handCard' | 'preset' | 'userCardTag' | 'cardDep' | 'file' | 'resolvableNotification' | 'cardSubscription' | 'deckSubscription' | 'deckGuardian' | 'journey' | 'visionBoard' | 'visionQuery' | 'bookmark' | 'donePile' | 'savedSearch' | 'onboardingStep' | 'milestone' | 'milestoneZone' | 'milestoneProgress' | 'sprintConfig' | 'sprint' | 'sprintProgress' | 'timeSegment' | 'apiToken'
-  | 'entryType' | 'linkKind' | 'entryLink';
+  | 'entryType' | 'linkKind' | 'entryLink' | 'entryFamily' | 'asset';
 /** Mirrors server/dispatch.ts. 'access' (model 'project', row {id}): our view of that project may have changed. */
 export type ChangeOp = 'upsert' | 'remove' | 'access';
 export interface ChangeEvent { model: ModelName; op: ChangeOp; row: any }
@@ -74,6 +75,8 @@ export interface State {
   apiTokens: Map<string, ApiToken>;
   /** Wiki: entry types, link kinds and links of visible projects (`entries` above are thread messages). */
   entryTypes: Map<string, EntryType>;
+  /** Families: named, coloured folds of a project's root types (the Wiki's Types tree). */
+  entryFamilies: Map<string, EntryFamily>;
   linkKinds: Map<string, LinkKind>;
   entryLinks: Map<string, EntryLink>;
 }
@@ -83,8 +86,11 @@ export const people = (users: Map<string, User>): User[] => [...users.values()].
 
 type Coll = Exclude<keyof State, 'status' | 'live' | 'me' | 'account'>;
 
-/** model → collection + key function. Remove events carry at least the key fields. */
-const MODELS: Record<Exclude<ModelName, 'account'>, { coll: Coll; key: (r: any) => string }> = {
+/**
+ * model → collection + key function. Remove events carry at least the key fields. Assets are not in the snapshot:
+ * the Assets page reads them itself and follows their events through addLiveTap.
+ */
+const MODELS: Record<Exclude<ModelName, 'account' | 'asset'>, { coll: Coll; key: (r: any) => string }> = {
   user: { coll: 'users', key: (r) => r.id },
   accountRole: { coll: 'accountRoles', key: (r) => r.userId },
   project: { coll: 'projects', key: (r) => r.id },
@@ -120,6 +126,7 @@ const MODELS: Record<Exclude<ModelName, 'account'>, { coll: Coll; key: (r: any) 
   timeSegment: { coll: 'timeSegments', key: (r) => r.id },
   apiToken: { coll: 'apiTokens', key: (r) => r.id },
   entryType: { coll: 'entryTypes', key: (r) => r.id },
+  entryFamily: { coll: 'entryFamilies', key: (r) => r.id },
   linkKind: { coll: 'linkKinds', key: (r) => r.id },
   entryLink: { coll: 'entryLinks', key: (r) => r.id },
 };
@@ -132,7 +139,7 @@ const empty = (): State => ({
   cardSubscriptions: new Map(), deckSubscriptions: new Map(), deckGuardians: new Map(), journeys: new Map(), visionBoards: new Map(), visionQueries: new Map(), bookmarks: new Map(), donePile: new Map(), savedSearches: new Map(), onboarding: new Map(),
   milestones: new Map(), milestoneZones: new Map(), milestoneProgress: new Map(),
   sprintConfigs: new Map(), sprints: new Map(), sprintProgress: new Map(), timeSegments: new Map(), apiTokens: new Map(),
-  entryTypes: new Map(), linkKinds: new Map(), entryLinks: new Map(),
+  entryTypes: new Map(), entryFamilies: new Map(), linkKinds: new Map(), entryLinks: new Map(),
 });
 
 const byKey = <T>(rows: T[] | undefined, key: (r: T) => string) => new Map((rows ?? []).map((r) => [key(r), r]));
@@ -204,6 +211,7 @@ export function cascadeProjectRemove(s: State, projectIds: Set<string>): Partial
     projectAccess: keep(s.projectAccess, (a) => !projectIds.has(a.projectId)),
     projectPrefs: keep(s.projectPrefs, (p) => !projectIds.has(p.projectId)),
     entryTypes: keep(s.entryTypes, (t) => !projectIds.has(t.projectId)),
+    entryFamilies: keep(s.entryFamilies, (f) => !projectIds.has(f.projectId)),
     linkKinds: keep(s.linkKinds, (k) => !projectIds.has(k.projectId)),
     entryLinks: keep(s.entryLinks, (l) => !projectIds.has(l.projectId) && !cardIds.has(l.fromCardId) && !cardIds.has(l.toCardId)),
   };
@@ -242,7 +250,12 @@ export class Store {
   };
 
   private set(next: State) {
+    const before = this.state;
     this.state = next;
+    // Drafts of cards that were deleted or left the store go with them (only once the store holds a full snapshot).
+    if (next.status === 'ready' && next.cards !== before?.cards) {
+      pruneDrafts((id) => { const c = next.cards.get(id); return !!c && c.visibility !== 'deleted'; });
+    }
     for (const fn of [...this.listeners]) fn();
   }
 
@@ -304,6 +317,7 @@ export class Store {
           timeSegments: byKey<TimeSegment>(s.timeSegments, MODELS.timeSegment.key),
           apiTokens: byKey<ApiToken>(s.apiTokens, MODELS.apiToken.key),
           entryTypes: byKey<EntryType>(s.entryTypes, MODELS.entryType.key),
+          entryFamilies: byKey<EntryFamily>(s.entryFamilies, MODELS.entryFamily.key),
           linkKinds: byKey<LinkKind>(s.linkKinds, MODELS.linkKind.key),
           entryLinks: byKey<EntryLink>(s.entryLinks, MODELS.entryLink.key),
         });
@@ -349,6 +363,9 @@ export class Store {
 
   apply(events: ChangeEvent[]): void {
     if (!events.length) return;
+    for (const tap of [...liveTaps]) {
+      try { tap(events); } catch (e) { console.error('live tap failed', e); }
+    }
     // A snapshot is on its way: applying now would be overwritten by it, so hold the events until it lands.
     if (this.queued) { this.queued.push(...events); return; }
     const next: State = { ...this.state };
@@ -496,6 +513,7 @@ export class Store {
 
   /** Logged out or session gone: forget everything. */
   reset(status: State['status'] = 'unauthenticated'): void {
+    clearDrafts(); // unsaved editor text never outlives the session (every logout path ends here)
     this.stop();
     if (this.queued) this.queued = [];
     this.set({ ...empty(), status });
@@ -535,6 +553,13 @@ export class Store {
       this.retryTimer = setTimeout(() => { this.retryTimer = null; if (!this.stopped) this.connect(); }, wait);
     };
   }
+}
+
+/** Listeners that see every batch of live events as it arrives (a page that keeps its own rows, like Assets). */
+const liveTaps = new Set<(events: ChangeEvent[]) => void>();
+export function addLiveTap(fn: (events: ChangeEvent[]) => void): () => void {
+  liveTaps.add(fn);
+  return () => { liveTaps.delete(fn); };
 }
 
 export const store = new Store();

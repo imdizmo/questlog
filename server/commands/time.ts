@@ -108,6 +108,7 @@ export const timeCommands: Record<string, Command> = {
   },
   'timeTracking/delete': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, input: { id: string }) {
       const { db, actor } = ctx;
       assertEnabled(db);

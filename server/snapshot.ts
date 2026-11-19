@@ -28,9 +28,15 @@ const marks = (n: number) => Array(n).fill('?').join(',');
  * never. Shared by the snapshot (as cardScopeSql) and the read query API (per row, no id set to build).
  */
 export function cardVisibleSql(db: Db, me: Who, vis: string[], c = 'c'): { sql: string; args: string[] } {
+  const reach = cardReachSql(db, me, vis, c);
+  return { sql: `${c}.visibility != 'deleted' AND ${reach.sql}`, args: reach.args };
+}
+
+/** The same rule without the visibility test: cards `me` could see if they were not deleted (the Archive's trash list). */
+export function cardReachSql(db: Db, me: Who, vis: string[], c = 'c'): { sql: string; args: string[] } {
   const allDeckless = can(db, me, 'account.manage');
   const ownDeckless = canSeeCard(db, me, { deckId: null, creatorId: me.id }, null);
-  const sql = `${c}.visibility != 'deleted' AND (
+  const sql = `(
       ${c}.deck_id IN (SELECT id FROM decks WHERE project_id IN (${marks(vis.length)}))
       OR (${c}.deck_id IS NULL AND (${allDeckless ? 1 : 0} OR (${ownDeckless ? 1 : 0} AND ${c}.creator_id = ?))))`;
   return { sql, args: [...vis, me.id] };
@@ -99,6 +105,7 @@ export function buildSnapshot(db: Db, me: User | Actor) {
     .map((j: any) => ({ ...j, steps: JSON.parse(j.steps) })) : [];
   // Wiki: types and link kinds of visible projects; links only between cards this viewer sees (none to trashed entries).
   const entryTypes = vis.length ? rows(db, `SELECT * FROM entry_types WHERE project_id IN (${pq}) ORDER BY project_id, sort_index, created_at, id`, ...vis) : [];
+  const entryFamilies = vis.length ? rows(db, `SELECT * FROM entry_families WHERE project_id IN (${pq}) ORDER BY project_id, sort_index, created_at, id`, ...vis) : [];
   const linkKinds = vis.length ? rows(db, `SELECT * FROM link_kinds WHERE project_id IN (${pq}) ORDER BY project_id, created_at, id`, ...vis) : [];
   const entryLinks = vis.length ? rows(db,
     `SELECT * FROM entry_links WHERE project_id IN (${pq}) AND from_card_id IN (${cardScope}) AND to_card_id IN (${cardScope})
@@ -176,6 +183,7 @@ export function buildSnapshot(db: Db, me: User | Actor) {
     deckGuardians,
     journeys,
     entryTypes,
+    entryFamilies,
     linkKinds,
     entryLinks,
     visionBoards,

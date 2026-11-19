@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from 'react';
 
-export interface Toast { id: number; text: string; tone: 'info' | 'error' }
+/** A button on the toast (e.g. Undo); pressing it runs `run` and dismisses the toast. */
+export interface ToastAction { label: string; run: () => void }
+export interface Toast { id: number; text: string; tone: 'info' | 'error'; action?: ToastAction }
 
 const MAX = 4; // older toasts are dropped; the list never grows unbounded
 let toasts: Toast[] = [];
@@ -8,8 +10,8 @@ let nextId = 1;
 const listeners = new Set<() => void>();
 const emit = () => { for (const fn of [...listeners]) fn(); };
 
-export function showToast(text: string, tone: Toast['tone'] = 'error', ms = 6000): void {
-  const t = { id: nextId++, text, tone };
+export function showToast(text: string, tone: Toast['tone'] = 'error', ms = 6000, action?: ToastAction): void {
+  const t: Toast = { id: nextId++, text, tone, ...(action ? { action } : {}) };
   toasts = [...toasts, t].slice(-MAX);
   emit();
   setTimeout(() => dismissToast(t.id), ms);

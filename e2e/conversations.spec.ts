@@ -4,7 +4,7 @@ import { cardCode } from '../shared/cards';
 import { ensureWorkspace, newPerson, run, snapshot, unique, SHOTS } from './helpers';
 
 async function inviteMember(page: Page): Promise<string> {
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Members' }).click();
   const members = page.getByRole('dialog', { name: 'Members' });
   await members.getByRole('button', { name: 'Invite people' }).click();
@@ -44,7 +44,7 @@ test('conversations, inbox, watching and guardians between two people', async ({
 
   // A opens a comment thread mentioning B.
   await a.goto(cardPath);
-  await a.getByRole('button', { name: 'New' }).click();
+  await a.getByRole('button', { name: 'New', exact: true }).click();
   const composer = a.getByRole('dialog', { name: 'New comment thread' });
   await expect(composer.getByText('Mention people with @ to add them')).toBeVisible();
   await composer.getByLabel('Message').fill(`Please check the rudder @${handle}`);
@@ -133,7 +133,7 @@ test('conversations, inbox, watching and guardians between two people', async ({
   await b.keyboard.press('i');
   await expect(b).toHaveURL(/\/inbox$/);
   await b.goto(cardPath);
-  await b.getByRole('button', { name: 'New' }).click();
+  await b.getByRole('button', { name: 'New', exact: true }).click();
   await b.getByLabel('Message').press('i');
   await b.waitForTimeout(300);
   await expect(b).not.toHaveURL(/inbox/);

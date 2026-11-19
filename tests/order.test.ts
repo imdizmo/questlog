@@ -11,7 +11,7 @@ function card(o: Partial<Card> & { carryCount?: number; sprintJoinedAt?: number 
     visibility: 'default', isDoc: false, version: 1, contentVersion: 1, sortIndex: seq, createdAt: 1, lastUpdatedAt: 1,
     snoozedAt: null, doneAt: null, priority: null, effort: null, dueDate: null, parentCardId: null, milestoneId: null,
     milestoneZoneId: null, sprintId: null, masterTags: [], tags: [], mentionedUserIds: [], checkboxStats: null,
-    coverFileId: null, entryTypeId: null, entryKey: null, fields: {}, wikiParentId: null, ...o,
+    coverFileId: null, entryTypeId: null, entryKey: null, fields: {}, wikiParentId: null, aliases: [], linkIgnores: [], ...o,
   } as Card;
 }
 const users = [

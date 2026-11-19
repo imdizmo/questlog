@@ -222,20 +222,57 @@ pub fn switch_choice(cfg: Option<&DesktopConfig>, team: Option<&str>, want: Mode
     next
 }
 
+/// A team server as shown to the user: its host, with the port unless it is the team default (8780).
+pub fn host_label(url: &Url) -> String {
+    let host = url.host_str().unwrap_or("?");
+    match url.port().filter(|p| *p != TEAM_DEFAULT_PORT) {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
+}
+
 /// The window title for where the app works: the team server's host, this computer, or plain `Questlog` while it
 /// asks.
 pub fn title_for(target: &Target) -> String {
     match target {
-        Target::Server(url) => {
-            let host = url.host_str().unwrap_or("?");
-            match url.port().filter(|p| *p != TEAM_DEFAULT_PORT) {
-                Some(port) => format!("Questlog · Team server ({host}:{port})"),
-                None => format!("Questlog · Team server ({host})"),
-            }
-        }
+        Target::Server(url) => format!("Questlog · Team server ({})", host_label(url)),
         Target::Local => "Questlog · This computer".to_string(),
         Target::Ask => "Questlog".to_string(),
     }
+}
+
+/// The team servers the workspace strip offers: `JATIFY_TEAM` first, then the saved server and the one "This
+/// computer" replaced (`last_server`), in address order. Unusable values are left out, each server once.
+pub fn known_servers(cfg: Option<&DesktopConfig>, team: Option<&str>) -> Vec<Url> {
+    let mut saved: Vec<Url> = [cfg.and_then(|c| c.server.as_deref()), cfg.and_then(|c| c.last_server.as_deref())]
+        .into_iter()
+        .flatten()
+        .filter_map(saved_url)
+        .collect();
+    saved.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let mut out: Vec<Url> = Vec::new();
+    for url in team.and_then(team_url).into_iter().chain(saved) {
+        if !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
+}
+
+/// The `desktop.json` that makes the next start open the team server `want` (one of `known_servers`). The port is
+/// kept. `JATIFY_TEAM`'s server is opened by removing the saved value (so `JATIFY_TEAM` applies); any other is saved.
+/// The saved server it replaces (else the old `last_server`) is kept as `last_server`, so the strip still offers it.
+pub fn switch_server(cfg: Option<&DesktopConfig>, team: Option<&str>, want: &Url) -> DesktopConfig {
+    let mut next = cfg.cloned().unwrap_or_default();
+    let team = team.and_then(team_url);
+    let remember = [next.server.as_deref(), next.last_server.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(saved_url)
+        .find(|u| u != want && Some(u) != team.as_ref());
+    next.last_server = remember.map(String::from);
+    next.server = if team.as_ref() == Some(want) { None } else { Some(want.to_string()) };
+    next
 }
 
 /// Saved port if still free, else 8790 if free, else an OS-assigned port. The choice is saved.
@@ -900,6 +937,56 @@ mod tests {
         assert_eq!(t("https://team.example.com/"), "Questlog · Team server (team.example.com)");
         assert_eq!(title_for(&Target::Local), "Questlog · This computer");
         assert_eq!(title_for(&Target::Ask), "Questlog");
+    }
+
+    #[test]
+    fn known_servers_are_team_then_saved_once_each() {
+        let nas = Some("nas");
+        assert_eq!(known_servers(None, None), Vec::<Url>::new());
+        assert_eq!(known_servers(None, nas), [url("http://nas:8780/")]);
+        assert_eq!(known_servers(None, Some("bad value")), Vec::<Url>::new());
+        let mut c = cfg(None, Some("http://zed:9/x"));
+        c.last_server = Some("http://alpha:9/".into());
+        assert_eq!(known_servers(Some(&c), nas), [url("http://nas:8780/"), url("http://alpha:9/"), url("http://zed:9/")]);
+        // Order does not depend on which one is saved and which is last_server.
+        let mut swapped = cfg(None, Some("http://alpha:9/"));
+        swapped.last_server = Some("http://zed:9/".into());
+        assert_eq!(known_servers(Some(&swapped), nas), known_servers(Some(&c), nas));
+        // The same server twice (saved and JATIFY_TEAM), "local", garbage: once, or not at all.
+        let mut dup = cfg(None, Some("http://nas:8780/"));
+        dup.last_server = Some("ftp://x".into());
+        assert_eq!(known_servers(Some(&dup), nas), [url("http://nas:8780/")]);
+        assert_eq!(known_servers(Some(&cfg(None, Some("local"))), None), Vec::<Url>::new());
+    }
+
+    #[test]
+    fn switch_server_opens_the_one_asked_for_and_keeps_the_other() {
+        let nas = Some("nas");
+        let team = url("http://nas:8780/");
+        let other = url("http://other:9/");
+        // From this computer (a typed server remembered) to JATIFY_TEAM's server: the typed one stays known.
+        let mut local = cfg(Some(8791), Some("local"));
+        local.last_server = Some("http://other:9/".into());
+        let to_team = switch_server(Some(&local), nas, &team);
+        assert_eq!(to_team.server, None);
+        assert_eq!(to_team.last_server.as_deref(), Some("http://other:9/"));
+        assert_eq!(to_team.port, Some(8791));
+        assert_eq!(resolve_target(Some(&to_team), nas), Target::Server(team.clone()));
+        assert_eq!(known_servers(Some(&to_team), nas), [team.clone(), other.clone()]);
+        // From there to the typed server: saved, JATIFY_TEAM is not written down (it is always known).
+        let to_other = switch_server(Some(&to_team), nas, &other);
+        assert_eq!(to_other, cfg(Some(8791), Some("http://other:9/")));
+        assert_eq!(resolve_target(Some(&to_other), nas), Target::Server(other.clone()));
+        assert_eq!(known_servers(Some(&to_other), nas), [team.clone(), other.clone()]);
+        // Between two typed servers: the one left goes to last_server.
+        let third = url("http://third:9/");
+        let to_third = switch_server(Some(&to_other), None, &third);
+        assert_eq!(to_third.server.as_deref(), Some("http://third:9/"));
+        assert_eq!(to_third.last_server.as_deref(), Some("http://other:9/"));
+        assert_eq!(resolve_target(Some(&to_third), None), Target::Server(third.clone()));
+        // A fresh install with JATIFY_TEAM.
+        assert_eq!(switch_server(None, nas, &team), DesktopConfig::default());
+        assert_eq!(resolve_target(Some(&switch_server(None, nas, &team)), nas), Target::Server(team));
     }
 
     #[test]

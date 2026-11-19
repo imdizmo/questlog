@@ -11,9 +11,8 @@ test('a signed GitHub push adds the commit to the history of the card it names',
   const card = await run<{ id: string }>(page, 'cards', 'create', { deckId: deck.id, content: 'Sharpen the horn' });
   const seq = (await snapshot(page)).cards.find((c: any) => c.id === card.id).seq as number;
 
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'GitHub' }).click();
+  await page.goto('/decks?menu=connections/github');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   // Opening a git tab completes the onboarding step.
   await expect.poll(async () => (await snapshot(page)).onboarding.some((o: any) => o.step === 'applySCMIntegration')).toBe(true);
   await settings.getByRole('button', { name: 'Generate webhook URL' }).click();

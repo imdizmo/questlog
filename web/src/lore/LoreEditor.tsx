@@ -1,5 +1,5 @@
 import { flushSync } from 'react-dom';
-import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties, type Ref } from 'react';
+import { useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react';
 import { Compartment, EditorSelection, EditorState, Prec, type TransactionSpec } from '@codemirror/state';
 import { EditorView, keymap, placeholder as placeholderText, type ViewUpdate } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, insertNewline } from '@codemirror/commands';
@@ -9,13 +9,22 @@ import { showToast } from '../toast';
 import { COMMANDS, filterCommands, SlashMenu, type Command, type RefKind } from '../components/SlashMenu';
 import { RefPicker } from '../components/RefPicker';
 import type { EditorProps } from '../components/Editor';
-import { loreDecorationsExtension, loreMarkdown } from './decorations';
+import { loreDecorationsExtension, loreMarkdown, loreNamesField, setLoreNames, type LoreNames } from './decorations';
+import { ignoreName } from '../linkIgnores';
+import { useStore } from '../store';
+import { campaignNameIndex, entryPath } from '../wiki';
+import { usePanelOpener } from '../components/wiki/panelContext';
+import { titleOf } from '../../../shared/cards';
 import { noteSent, syncFromParent } from './parentSync';
 import {
   backspaceHeading, insertLink, onCaretLine, setHeading, toggleBold, toggleChecklist, toggleItalic, toggleList, toggleQuote,
 } from './commands';
 
+/** `cardId`: the card whose text this is; its own names are not marked, and "Not a link here" applies to it. */
 export type LoreEditorProps = Omit<EditorProps, 'textareaRef'> & { editorRef?: Ref<{ focus(): void }> };
+
+/** Opens a wiki entry in a new tab, so the text being edited stays as it is. */
+const openInTab = (href: string) => { window.open(href, '_blank', 'noopener'); };
 
 /** Where the `/` that opened the menu sits, the text typed after it, the highlighted command and where to show it. */
 interface Slash { at: number; query: string; active: number; pos: { top: number; left: number } | null }
@@ -48,7 +57,7 @@ const TOOLBAR: { label: string; title: string; cmd: (s: EditorState) => Transact
  */
 export function LoreEditor({
   value, onChange, onSave, onCancel, label = 'Text', rows = 12, placeholder, autoFocus,
-  projectId = null, images = [], onSetProperties, editorRef,
+  projectId = null, images = [], onSetProperties, editorRef, cardId = null,
 }: LoreEditorProps) {
   const inlineHost = useRef<HTMLDivElement>(null);
   const focusHost = useRef<HTMLDivElement>(null);
@@ -77,6 +86,41 @@ export function LoreEditor({
   const send = (text: string) => { sent.current = noteSent(sent.current, text); live.current.onChange(text); };
 
   useImperativeHandle(editorRef, () => ({ focus: () => viewRef.current?.focus() }), []);
+
+  // Recognised names: the campaign's index (rebuilt only when a name or alias changes) and this card's ignores. A new
+  // entry, alias or ignore anywhere (this client or another) reaches the store and re-marks the text without a keystroke.
+  const cards = useStore((s) => s.cards);
+  const decks = useStore((s) => s.decks);
+  const projects = useStore((s) => s.projects);
+  const project = projectId ? projects.get(projectId) : undefined;
+  const index = project ? campaignNameIndex({ cards, decks }, project.id) : null;
+  const ignores = (cardId ? cards.get(cardId)?.linkIgnores : null) ?? [];
+  const ignoresKey = ignores.join('\u0000');
+  // In the wiki's entry stack a name opens as a panel beside this column (the editor stays mounted, so the draft stays);
+  // elsewhere, and from focus mode (a dialog over the page), in a new tab.
+  const beside = usePanelOpener();
+  const lookups = useRef({ cards, seq: project?.seq ?? 0, beside });
+  lookups.current = { cards, seq: project?.seq ?? 0, beside };
+  const names = useMemo<LoreNames | null>(() => (index && index.size > 0 ? {
+    index,
+    selfId: cardId,
+    ignores,
+    title: (id) => { const c = lookups.current.cards.get(id); return c ? titleOf(c.content) : null; },
+    open: (id) => {
+      const { cards: all, seq, beside: panel } = lookups.current;
+      const c = all.get(id);
+      if (!c) return;
+      if (panel && !focusRef.current && panel.openHref(entryPath(seq, c))) return;
+      openInTab(entryPath(seq, c));
+    },
+    ignore: cardId ? (name) => ignoreName(cardId, name) : null,
+  } : null), [index, cardId, ignoresKey]);
+  const namesRef = useRef(names);
+  namesRef.current = names;
+  useEffect(() => {
+    const view = viewRef.current;
+    if (view && view.state.field(loreNamesField, false) !== names) view.dispatch({ effects: setLoreNames.of(names) });
+  }, [names]);
 
   /** Where the menu goes for the `/` at `at`, relative to the area holding the editor. */
   const menuPos = (view: EditorView, at: number) => {
@@ -175,6 +219,7 @@ export function LoreEditor({
         keys,
         format,
         loreMarkdown(text),
+        loreNamesField.init(() => namesRef.current),
         loreDecorationsExtension(),
         history(),
         keymap.of(LORE_KEYMAP),

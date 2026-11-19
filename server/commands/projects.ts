@@ -11,6 +11,7 @@ import { milestoneRow } from './milestones';
 import { configRow } from './sprints';
 import { DEFAULT_PROJECT_TAGS } from '../../shared/types';
 import { projectFileIds, unlinkFiles } from '../files';
+import { projectAssetBlobIds, unlinkAssetBlobs } from '../assets';
 import type { Command, Ctx } from '../dispatch';
 import { assertFeature, assertProjectSlots } from '../billing';
 import { assertCoverUsable, coverSchema, projectCoverIds, releaseCover, unlinkCovers } from '../covers';
@@ -38,6 +39,7 @@ function removeProject(ctx: Ctx, id: string) {
   const decks = db.prepare('SELECT id FROM decks WHERE project_id=?').all(id) as { id: string }[];
   const fileIds = projectFileIds(db, id);
   const coverIds = projectCoverIds(db, id);
+  const assetBlobs = projectAssetBlobIds(db, id);
   for (const d of decks) {
     const cards = db.prepare('SELECT id FROM cards WHERE deck_id=?').all(d.id) as { id: string }[];
     db.prepare('DELETE FROM cards WHERE deck_id=?').run(d.id);
@@ -59,7 +61,7 @@ function removeProject(ctx: Ctx, id: string) {
   for (const c of lostConfigs) { db.prepare('DELETE FROM sprint_configs WHERE id=?').run(c.id); ctx.emit('sprintConfig', 'remove', c); }
   for (const a of access) ctx.emit('projectAccess', 'remove', { projectId: id, userId: a.u });
   ctx.emit('project', 'remove', { id });
-  ctx.afterCommit(() => { unlinkFiles(db, fileIds); unlinkCovers(db, coverIds); });
+  ctx.afterCommit(() => { unlinkFiles(db, fileIds); unlinkCovers(db, coverIds); unlinkAssetBlobs(db, assetBlobs); });
 }
 
 export const projectCommands: Record<string, Command> = {
@@ -156,6 +158,7 @@ export const projectCommands: Record<string, Command> = {
   },
   'projects/delete': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, { id }) {
       assertCan(ctx.db, ctx.actor, 'project.manage', id);
       removeProject(ctx, id);

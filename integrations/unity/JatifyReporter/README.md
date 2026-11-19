@@ -10,7 +10,7 @@ workspace, with an optional screenshot or other files.
 ## Requirements
 
 - Unity 2021.3 or newer.
-- A Questlog workspace with user reports set up: an admin opens **Workspace settings → User reports (Unity)**,
+- A Questlog workspace with user reports set up: an admin opens the workspace menu (top left) → **Connections → Player reports from Unity**,
   enters the game's name and picks the questline reports go to.
 - Players' machines must reach the tracker's address. It runs on your local network, so reports only arrive from
   machines on that network (or through a reverse proxy you set up). The address must be one the tracker accepts as a

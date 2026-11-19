@@ -45,7 +45,8 @@ export async function dispatchWithCoverUrl(db: Db, user: User | Actor, name: str
         return created;
       } catch (e) { unlinkCovers(db, [fileId]); throw e; }
     } catch (e) {
-      publish(dispatch(db, actor, 'projects/delete', { id }));
+      // Undoing this request's own create: allowed for a token without "May delete" too.
+      publish(dispatch(db, actor, 'projects/delete', { id }, { undoOwnCreate: true }));
       throw e;
     }
   }

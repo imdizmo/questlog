@@ -102,6 +102,9 @@ inner() {
   colors=$(magick "$S/shot.png" -format '%k' info:)
   [[ "$colors" -gt 1 ]] || die "screenshot is blank ($colors colour)"
   ok "screenshot has $colors colours"
+  # The workspace strip docks beside the page (main.rs `dock`); a Tauri that packs child webviews differently fails here.
+  ! grep -q "could not dock" "$S/questlog-1.log" || die "the workspace strip was not docked: $(grep "could not dock" "$S/questlog-1.log")"
+  ok "workspace strip docked"
   if [[ -n "${SMOKE_SHOT_OUT:-}" ]]; then cp "$S/shot.png" "$SMOKE_SHOT_OUT"; fi
 
   # Second launch hands over to the first; still one server.

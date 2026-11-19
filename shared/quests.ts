@@ -51,7 +51,7 @@ export const QUESTS: QuestChapter[] = [
     steps: [
       { key: 'createVisionBoard', title: 'Draw on a map', hint: 'Sketch ideas on a map attached to a task.' },
       { key: 'inviteTeammate', title: 'Invite a teammate', hint: 'Send an invite link from the Members page.' },
-      { key: 'applySCMIntegration', title: 'Connect your source control', hint: 'Link a git host in the workspace settings.' },
+      { key: 'applySCMIntegration', title: 'Connect your source control', hint: 'Link a git host in the workspace menu (top left) → Connections.' },
     ],
   },
 ];

@@ -189,7 +189,7 @@ describe('danger zone', () => {
     expect((await get('/app.js', '')).statusCode).toBe(200);
     const status = await get('/api/status', '');
     expect(status.statusCode).toBe(200);
-    expect(status.json()).toEqual({ setup: true, disabled: true });
+    expect(status.json()).toMatchObject({ setup: true, disabled: true });
     // Logging out still works.
     expect((await app.inject({ method: 'POST', url: '/api/logout', headers: { host: HOST, cookie: member } })).statusCode).toBe(200);
   });
@@ -210,7 +210,7 @@ describe('danger zone', () => {
     expect((db.prepare('SELECT disabled_reason r FROM account').get() as { r: string | null }).r).toBe(null);
     expect((await get('/api/snapshot', member)).statusCode).toBe(200);
     expect((await login('m@x.io', 'pw-member')).statusCode).toBe(200);
-    expect((await get('/api/status', '')).json()).toEqual({ setup: true, disabled: false });
+    expect((await get('/api/status', '')).json()).toMatchObject({ setup: true, disabled: false });
     // Reactivating an active workspace changes nothing.
     expect((await send('dangerZone/reactivate', {})).statusCode).toBe(200);
   });

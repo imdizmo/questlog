@@ -6,7 +6,9 @@
  *   (the lower of settings.mcpDailyLimit and the plan's, null = unlimited; 429 mcp_daily_limit).
  * - Tools are thin wrappers acting as the token's user: reads use the shared visibility rules (canSeeCard,
  *   visibleProjectIds, cardVisibleSql, runQuery), writes go through dispatchAll (access, guardians, history, live
- *   events), so no command logic lives here. There are no delete tools.
+ *   events), so no command logic lives here.
+ * - Delete tools need a write token created with "May delete" (tokens.ts tokenMayDelete; off for every older token),
+ *   on top of the rights the same command needs through the API.
  * - Tool failures are `isError: true` results; protocol errors are JSON-RPC errors; auth and limits are HTTP errors.
  */
 import { z } from 'zod';
@@ -17,17 +19,18 @@ import { now } from './auth';
 import { mcpDailyLimit } from './billing';
 import { dispatchAll, type ChangeEvent } from './dispatch';
 import { can, isActiveMember, visibleProjectIds, type Actor } from './permissions';
-import { bearerOf, tokenActor, TOKEN_PREFIX } from './tokens';
+import { bearerOf, tokenActor, tokenCanDelete, tokenMayDelete, TOKEN_PREFIX } from './tokens';
 import { canSeeCard, cardProjectId } from './access';
 import { cardVisibleSql } from './snapshot';
 import { runQuery } from './query';
-import { CARD_SELECT, accountRow } from './commands/rows';
+import { CARD_SELECT, accountRow, deckRow } from './commands/rows';
 import { searchTokenSchema } from './commands/search';
 import { dueDateSchema, effortSchema, prioritySchema } from './commands/cards';
 import { milestoneRow } from './commands/milestones';
 import { derivedStatus, titleOf } from '../shared/cards';
 import { compileSearch, MAX_CHIPS, type SearchCtx } from '../shared/search';
 import { colors } from '../shared/schedule';
+import { TEMPLATE_IDS } from '../shared/templates';
 import { DEFAULT_SETTINGS, type AccountSettings, type Card, type ResolvableContext } from '../shared/types';
 
 export const MCP_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -44,6 +47,8 @@ export const MCP_LIMITS = {
   authFailBurst: 40,
   authFailPerSec: 8,
   createCards: 50,
+  /** Tasks one delete_cards call may delete. */
+  deleteCards: 100,
   listMax: 200,
   /** Characters of one comment entry, history change or card snippet a read tool loads (cut in SQL). */
   textChars: 2000,
@@ -191,6 +196,26 @@ function handCards(db: Db, actor: Actor, userId: string): Card[] {
   return out;
 }
 
+/**
+ * Delete tools: a write token created with "May delete" (tokens.ts tokenCanDelete, the rule dispatch applies to every
+ * deleting command; checked here first for MCP's own, clearer error). The command then checks the user's own rights as
+ * through the API (content.edit, guardians, milestone management).
+ */
+function assertMayDelete(c: ToolCtx): void {
+  if (!c.actor.scopes.includes('write')) throw new AppError(403, 'missing_scope', { requiredScope: 'write' });
+  if (!tokenCanDelete(c.db, c.actor)) {
+    throw new AppError(403, 'delete_not_allowed', { reason: 'This token may not delete. Create a personal token with "May delete" ticked (API tokens) to use the delete tools.' });
+  }
+}
+
+/** A milestone the actor can see (same rule as list_milestones), else 404 not_found. */
+function visibleMilestone(c: ToolCtx, id: string) {
+  const m = milestoneRow(c.db, id);
+  const visible = m && (m.isGlobal ? isActiveMember(c.db, c.actor) : m.projectIds.some((p) => visibleProjectIds(c.db, c.actor).has(p)));
+  if (!m || !visible) throw notFound();
+  return m;
+}
+
 const query = (c: ToolCtx, root: unknown[]) => runQuery(c.db, c.actor, { _root: root }) as any;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -244,7 +269,7 @@ const TOOLS: Record<string, Tool> = {
       const role = (db.prepare('SELECT role FROM account_roles WHERE user_id=?').get(actor.id) as { role: string } | undefined)?.role ?? null;
       return {
         user: { id: actor.id, name: actor.name, role, timezone: actor.timezone },
-        token: { access: actor.scopes.includes('write') ? 'write' : 'read', role: actor.tokenRole, projectIds: actor.projectIds },
+        token: { access: actor.scopes.includes('write') ? 'write' : 'read', role: actor.tokenRole, projectIds: actor.projectIds, mayDelete: tokenMayDelete(db, actor.tokenId) },
         workspace: { name: accountRow(db).name },
         projects: vis.length ? rowsOf(db, `SELECT id, seq, name, is_archived FROM projects WHERE id IN (${marks(vis.length)}) ORDER BY seq`, ...vis) : [],
         features: {
@@ -453,6 +478,23 @@ const TOOLS: Record<string, Tool> = {
       return { items: (r._root.users as string[]).map((id) => r.users?.[id]).filter((u: any) => u.role && u.kind !== 'service').map(({ kind: _k, ...u }: any) => u) };
     },
   },
+  list_assets: {
+    description: 'The Assets library: pictures, 3D models, maps and concepts Questlog keeps per project, with where each came from. pictureUrl needs a signed-in session.',
+    schema: z.object({ projectId: z.string().optional() }),
+    run({ db, actor }, { projectId }) {
+      const vis = [...visibleProjectIds(db, actor)].filter((p) => !projectId || p === projectId);
+      if (!vis.length) return { items: [] };
+      const rows = db.prepare(`SELECT id, project_id, title, kind, for_tag, source, link_json, picture_id, model_id FROM assets
+        WHERE project_id IN (${marks(vis.length)}) ORDER BY created_at DESC LIMIT 3000`).all(...vis) as Record<string, any>[];
+      return {
+        items: rows.map((r) => ({
+          id: r.id, projectId: r.project_id, title: r.title, kind: r.kind, for: r.for_tag ?? null, source: r.source,
+          link: r.link_json ? JSON.parse(r.link_json) : null, hasPicture: !!r.picture_id, hasModel: !!r.model_id,
+          pictureUrl: r.picture_id ? `/api/assets/${r.id}/picture` : null,
+        })),
+      };
+    },
+  },
 
   // ---- writes ----
   create_card: {
@@ -603,16 +645,58 @@ const TOOLS: Record<string, Tool> = {
     description: 'Change a milestone; fields left out keep their value.',
     schema: z.object({ milestoneId: z.string(), ...milestoneFields, name: milestoneFields.name.optional() }),
     run(c, { milestoneId, ...input }) {
-      const m = milestoneRow(c.db, milestoneId);
       // Same rule as the milestones the actor can read (query.ts milestoneVisible); the command checks the right to manage.
-      const visible = m && (m.isGlobal ? isActiveMember(c.db, c.actor) : m.projectIds.some((p) => visibleProjectIds(c.db, c.actor).has(p)));
-      if (!m || !visible) throw notFound();
+      const m = visibleMilestone(c, milestoneId);
       const payload = {
         id: milestoneId, name: input.name ?? m.name, date: input.date === undefined ? m.date : input.date,
         startDate: input.startDate === undefined ? m.startDate : input.startDate, color: input.color ?? m.color,
         isGlobal: input.isGlobal ?? m.isGlobal, projectIds: input.projectIds ?? m.projectIds,
       };
       c.run([{ name: 'milestones/update', payload }]);
+      return { id: milestoneId };
+    },
+  },
+  create_project: {
+    description: 'Create a project. Needs an admin-role write token whose user may create projects. A template adds its lists and starter tasks.',
+    schema: z.object({
+      name: z.string().trim().min(1).max(200),
+      visibility: z.enum(['full', 'limited']).optional().describe('limited: only people given access see it (plan feature).'),
+      template: z.enum(TEMPLATE_IDS as [string, ...string[]]).optional().describe('Start from a project template.'),
+    }),
+    run(c, input) {
+      const [r] = c.run([{ name: 'projects/create', payload: input }]);
+      const p = c.db.prepare('SELECT seq FROM projects WHERE id=?').get(r.id) as { seq: number };
+      return { id: r.id, seq: p.seq };
+    },
+  },
+  delete_cards: {
+    description: `Delete up to ${MCP_LIMITS.deleteCards} tasks at once, all or none. A soft delete: they move to Archive (deleted tasks) in the workspace menu and can be restored there. Needs a token created with "May delete".`,
+    schema: z.object({ cardIds: z.array(cardRef).min(1).max(MCP_LIMITS.deleteCards) }),
+    run(c, { cardIds }) {
+      assertMayDelete(c);
+      const ids = [...new Set(cardIds.map((ref: string) => resolveCard(c.db, c.actor, ref).id))];
+      c.run(ids.map((id) => ({ name: 'cards/update', payload: { id, visibility: 'deleted' } })));
+      return { ids };
+    },
+  },
+  delete_deck: {
+    description: 'Delete a list. The list itself is removed for good and cannot be restored; its tasks move to Archive (deleted tasks) and can be restored from there. Needs confirm: true and a token created with "May delete".',
+    schema: z.object({ deckId: z.string(), confirm: z.literal(true).describe('Must be true: deleting a list cannot be undone.') }),
+    run(c, { deckId }) {
+      assertMayDelete(c);
+      const d = deckRow(c.db, deckId);
+      if (!d || !visibleProjectIds(c.db, c.actor).has(d.projectId as string)) throw notFound();
+      c.run([{ name: 'decks/delete', payload: { id: deckId } }]);
+      return { id: deckId };
+    },
+  },
+  delete_milestone: {
+    description: 'Delete a milestone for good; it cannot be restored. Its tasks stay where they are and only lose the milestone. Needs confirm: true and a token created with "May delete".',
+    schema: z.object({ milestoneId: z.string(), confirm: z.literal(true).describe('Must be true: deleting a milestone cannot be undone.') }),
+    run(c, { milestoneId }) {
+      assertMayDelete(c);
+      visibleMilestone(c, milestoneId);
+      c.run([{ name: 'milestones/delete', payload: { id: milestoneId } }]);
       return { id: milestoneId };
     },
   },

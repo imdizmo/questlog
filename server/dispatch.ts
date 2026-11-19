@@ -22,18 +22,19 @@ import { onboardingCommands } from './commands/onboarding';
 import { emailPrefCommands } from './commands/emailPrefs';
 import { openDeckCommands } from './commands/openDecks';
 import { wikiCommands } from './commands/wiki';
+import { assetCommands } from './commands/assets';
 import { discordCommands } from './integrations/discord';
 import { slackCommands } from './integrations/slack';
 import { gitCommands } from './integrations/git';
 import { isGuest, sessionActor, type Actor } from './permissions';
-import { TOKEN_DENIED_COMMANDS, TOKEN_DENIED_NAMESPACES } from './tokens';
+import { TOKEN_DENIED_COMMANDS, TOKEN_DENIED_NAMESPACES, tokenCanDelete } from './tokens';
 
 export type ModelName =
   | 'account' | 'user' | 'accountRole' | 'project' | 'projectAccess' | 'projectPref'
   | 'deck' | 'card' | 'resolvable' | 'resolvableEntry' | 'reaction' | 'handCard' | 'preset' | 'userCardTag' | 'cardDep' | 'file' | 'resolvableNotification' | 'cardSubscription' | 'deckSubscription' | 'deckGuardian' | 'journey' | 'visionBoard' | 'visionQuery' | 'bookmark' | 'donePile' | 'savedSearch' | 'onboardingStep'
   | 'milestone' | 'milestoneZone' | 'milestoneProgress'
   | 'sprintConfig' | 'sprint' | 'sprintProgress' | 'timeSegment' | 'apiToken'
-  | 'entryType' | 'linkKind' | 'entryLink';
+  | 'entryType' | 'linkKind' | 'entryLink' | 'entryFamily' | 'asset';
 /** 'access' (model 'project' only, row {id}): someone's view of this project may have changed; reload the snapshot. */
 export type ChangeOp = 'upsert' | 'remove' | 'access';
 export type ChangeEvent = { model: ModelName; op: ChangeOp; row: object };
@@ -54,6 +55,11 @@ export interface Ctx {
 export interface Command<T = any> {
   schema: ZodType<T>;
   run(ctx: Ctx, input: T): unknown;
+  /**
+   * The command deletes or irreversibly removes data, so a personal token needs "May delete" (assertTokenMayDelete).
+   * A function decides from the validated input (cards/update deletes only with visibility 'deleted').
+   */
+  deletes?: boolean | ((input: T) => boolean);
 }
 
 export const registry: Record<string, Command> = {
@@ -78,6 +84,7 @@ export const registry: Record<string, Command> = {
   ...emailPrefCommands,
   ...openDeckCommands,
   ...wikiCommands,
+  ...assetCommands,
   ...discordCommands,
   ...slackCommands,
   ...gitCommands,
@@ -103,6 +110,20 @@ export function assertTokenScope(actor: Actor, name: string): void {
   if (!actor.scopes.includes('write')) throw new AppError(403, 'missing_scope', { requiredScope: `${ns}:write` });
 }
 
+/** Whether this call deletes (Command.deletes, on the validated input). */
+export const callDeletes = (cmd: Command, input: unknown): boolean =>
+  typeof cmd.deletes === 'function' ? cmd.deletes(input) : !!cmd.deletes;
+
+/**
+ * Deleting through a token: a personal token needs "May delete" (tokens.ts tokenCanDelete), the same rule as MCP's
+ * delete tools. 403 token_cannot_delete {command, message}. Sessions, the system and org tokens pass.
+ */
+export function assertTokenMayDelete(db: Db, actor: Actor, name: string): void {
+  if (tokenCanDelete(db, actor)) return;
+  throw new AppError(403, 'token_cannot_delete', { command: name, message: TOKEN_CANNOT_DELETE_MESSAGE });
+}
+export const TOKEN_CANNOT_DELETE_MESSAGE = 'This token can\'t delete. Create a token with "May delete" ticked.';
+
 /**
  * Command namespaces a guest may dispatch: `open` (Open Decks visitors: upvote, unvote, subscribe, unsubscribe; each
  * command checks the project is public). Every other command is 403 for a guest.
@@ -120,8 +141,9 @@ export function dispatch(
   user: User | Actor,
   name: string,
   payload: unknown,
+  opts: { undoOwnCreate?: boolean } = {},
 ): { payload: unknown; actionId: string; events: ChangeEvent[] } {
-  const r = dispatchAll(db, user, [{ name, payload }]);
+  const r = dispatchAll(db, user, [{ name, payload }], opts);
   return { payload: r.payloads[0], actionId: r.actionId, events: r.events };
 }
 
@@ -130,12 +152,14 @@ export function dispatch(
  * first failure rolls back the lot). Used by the MCP batch tools (server/mcp.ts).
  * `beforeCommit` runs inside the same transaction after the commands, with their payloads (user reports store their
  * upload and email rows with the card they created).
+ * `undoOwnCreate` skips the "May delete" check: only for removing again what the same request just created
+ * (cover-dispatch.ts: a project whose cover could not be fetched).
  */
 export function dispatchAll(
   db: Db,
   user: User | Actor,
   calls: { name: string; payload: unknown }[],
-  opts: { beforeCommit?: (payloads: unknown[]) => void } = {},
+  opts: { beforeCommit?: (payloads: unknown[]) => void; undoOwnCreate?: boolean } = {},
 ): { payloads: unknown[]; actionId: string; events: ChangeEvent[] } {
   const actor = toActor(user);
   const steps = calls.map(({ name, payload }) => {
@@ -145,6 +169,7 @@ export function dispatchAll(
     assertGuestScope(db, actor, name);
     const parsed = cmd.schema.safeParse(payload);
     if (!parsed.success) throw new AppError(400, 'invalid_payload', { issues: parsed.error.issues });
+    if (!opts.undoOwnCreate && callDeletes(cmd, parsed.data)) assertTokenMayDelete(db, actor, name);
     return { cmd, input: parsed.data };
   });
   const r = runAction(db, actor, (ctx) => {

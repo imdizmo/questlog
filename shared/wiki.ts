@@ -1,6 +1,8 @@
 // Game wiki model: keys, type inheritance, value validation and consistency checks.
 // Pure functions, shared by server and web.
-import type { Card, EntryLink, EntryType, FieldDef, FieldKind, LinkKind } from './types';
+import type { Card, EntryLink, EntryType, FieldDef, FieldKind, LinkKind, RuleValue, ScenarioValue, TableValue } from './types';
+import { balanceName, BALANCE_KINDS, checkBalance, ruleProblem, scenarioProblem, tableProblem, type BalanceField, type BalanceResult } from './balance';
+import { ambiguousNames, nameSourceOf } from './autolink';
 
 export type { EntryLink, EntryType, FieldDef, FieldKind, LinkKind };
 
@@ -91,7 +93,11 @@ export function refContext(types: Map<string, EntryType>, entries: Pick<Card, 'e
   };
 }
 
-/** null = ok, else a problem code: wrong_kind, below_min, above_max, not_an_option, broken_ref, wrong_type_ref. */
+/**
+ * null = ok, else a problem code: wrong_kind, below_min, above_max, not_an_option, broken_ref, wrong_type_ref, and for
+ * tables not_ascending and too_large. Tables, rules and scenarios are checked for shape here; their formulas and names
+ * need the whole campaign and are checked by runChecks (formula_error).
+ */
 export function validateValue(def: FieldDef, v: unknown, ctx: RefContext): string | null {
   const keyToType = ctx.typeOfKey;
   const typeFits = ctx.fits;
@@ -126,15 +132,33 @@ export function validateValue(def: FieldDef, v: unknown, ctx: RefContext): strin
       if (!isNum(min) || !isNum(max) || min > max) return 'wrong_kind';
       return checkBounds(def, min) ?? checkBounds(def, max);
     }
+    case 'table': return tableProblem(v);
+    case 'rule': return ruleProblem(v);
+    case 'scenario': return scenarioProblem(v);
     default: return 'wrong_kind';
   }
 }
 
-export type CheckProblem = 'missing_required' | 'invalid_value' | 'broken_ref' | 'wrong_type_ref' | 'link_type_not_allowed' | 'sum_exceeded' | 'bad_key' | 'duplicate_key';
+/**
+ * What formulas see of an entry (rule examples, scenario roles, the simulator): its visible fields that hold a valid
+ * value, which is exactly what the export carries. `defs` are the entry type's visible fields (fieldsOf, not hidden).
+ */
+export function formulaValues(defs: FieldDef[], fields: Record<string, unknown> | undefined, ctx: RefContext): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const f of defs) {
+    if (f.hidden || !fields || !Object.hasOwn(fields, f.key)) continue;
+    const v = fields[f.key];
+    if (!isEmpty(v) && validateValue(f, v, ctx) === null) values[f.key] = v;
+  }
+  return values;
+}
+
+export type CheckProblem = 'missing_required' | 'invalid_value' | 'broken_ref' | 'wrong_type_ref' | 'link_type_not_allowed' | 'sum_exceeded' | 'bad_key' | 'duplicate_key'
+  | 'formula_error' | 'ambiguous_name';
 export interface Check { entry: string /* key or id */; problem: CheckProblem; detail: string }
 export interface WikiData {
   types: EntryType[]; kinds: LinkKind[];
-  entries: Pick<Card, 'id' | 'entryTypeId' | 'entryKey' | 'fields' | 'visibility' | 'content'>[];
+  entries: (Pick<Card, 'id' | 'entryTypeId' | 'entryKey' | 'fields' | 'visibility' | 'content'> & { aliases?: string[] })[];
   links: EntryLink[];
   /**
    * The export's option of the same name. Off, plain pages (untyped lore, or lore whose type is gone) are not in the
@@ -143,6 +167,13 @@ export interface WikiData {
   includePages: boolean;
   /** Is the file an attachment of the card? Given, an image value (field or link property) must name an attachment of its owner (a link's source). */
   isAttached?: (fileId: string, cardId: string) => boolean;
+  /** Given, gets the tables, rules (with golden samples) and scenarios that passed the checks: what the export writes. */
+  onBalance?: (r: BalanceResult) => void;
+  /**
+   * Also list ambiguous_name: a name or alias (shared/autolink rules) held by two live entries, plain pages included,
+   * which is never linked in text. The Wiki's checks set it; the export does not (display only, not game data).
+   */
+  names?: boolean;
 }
 /** At most this many checks are listed (the export, its 422 body, the panel); `total` counts them all. */
 export const CHECKS_LIMIT = 1000;
@@ -197,10 +228,59 @@ export function runChecks(d: WikiData, limit = CHECKS_LIMIT): ChecksResult {
     if (!defs) { defs = fieldsOf(types, e.entryTypeId!); fieldsByType.set(e.entryTypeId!, defs); }
     checkValues(defs, e.fields, e.id, label(e), '');
   }
+  if (d.names) {
+    const pages = d.entries.filter((e) => e.visibility !== 'deleted');
+    const pageById = new Map(pages.map((e) => [e.id, e]));
+    for (const a of ambiguousNames(pages.map(nameSourceOf))) {
+      for (const id of a.cardIds) {
+        const others = a.cardIds.filter((x) => x !== id).map((x) => label(pageById.get(x)!));
+        add({ entry: label(pageById.get(id)!), problem: 'ambiguous_name', detail: `"${a.name}" is also a name of ${others.slice(0, 5).join(', ')}${others.length > 5 ? `, +${others.length - 5} more` : ''}: not linked in text` });
+      }
+    }
+  }
   for (const [key, list] of byKey) {
     const typed = list.filter(isTyped);
     if (list.length > 1 && typed.length > 0) add({ entry: key, problem: 'duplicate_key', detail: list.slice(0, 5).map((e) => e.id).join(', ') + (list.length > 5 ? `, +${list.length - 5} more` : '') });
   }
+
+  // Tables, rules and scenarios: formulas, names, rule calls and examples need the whole campaign.
+  const balance: BalanceField[] = [];
+  /** A key formulas and examples can use: valid, and held by this one live entry only. */
+  const uniqueKey = (k: string | null): k is string => !!k && KEY_RE.test(k) && byKey.get(k)?.length === 1;
+  for (const e of live) {
+    if (!isTyped(e)) continue;
+    const defs = fieldsByType.get(e.entryTypeId!)!.filter((f) => !f.hidden && BALANCE_KINDS.has(f.kind));
+    for (const f of defs) {
+      const v = e.fields?.[f.key];
+      if (isEmpty(v) || validateValue(f, v, ctx) !== null) continue;
+      const several = defs.filter((d) => d.kind === f.kind).length > 1;
+      balance.push({ entry: label(e), def: f, value: v as TableValue | RuleValue | ScenarioValue, name: uniqueKey(e.entryKey) ? balanceName(e.entryKey, f.key, several) : null });
+    }
+  }
+  if (balance.length) {
+    const typeIdByKey = new Map([...types.values()].map((t) => [t.key, t.id]));
+    const visible = (typeId: string) => {
+      let defs = fieldsByType.get(typeId);
+      if (!defs) { defs = fieldsOf(types, typeId); fieldsByType.set(typeId, defs); }
+      return defs.filter((f) => !f.hidden);
+    };
+    const roleValues = new Map<string, { typeKey: string; values: Record<string, unknown> } | null>();
+    const r = checkBalance({
+      fields: balance,
+      typeFields: (k) => { const id = typeIdByKey.get(k); return id ? visible(id) : null; },
+      typeName: (k) => { const id = typeIdByKey.get(k); return (id && types.get(id)?.name) || k; },
+      fits: ctx.fits,
+      entry: (k) => {
+        if (roleValues.has(k)) return roleValues.get(k)!;
+        const e = uniqueKey(k) ? byKey.get(k)![0] : undefined;
+        const found = e && isTyped(e) ? { typeKey: types.get(e.entryTypeId!)!.key, values: formulaValues(visible(e.entryTypeId!), e.fields, ctx) } : null;
+        roleValues.set(k, found);
+        return found;
+      },
+    }, add);
+    roleValues.clear();
+    d.onBalance?.(r);
+  } else d.onBalance?.({ tables: [], rules: [], scenarios: [] });
 
   const sums = new Map<string, { kind: LinkKind; from: string; total: number }>();
   const missing = (id: string) => (leftOut.has(id) ? `${label(leftOut.get(id)!)} is a plain page (not exported without pages)` : `${id} missing or deleted`);

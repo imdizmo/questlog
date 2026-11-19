@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react';
 import { tokenBoundary } from '../../../shared/content';
-import type { CardFile } from '../store';
+import { useStore, type CardFile } from '../store';
 import { showToast } from '../toast';
 import { COMMANDS, filterCommands, SlashMenu, type Command, type RefKind } from './SlashMenu';
 import { RefPicker } from './RefPicker';
@@ -45,6 +45,8 @@ export interface EditorProps {
   autoFocus?: boolean;
   /** Tags offered by "Add tag" come from this project. */
   projectId?: string | null;
+  /** The card whose text this is (absent for a new card): its own names and "Not a link here" names stay unlinked. */
+  cardId?: string | null;
   /** Images attached to the card, for "Embed attached image". */
   images?: CardFile[];
   /** "Set properties": shows the card's properties. Hidden from the menu when absent. */
@@ -58,8 +60,9 @@ export interface EditorProps {
  */
 export function Editor({
   value, onChange, onSave, onCancel, label = 'Task text', rows = 12, placeholder, autoFocus,
-  projectId = null, images = [], onSetProperties, textareaRef,
+  projectId = null, images = [], onSetProperties, textareaRef, cardId = null,
 }: EditorProps) {
+  const previewCard = useStore((s) => (cardId ? s.cards.get(cardId) ?? null : null));
   const area = useRef<HTMLTextAreaElement | null>(null);
   const focusDialog = useRef<HTMLDialogElement>(null);
   const menuId = useId();
@@ -230,7 +233,7 @@ export function Editor({
       </div>
       {preview ? (
         <div className="md-preview">
-          {value.trim() ? <MarkdownView content={value} testId="md-preview" /> : <p className="muted" data-testid="md-preview">Nothing to preview yet.</p>}
+          {value.trim() ? <MarkdownView content={value} testId="md-preview" projectId={projectId} card={previewCard} /> : <p className="muted" data-testid="md-preview">Nothing to preview yet.</p>}
         </div>
       ) : focus ? (
         <p className="muted md-away">Editing in focus mode. Esc returns here.</p>

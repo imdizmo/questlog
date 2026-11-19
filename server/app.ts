@@ -7,6 +7,8 @@ import { hostname, networkInterfaces } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { toCamel, type Db } from './db';
 import { AppError } from './errors';
+import { prefsOf, putPref } from './prefs';
+import { MAX_PREF_BYTES } from '../shared/prefs';
 import { acceptInvite, confirmPassword, createSession, login, logout, now, sessionUser, sessionVia, setupWorkspace } from './auth';
 import { askOwnerPage, viaProxy, inTailscaleRange, peerAddress, signInExempt, tailscaleSettings, whois, type TailscalePerson } from './tailscale';
 import { syncTeamFile } from './teamFile';
@@ -15,28 +17,35 @@ import { assertTokenScope, dispatch, nextActionId, type ChangeEvent } from './di
 import { can, isGuest, sessionActor, visibleProjectIds, type Actor } from './permissions';
 import { bearerOf, tokenActor, TokenRateLimiter } from './tokens';
 import { CARD_SELECT, userRow } from './commands/rows';
-import { buildSnapshot } from './snapshot';
+import { buildSnapshot, cardReachSql } from './snapshot';
 import { runQuery } from './query';
 import { writeWikiExport } from './wikiExport';
 import { keyFromName } from '../shared/wiki';
+import { titleOf } from '../shared/cards';
+import { workspaceKind } from '../shared/workspaceKind';
 import { McpServer, mcpUsage } from './mcp';
 import { LiveHub } from './live';
 import { RoomHub, ROOM_LIMITS } from './rooms';
 import { boardHooks } from './boards';
 import { canSeeCard } from './access';
 import { registerFileRoutes } from './file-routes';
+import { registerAssetRoutes } from './assets';
+import { registerLibraryRoutes } from './library';
 import { registerReportRoutes } from './reports';
+import { registerSuggestionRoutes, type SuggestionRouteDeps } from './suggestions';
+import { LIBRARY_PORT, suggestionsVia } from '../shared/suggestions';
 import { dispatchWithCoverUrl } from './cover-dispatch';
 import { importHacknPlan, importTrello, MAX_TRELLO_BYTES, takeImportSlot } from './commands/imports';
 import { cloneProjects } from './commands/clone';
 import { setFilesDir } from './files';
 import { activityPage } from './activity';
+import { recentOf } from './home';
 import { shape as timeShape, TIMER_CAP_MS } from './commands/timers';
 import { billingConfig, syncBillingMode, handleStripeWebhook, StripeClient, stripeConfigured, STRIPE_API, type BillingConfig } from './billing';
 import { runBillingCommand } from './commands/billing';
 import { disabledGate, EXIT_OPTIONS, isOwner, isWorkspaceDisabled, runDangerZoneCommand } from './commands/dangerZone';
 import { join, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { checkSecret } from './secret';
 import { applyUnsubscribe, EMAIL_KINDS, emailConfig, emailPrefsOf, emailStatus, setEmailEnv, verifyUnsubscribeToken, type EmailConfig } from './email';
 import { registerOpenRoutes, type OPEN_LIMITS } from './open';
@@ -75,14 +84,22 @@ export interface AppOptions {
    * outside tests; the allow-list itself can't be changed.
    */
   outbound?: { mocks?: Partial<Record<AllowedHost, string>> };
+  /** Test seam of the suggestion forward (server/suggestions.ts): the library service's port and the name lookup. */
+  library?: SuggestionRouteDeps['library'];
+  /** Test seam of the library reads (server/library.ts): the first-answer and idle limits. */
+  libraryTimeouts?: { firstMs?: number; idleMs?: number };
   /** Sign-in by Tailscale (server/tailscale.ts). Default from env: JT_TAILSCALE_AUTH=1 turns it on, JT_TAILSCALE_SOCKET. */
   tailscale?: { enabled: boolean; socketPath: string };
+  /** The desktop sign-in secret (see /desktop-sign-in). Default from env: JT_DESKTOP_SIGNIN. */
+  desktopSignin?: string;
   /** Test seam of the tailscaled lookup. Never set outside tests (and never from env). */
   tailscaleWhois?: (ip: string, port: number) => Promise<TailscalePerson | null>;
 }
 
 /** How often the chat notification outbox is sent (server/integrations/common.ts). */
 const INTEGRATION_SEND_MS = 5_000;
+/** Deleted tasks listed in the workspace menu's Archive section, newest first. */
+const DELETED_LIST_MAX = 100;
 
 /** Largest Stripe webhook body accepted. */
 const STRIPE_WEBHOOK_MAX_BYTES = 512 * 1024;
@@ -115,8 +132,18 @@ declare module 'fastify' {
   interface FastifyInstance { hub: LiveHub; rooms: RoomHub; integrations: IntegrationNotifier }
 }
 
+/**
+ * connect-src allows blob: because the 3D viewer's model loader (three.js GLTFLoader) reads a .glb's embedded
+ * pictures with fetch() on blob: URLs it made itself from the model's own bytes; nothing outside the page is reached.
+ */
 export const CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
-  + "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+  + "connect-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+
+/** The CSP, plus the team's library service as a place the page may send to when it sends suggestions there directly. */
+export function cspFor(env: NodeJS.ProcessEnv = process.env): string {
+  const s = suggestionsVia(env, VERSION);
+  return s?.via === 'direct' ? CSP.replace("connect-src 'self' blob:", `connect-src 'self' blob: http://${s.host}:${LIBRARY_PORT}`) : CSP;
+}
 
 /** Questlog's version, read once (inlined by the server bundle). */
 const VERSION: string = pkg.version;
@@ -282,8 +309,28 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       reply.header('access-control-allow-origin', '*');
       return payload;
     }
-    if (!req.url.startsWith('/api/') && !req.url.startsWith('/dispatch/')) reply.header('content-security-policy', CSP);
+    if (!req.url.startsWith('/api/') && !req.url.startsWith('/dispatch/')) reply.header('content-security-policy', cspFor());
     return payload;
+  });
+
+  // ---- sign-in by the desktop app ----
+  // The desktop shell starts its own server with JT_DESKTOP_SIGNIN, a fresh secret per run, and opens
+  // /desktop-sign-in?t=<secret>: the workspace owner gets a session without a password ("This computer" is a
+  // one-person, offline workspace). Only straight from loopback, and only with the secret, so no other page or
+  // machine can use it. A wrong or missing secret just lands on the normal sign-in.
+  const desktopSecret = opts.desktopSignin ?? process.env.JT_DESKTOP_SIGNIN ?? '';
+  app.get('/desktop-sign-in', async (req, reply) => {
+    reply.header('cache-control', 'no-store').header('referrer-policy', 'no-referrer');
+    const t = (req.query as Record<string, unknown>)?.t;
+    const ok = desktopSecret.length >= 32 && typeof t === 'string' && t.length === desktopSecret.length
+      && timingSafeEqual(Buffer.from(t), Buffer.from(desktopSecret)) && directLoopback(req);
+    if (!ok) return reply.redirect('/login');
+    const owner = db.prepare(`SELECT u.id FROM users u JOIN account_roles r ON r.user_id=u.id
+      WHERE r.role='owner' AND NOT u.disabled ORDER BY u.created_at LIMIT 1`).get() as { id: string } | undefined;
+    // No workspace yet: the setup page.
+    if (!owner) return reply.redirect('/');
+    if (sessionUser(db, req.cookies[SESSION_COOKIE] ?? '')?.id !== owner.id) setSessionCookie(req, reply, createSession(db, owner.id, 'desktop'));
+    return reply.redirect('/');
   });
 
   const setCookies = (req: FastifyRequest, reply: FastifyReply, token: string, device: string) => {
@@ -327,10 +374,14 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   app.get('/healthz', async (_req, reply) => reply.type('text/plain').send('ok'));
 
   // ---- auth & setup ----
-  app.get('/api/status', async () => ({
+  app.get('/api/status', async (req) => ({
     setup: (db.prepare('SELECT COUNT(*) c FROM users').get() as { c: number }).c > 0,
     // The login screen offers the owner a reactivate button instead of the app.
     disabled: isWorkspaceDisabled(db),
+    // This computer (the desktop app's own server, env JT_WORKSPACE_LABEL) or a team server: the badge in the top bar.
+    workspace: workspaceKind(process.env, req.headers.host),
+    // Where the Suggestion button sends (shared/suggestions.ts); null: no team, no button.
+    suggestions: suggestionsVia(process.env, VERSION),
   }));
 
   /**
@@ -515,6 +566,20 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     return { card, deck, resolvables, entries, reactions };
   });
 
+  /**
+   * The newest deleted tasks and entries the person could open by link (the workspace menu's Archive section), with the
+   * same reach rule as the snapshot minus the visibility test. Titles only; restoring goes through cards/update.
+   */
+  app.get('/api/cards-deleted', async (req) => {
+    const user = needUser(req);
+    const reach = cardReachSql(db, user, [...visibleProjectIds(db, user)], 'c');
+    const rows = db.prepare(`SELECT c.id, c.seq, substr(c.content, 1, 400) AS content, c.deck_id, c.creator_id, c.is_doc, c.last_updated_at FROM cards c
+      WHERE c.visibility = 'deleted' AND ${reach.sql} ORDER BY c.last_updated_at DESC, c.seq DESC LIMIT ${DELETED_LIST_MAX}`).all(...reach.args) as any[];
+    return {
+      cards: rows.map((r) => ({ id: r.id, seq: r.seq, title: titleOf(r.content ?? ''), deckId: r.deck_id, creatorId: r.creator_id, isDoc: !!r.is_doc, lastUpdatedAt: r.last_updated_at })),
+    };
+  });
+
   app.get('/api/activity', async (req) => activityPage(db, needUser(req), req.query as { deckId?: string; projectId?: string; milestoneId?: string; sprintId?: string; before?: string; filters?: string }));
 
   app.get('/api/cards/:id/history', async (req) => {
@@ -554,6 +619,12 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   registerFileRoutes(app, { db, hub, dir: filesDir, maxBytes: Math.floor(maxMb * 1024 * 1024), needUser, visibleCard });
   // ---- user reports (server/reports.ts): public, report-token endpoints plus the admin settings read ----
   registerReportRoutes(app, { db, hub, dir: filesDir, maxBytes: Math.floor(maxMb * 1024 * 1024), needUser });
+  // ---- suggestions (server/suggestions.ts): the desktop's own server forwards them to the team's library service ----
+  registerSuggestionRoutes(app, { needUser, version: VERSION, library: opts.library });
+  // ---- assets (server/assets.ts): the Assets page's library of pictures and models ----
+  registerAssetRoutes(app, { db, hub, maxBytes: Math.floor(maxMb * 1024 * 1024), needUser });
+  // ---- library reads (server/library.ts): the desktop's own server forwards the Assets page's reads ----
+  registerLibraryRoutes(app, { needUser, version: VERSION, library: opts.library, timeouts: opts.libraryTimeouts });
 
   // ---- game wiki export (server/wikiExport.ts): session or token (read scope suffices), as /api/query ----
   // Written to an unlinked scratch file in the files directory, then streamed from it: memory stays bounded however big
@@ -641,7 +712,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   // ---- billing (server/commands/billing.ts, server/billing.ts): commands call Stripe, so they are async ----
   app.post('/dispatch/billing/:action', async (req) => {
     const actor = resolveActor(req);
-    const returnUrl = `${req.protocol}://${req.headers.host}/?show=accountSettings`;
+    const returnUrl = `${req.protocol}://${req.headers.host}/?menu=billing`;
     const r = await runBillingCommand(db, actor, `billing/${(req.params as { action: string }).action}`, req.body ?? {}, { cfg: billing, client: stripe, returnUrl });
     if (r.events.length) {
       try { hub.publish(r.actionId, r.events); } catch (e) { console.error('live publish failed', e); }
@@ -776,6 +847,16 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     return emailStatus(db, email);
   });
   app.get('/api/email/prefs', async (req) => ({ notifications: emailPrefsOf(db, needUser(req).id) }));
+
+  // Home's "Recently worked on": the cards this person changed or commented on lately (server/home.ts).
+  app.get('/api/me/recent', async (req) => ({ items: recentOf(db, needUser(req)) }));
+
+  // ---- per-person preferences (server/prefs.ts): the sidebar, its folds, the tabs. Session only, own rows only. ----
+  app.get('/api/prefs', async (req) => prefsOf(db, needUser(req).id));
+  app.put('/api/prefs/:key', { bodyLimit: MAX_PREF_BYTES + 1024 }, async (req) => {
+    putPref(db, needUser(req).id, (req.params as { key: string }).key, body(req).value);
+    return { ok: true };
+  });
   /**
    * The signed link at the bottom of an email (no session needed). GET only shows a confirm page, so link scanners and
    * prefetchers change nothing; the POST (its form, or a mail provider's one-click POST with the token in the URL and

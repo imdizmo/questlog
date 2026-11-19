@@ -78,6 +78,20 @@ export function describeChange(c: HistoryChange, n: Names): { label: string; det
     case 'commit': return { label: `Referenced in commit ${commitLabel(c.to)}`, href: commitHref(c.to) ?? undefined };
     case 'file': return c.to ? { label: 'Attachment added', detail: val(c.to) } : { label: 'Attachment removed', detail: val(c.from) };
     case 'entry': return { label: 'Lore fields changed', detail: [c.type ? 'type' : '', c.key ? `key ${val(c.key.from)} → ${val(c.key.to)}` : '', c.parent ? (c.parent.to ? `filed under ${card(c.parent.to)}` : 'moved to top level') : '', ...(c.fields ?? [])].filter(Boolean).join(', ') || undefined };
+    case 'block': return { label: `${c.title ?? 'A block'} changed` };
+    case 'aliases': {
+      const from = list(c.from);
+      const to = list(c.to);
+      const parts = [...to.filter((t) => !from.includes(t)).map((t) => `+${t}`), ...from.filter((t) => !to.includes(t)).map((t) => `−${t}`)];
+      return { label: 'Aliases changed', detail: parts.join(', ') || undefined };
+    }
+    case 'linkIgnores': {
+      const from = list(c.from);
+      const to = list(c.to);
+      const added = to.filter((t) => !from.includes(t));
+      const removed = from.filter((t) => !to.includes(t));
+      return added.length ? { label: 'Not a link here', detail: added.join(', ') } : { label: 'Link turned back on', detail: removed.join(', ') || undefined };
+    }
     default: return { label: String((c as HistoryChange).kind) };
   }
 }

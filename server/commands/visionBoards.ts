@@ -5,7 +5,7 @@ import { AppError } from '../errors';
 import { can } from '../permissions';
 import { accountRow, cardRow } from './rows';
 import { assertCardAccess, assertNotDeleted } from './cards';
-import { boardAccess, canEditHostCard, boardHooks, referencedQueryIds, visionBoardRow, visionQueryRow } from '../boards';
+import { boardAccess, canEditHostCard, boardHooks, homeAccess, homeBoardId, referencedQueryIds, visionBoardRow, visionQueryRow } from '../boards';
 import { cardProjectId } from '../access';
 import { searchTokenSchema } from './search';
 import type { Command, Ctx } from '../dispatch';
@@ -57,6 +57,15 @@ function deleteQuery(ctx: Ctx, id: string): void {
 }
 
 export const visionBoardCommands: Record<string, Command> = {
+  /** The workspace's Home board: made on first use, then always the same one. Not behind the vision-board setting. */
+  'visionBoard/openHome': {
+    schema: z.object({}),
+    run(ctx) {
+      const level = homeAccess(ctx.db, ctx.actor);
+      if (level === 'none') throw new AppError(404, 'not_found');
+      return { id: homeBoardId(ctx.db, ctx.actor.id), canEdit: level === 'edit' };
+    },
+  },
   'visionBoard/createBoard': {
     schema: z.object({ cardId: z.string() }),
     run(ctx, { cardId }) {
@@ -92,6 +101,7 @@ export const visionBoardCommands: Record<string, Command> = {
   },
   'visionBoard/deleteBoard': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, { id }) {
       const { db } = ctx;
       assertEnabled(db);

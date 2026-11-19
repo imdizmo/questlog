@@ -4,6 +4,8 @@
 mod pages;
 mod report;
 mod shell;
+mod signals;
+mod strip;
 mod supervise;
 
 use std::io::{self, Read, Write};
@@ -15,11 +17,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
-use tauri::webview::{NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
+use tauri::window::WindowBuilder;
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, RunEvent, Url, Webview, WebviewUrl, Window, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::shell::{DesktopConfig, Mode, Target};
+use crate::strip::{Current, StripAction, StripGate, StripNav};
 use crate::supervise::{Server, StartError};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -86,6 +90,10 @@ fn shell_action(url: &Url) -> Option<ShellAction> {
 /// `allowed` is the origin the window may load: `http://127.0.0.1:<port>` locally, the server's origin in server
 /// mode, `None` before it is ready.
 fn classify(url: &Url, allowed: Option<&Url>) -> Nav {
+    // The strip's actions belong to the strip's own webview: here they are neither acted on nor opened outside.
+    if strip::is_strip_host(url) {
+        return Nav::Block;
+    }
     if let Some(action) = shell_action(url) {
         return Nav::Shell(action);
     }
@@ -201,6 +209,7 @@ fn step(action: ShellAction, last: Option<&Url>) -> Step {
 const MENU_TEAM: &str = "workspace-team";
 const MENU_LOCAL: &str = "workspace-local";
 const MENU_CHANGE: &str = "workspace-change";
+const MENU_STRIP: &str = "workspace-strip";
 
 /// An item of the Workspace menu.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -208,6 +217,8 @@ enum MenuAction {
     UseTeam,
     UseLocal,
     Change,
+    /// Keyboard focus to the workspace strip (F6).
+    FocusStrip,
 }
 
 fn menu_action(id: &str) -> Option<MenuAction> {
@@ -215,6 +226,7 @@ fn menu_action(id: &str) -> Option<MenuAction> {
         MENU_TEAM => Some(MenuAction::UseTeam),
         MENU_LOCAL => Some(MenuAction::UseLocal),
         MENU_CHANGE => Some(MenuAction::Change),
+        MENU_STRIP => Some(MenuAction::FocusStrip),
         _ => None,
     }
 }
@@ -239,11 +251,14 @@ enum MenuMove {
     Switch(Mode),
     /// Restart into the chooser.
     Choose,
+    /// Move the keyboard focus to the strip.
+    FocusStrip,
 }
 
 /// `has_team`: a team address exists (a saved server URL or JATIFY_TEAM).
 fn menu_move(action: MenuAction, active: Active, has_team: bool) -> MenuMove {
     match (active, action) {
+        (_, MenuAction::FocusStrip) => MenuMove::FocusStrip,
         (Active::Off, _) => MenuMove::Nothing,
         (Active::Working(Mode::Team), MenuAction::UseTeam) | (Active::Working(Mode::Local), MenuAction::UseLocal) => {
             MenuMove::Nothing
@@ -264,16 +279,71 @@ fn active_for(target: &Target) -> Active {
     }
 }
 
+/// What a click in the workspace strip does.
+#[derive(Debug, PartialEq)]
+enum StripMove {
+    Nothing,
+    /// Save "this computer" and restart into it.
+    Local,
+    /// Save this team server and restart into it.
+    Server(Url),
+    /// Restart into the chooser.
+    Choose,
+    /// Keyboard focus back to the page.
+    FocusApp,
+}
+
+/// `serving`: the team server the app works on (when `active` is the team). `known`: the servers the strip offers
+/// (`shell::known_servers`); a server action for any other address does nothing.
+fn strip_move(action: &StripAction, active: Active, serving: Option<&Url>, known: &[Url]) -> StripMove {
+    match (active, action) {
+        (_, StripAction::App) => StripMove::FocusApp,
+        (Active::Off, _) => StripMove::Nothing,
+        (Active::Working(Mode::Local), StripAction::Local) => StripMove::Nothing,
+        (_, StripAction::Local) => StripMove::Local,
+        (_, StripAction::Server(address)) => match shell::saved_url(address).filter(|u| known.contains(u)) {
+            None => StripMove::Nothing,
+            Some(url) if active == Active::Working(Mode::Team) && serving == Some(&url) => StripMove::Nothing,
+            Some(url) => StripMove::Server(url),
+        },
+        (Active::Choosing, StripAction::Choose) => StripMove::Nothing,
+        (Active::Working(_), StripAction::Choose) => StripMove::Choose,
+    }
+}
+
+/// What the strip highlights.
+fn current_of(active: Active, serving: Option<&Url>) -> Current {
+    match (active, serving) {
+        (Active::Off, _) => Current::Nothing,
+        (Active::Choosing, _) => Current::Choosing,
+        (Active::Working(Mode::Local), _) => Current::Local,
+        (Active::Working(Mode::Team), Some(url)) => Current::Team(url.clone()),
+        (Active::Working(Mode::Team), None) => Current::Nothing,
+    }
+}
+
 /// The Workspace menu's items.
 struct WorkspaceMenu {
     team: CheckMenuItem<tauri::Wry>,
     local: CheckMenuItem<tauri::Wry>,
+    /// "Go to the workspace strip" (F6): off when the strip could not be docked (and is hidden).
+    strip: MenuItem<tauri::Wry>,
 }
 
-/// The Workspace menu's state, shared by the supervisor (which sets `active`) and the menu handler.
+/// The Workspace menu's and the strip's state, shared by the supervisor (which sets `active`) and their handlers.
 struct Workspace {
     active: Mutex<Active>,
+    /// The team server the app works on (or tries to reach), for the strip's highlight.
+    serving: Mutex<Option<Url>>,
     menu: WorkspaceMenu,
+    window: Window,
+    /// The webview that shows the shell's pages and the server's UI.
+    view: Webview,
+    /// The workspace strip's webview and its navigation gate.
+    strip: Webview,
+    strip_gate: Arc<Mutex<StripGate>>,
+    /// The strip is shown beside the page (`dock`); false when it had to be hidden.
+    docked: bool,
     data: PathBuf,
     /// `JATIFY_TEAM`, as read at start.
     team: Option<String>,
@@ -286,17 +356,46 @@ impl Workspace {
         *self.active.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    fn serving(&self) -> Option<Url> {
+        self.serving.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    fn known_servers(&self) -> Vec<Url> {
+        shell::known_servers(DesktopConfig::load(&self.data).as_ref(), self.team.as_deref())
+    }
+
     fn has_team(&self) -> bool {
         shell::team_address(DesktopConfig::load(&self.data).as_ref(), self.team.as_deref()).is_some()
     }
 
     /// Puts the check marks and the team item's state in line with `active` (a click toggles a check item by
-    /// itself). On the main thread only: menu calls from another thread wait for it.
-    fn sync_menu(&self) {
+    /// itself), and the strip. On the main thread only: menu calls from another thread wait for it.
+    fn sync(&self) {
         let active = self.active();
         let _ = self.menu.team.set_checked(active == Active::Working(Mode::Team));
         let _ = self.menu.local.set_checked(active == Active::Working(Mode::Local));
         let _ = self.menu.team.set_enabled(self.has_team());
+        self.render_strip();
+    }
+
+    /// Shows the strip for the current state; an unchanged strip is left as it is (no reload, focus kept).
+    fn render_strip(&self) {
+        let active = self.active();
+        let current = current_of(active, self.serving().as_ref());
+        let html = strip::page(&self.known_servers(), &current, active == Active::Off);
+        let url = {
+            let mut g = self.strip_gate.lock().unwrap_or_else(|p| p.into_inner());
+            if g.html == html && g.expected.is_some() {
+                return;
+            }
+            let Some(url) = page_url(&html) else { return };
+            g.html = html;
+            g.expected = Some(url.clone());
+            url
+        };
+        if let Err(e) = self.strip.navigate(url) {
+            shell::dlog(&format!("could not show the workspace strip: {e}"));
+        }
     }
 }
 
@@ -305,7 +404,9 @@ fn workspace_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Workspace
     let team = CheckMenuItem::with_id(app, MENU_TEAM, "Use the &team server", false, false, None::<&str>)?;
     let local = CheckMenuItem::with_id(app, MENU_LOCAL, "Use this &computer", true, false, None::<&str>)?;
     let change = MenuItem::with_id(app, MENU_CHANGE, "C&hange server…", true, None::<&str>)?;
-    let submenu = Submenu::with_items(app, "&Workspace", true, &[&team, &local, &change])?;
+    let strip = MenuItem::with_id(app, MENU_STRIP, "Go to the workspace &strip", true, Some("F6"))?;
+    let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let submenu = Submenu::with_items(app, "&Workspace", true, &[&team, &local, &change, &separator, &strip])?;
     #[cfg(target_os = "macos")]
     let menu = {
         let menu = Menu::default(app)?;
@@ -314,34 +415,68 @@ fn workspace_menu(app: &AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Workspace
     };
     #[cfg(not(target_os = "macos"))]
     let menu = Menu::with_items(app, &[&submenu])?;
-    Ok((menu, WorkspaceMenu { team, local }))
+    Ok((menu, WorkspaceMenu { team, local, strip }))
 }
 
 /// Handles a click on the Workspace menu (main thread). A switch saves the choice, then restarts the supervisor in
 /// this process (see `Shutdown::restart`).
-fn on_menu(app: &AppHandle, ws: &Workspace, id: &str) {
+fn on_menu(ws: &Workspace, id: &str) {
     let Some(action) = menu_action(id) else { return };
     let mv = menu_move(action, ws.active(), ws.has_team());
     match mv {
-        MenuMove::Nothing => ws.sync_menu(),
+        MenuMove::Nothing => ws.sync(),
         MenuMove::Switch(mode) => {
             let team = ws.team.as_deref();
-            let saved = shell::update_config(&ws.data, |cfg| shell::switch_choice(cfg.as_ref(), team, mode));
-            match saved {
-                Ok(cfg) => {
-                    shell::dlog(&format!("workspace menu: switch to {mode:?} (server {:?}), restarting", cfg.server));
-                    restart(app, ws, Restart::Saved);
-                }
-                Err(e) => {
-                    eprintln!("questlog: could not save the choice: {e}");
-                    shell::dlog(&format!("workspace menu: could not save the choice: {e}"));
-                    ws.sync_menu();
-                }
-            }
+            switch(ws, &format!("workspace menu: switch to {mode:?}"), |cfg| {
+                shell::switch_choice(cfg.as_ref(), team, mode)
+            });
         }
         MenuMove::Choose => {
             shell::dlog("workspace menu: change server, restarting");
-            restart(app, ws, Restart::Choose);
+            restart(ws, Restart::Choose);
+        }
+        // Never to a hidden strip (its menu item is off then too).
+        MenuMove::FocusStrip if ws.docked => {
+            let _ = ws.strip.set_focus();
+        }
+        MenuMove::FocusStrip => {}
+    }
+}
+
+/// Handles a click in the workspace strip (main thread), as the Workspace menu's items do.
+fn on_strip(ws: &Workspace, action: StripAction) {
+    let known = ws.known_servers();
+    let team = ws.team.as_deref();
+    match strip_move(&action, ws.active(), ws.serving().as_ref(), &known) {
+        StripMove::Nothing => ws.sync(),
+        StripMove::Local => {
+            switch(ws, "workspace strip: switch to Local", |cfg| shell::switch_choice(cfg.as_ref(), team, Mode::Local))
+        }
+        StripMove::Server(url) => {
+            let what = format!("workspace strip: switch to {}", display_address(&url));
+            switch(ws, &what, |cfg| shell::switch_server(cfg.as_ref(), team, &url))
+        }
+        StripMove::Choose => {
+            shell::dlog("workspace strip: change server, restarting");
+            restart(ws, Restart::Choose);
+        }
+        StripMove::FocusApp => {
+            let _ = ws.view.set_focus();
+        }
+    }
+}
+
+/// Saves the choice `change` makes and restarts into it; when it cannot be saved, nothing changes.
+fn switch(ws: &Workspace, what: &str, change: impl FnOnce(Option<DesktopConfig>) -> DesktopConfig) {
+    match shell::update_config(&ws.data, change) {
+        Ok(cfg) => {
+            shell::dlog(&format!("{what} (server {:?}), restarting", cfg.server));
+            restart(ws, Restart::Saved);
+        }
+        Err(e) => {
+            eprintln!("questlog: could not save the choice: {e}");
+            shell::dlog(&format!("{what}: could not save the choice: {e}"));
+            ws.sync();
         }
     }
 }
@@ -349,18 +484,17 @@ fn on_menu(app: &AppHandle, ws: &Workspace, id: &str) {
 /// Restarts in this process, not with `AppHandle::restart`/`request_restart`: those spawn a new process and exit,
 /// and when the Jatify Launcher runs Questlog as a systemd user service, systemd stops the service (killing the new
 /// process too) as soon as the old main process exits.
-fn restart(app: &AppHandle, ws: &Workspace, how: Restart) {
+fn restart(ws: &Workspace, how: Restart) {
     *ws.active.lock().unwrap_or_else(|p| p.into_inner()) = Active::Off;
+    ws.render_strip();
     // Off the server's UI at once: no shell actions, no navigation within its origin, the splash while it stops.
     {
         let mut g = lock(&ws.gate);
         g.allowed = None;
         g.showing = Showing::Busy;
     }
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_title("Questlog");
-        show(&w, &ws.gate, &pages::splash());
-    }
+    let _ = ws.window.set_title("Questlog");
+    show(&ws.view, &ws.gate, &pages::splash());
     // The next run starts once this one has returned (local server stopped, running marker cleared, data-folder
     // lock released), however long the server takes: unlike `Shutdown::run`, which gives up after STOP_GRACE + 5 s
     // and lets the process exit, nothing here can overrun. A switch while the app is closing is dropped.
@@ -653,13 +787,13 @@ fn page_url(html: &str) -> Option<Url> {
 }
 
 /// Shows a page; the URL it navigated to (recorded in the gate first), or `None` when it could not.
-fn show(window: &WebviewWindow, gate: &Gate, html: &str) -> Option<Url> {
+fn show(view: &Webview, gate: &Gate, html: &str) -> Option<Url> {
     let Some(url) = page_url(html) else {
         eprintln!("questlog: bad page url");
         return None;
     };
     lock(gate).expected = Some(url.clone());
-    match window.navigate(url.clone()) {
+    match view.navigate(url.clone()) {
         Ok(()) => Some(url),
         Err(e) => {
             eprintln!("questlog: could not show page: {e}");
@@ -699,7 +833,9 @@ fn wait_for_page(loads: &Receiver<Url>, want: &Url, stop: &Receiver<()>, timeout
 
 /// The supervisor's handle on the window and its inputs.
 struct Ui {
-    window: WebviewWindow,
+    window: Window,
+    /// The webview that shows the shell's pages and the server's UI (not the strip).
+    view: Webview,
     gate: Gate,
     stop: Receiver<()>,
     actions: Receiver<ShellAction>,
@@ -737,8 +873,12 @@ impl Ui {
         }
     }
 
-    /// Where the app now works: the title and the Workspace menu follow.
+    /// Where the app now works: the title, the Workspace menu and the strip follow.
     fn working(&self, target: &Target) {
+        *self.workspace.serving.lock().unwrap_or_else(|p| p.into_inner()) = match target {
+            Target::Server(url) => Some(url.clone()),
+            _ => None,
+        };
         self.set_active(active_for(target));
         self.set_title(&shell::title_for(target));
     }
@@ -747,7 +887,7 @@ impl Ui {
         *self.workspace.active.lock().unwrap_or_else(|p| p.into_inner()) = active;
         // Posted, not waited for: the main thread may be waiting for this thread in `Shutdown::run`.
         let ws = self.workspace.clone();
-        let _ = self.window.app_handle().run_on_main_thread(move || ws.sync_menu());
+        let _ = self.window.app_handle().run_on_main_thread(move || ws.sync());
     }
 
     /// Shows the splash while the app connects or starts, with the title for `target`.
@@ -772,7 +912,7 @@ impl Ui {
         }
         // Stale actions (none are expected: the gate lets one through per page) are dropped.
         while self.actions.try_recv().is_ok() {}
-        let url = show(&self.window, &self.gate, html)?;
+        let url = show(&self.view, &self.gate, html)?;
         // Safe to open before the new page has loaded: the supervisor never leaves the server's UI for a shell
         // page (a restart first waits for its own splash, `fresh_start`), so the page being replaced is the splash
         // or another shell page.
@@ -787,7 +927,7 @@ impl Ui {
             g.allowed = Some(url.clone());
             g.showing = Showing::App;
         }
-        if let Err(e) = self.window.navigate(url.clone()) {
+        if let Err(e) = self.view.navigate(url.clone()) {
             eprintln!("questlog: could not open {url}: {e}");
         }
     }
@@ -923,7 +1063,7 @@ fn supervise(ui: &Ui, app_dir: &Path, data: &Path, team: Option<&str>, build: &B
     let mut next = match target {
         Target::Local => {
             ui.working(&Target::Local);
-            return run_local(ui, app_dir, data, &log_path);
+            return run_local(ui, app_dir, data, team, &log_path);
         }
         Target::Server(url) => Step::Connect(url),
         Target::Ask => Step::Chooser(None),
@@ -937,7 +1077,7 @@ fn supervise(ui: &Ui, app_dir: &Path, data: &Path, team: Option<&str>, build: &B
                     eprintln!("questlog: could not save the choice: {e}");
                 }
                 ui.starting(&Target::Local);
-                return run_local(ui, app_dir, data, &log_path);
+                return run_local(ui, app_dir, data, team, &log_path);
             }
             Step::Save(url) => {
                 if let Err(e) = shell::save_server(data, url.as_str()) {
@@ -1059,7 +1199,9 @@ fn start_error_is_crash(err: &StartError) -> bool {
 
 /// Spawns the local server (Linux ties its lifetime to this thread via PR_SET_PDEATHSIG), waits for it, watches
 /// it, and stops it when asked.
-fn run_local(ui: &Ui, app_dir: &Path, data: &Path, log_path: &Path) {
+/// `team`: `JATIFY_TEAM` as read at start; the server is told the team address this app knows (a typed server first, as
+/// the Workspace menu has it), for the Suggestion button.
+fn run_local(ui: &Ui, app_dir: &Path, data: &Path, team: Option<&str>, log_path: &Path) {
     let port = match shell::choose_port(data) {
         Ok(p) => p,
         Err(e) => {
@@ -1069,7 +1211,9 @@ fn run_local(ui: &Ui, app_dir: &Path, data: &Path, log_path: &Path) {
             return ui.wait_for_stop();
         }
     };
-    let mut server = match Server::spawn(app_dir, data, port) {
+    let team_address = shell::team_address(DesktopConfig::load(data).as_ref(), team);
+    let signin = supervise::signin_secret();
+    let mut server = match Server::spawn(app_dir, data, port, team_address.as_ref(), &signin) {
         Ok(s) => s,
         Err(e) => {
             shell::dlog(&format!("server spawn failed: {e}"));
@@ -1094,7 +1238,8 @@ fn run_local(ui: &Ui, app_dir: &Path, data: &Path, log_path: &Path) {
     match ready {
         Ok(port) => {
             shell::dlog(&format!("server ready on port {port}"));
-            match format!("http://127.0.0.1:{port}/").parse() {
+            // Signs the owner in without a password, then lands on the app (server/app.ts, /desktop-sign-in).
+            match format!("http://127.0.0.1:{port}/desktop-sign-in?t={signin}").parse() {
                 Ok(url) => ui.open_app(&url),
                 Err(e) => eprintln!("questlog: bad app url: {e}"),
             }
@@ -1104,7 +1249,7 @@ fn run_local(ui: &Ui, app_dir: &Path, data: &Path, log_path: &Path) {
                 StartError::Exited { code, .. } => format!("server did not start: exited, code {code:?}"),
                 StartError::Timeout { .. } => "server did not start: timed out".to_string(),
             });
-            if start_error_is_crash(&e) {
+            if start_error_is_crash(&e) && !signals::signalled() {
                 shell::note_crash("the local server stopped while starting");
             }
             ui.page(&pages::start_error_page(&e, data, log_path), Showing::Busy);
@@ -1116,6 +1261,12 @@ fn run_local(ui: &Ui, app_dir: &Path, data: &Path, log_path: &Path) {
     // Watch the running server until the app stops.
     while let Err(RecvTimeoutError::Timeout) = ui.stop.recv_timeout(POLL) {
         if let Some(code) = server.exited() {
+            if signals::signalled() {
+                // The same SIGTERM reached the server (systemd's default KillMode): the app is stopping, not a crash.
+                shell::dlog(&format!("server stopped by the signal, code {code:?}"));
+                ui.wait_for_stop();
+                break;
+            }
             shell::dlog(&format!("server exited unexpectedly, code {code:?}"));
             shell::note_crash("the local server exited unexpectedly");
             ui.page(&pages::stopped_page(code, log_path, &server.tail()), Showing::Busy);
@@ -1125,6 +1276,73 @@ fn run_local(ui: &Ui, app_dir: &Path, data: &Path, log_path: &Path) {
     }
     shell::dlog("stopping server");
     server.stop(STOP_GRACE);
+}
+
+/// Where the strip and the page go in a window's client area of `width` × `height` physical pixels at `scale`: the
+/// strip's width, then the page's x and width. The strip never takes more than the window has.
+fn split(width: u32, scale: f64) -> (u32, u32) {
+    let strip = ((strip::STRIP_WIDTH * scale).round() as u32).min(width);
+    (strip, width - strip)
+}
+
+/// Puts the strip at the window's left and the page beside it. On Linux GTK does it (`dock`); elsewhere the two
+/// child webviews are placed by hand, again on every resize.
+fn relayout(window: &Window, strip_view: &Webview, view: &Webview) {
+    if cfg!(target_os = "linux") {
+        return;
+    }
+    let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) else { return };
+    let (strip_w, view_w) = split(size.width, scale);
+    let _ = strip_view.set_position(tauri::PhysicalPosition::new(0, 0));
+    let _ = strip_view.set_size(tauri::PhysicalSize::new(strip_w, size.height));
+    let _ = view.set_position(tauri::PhysicalPosition::new(strip_w as i32, 0));
+    let _ = view.set_size(tauri::PhysicalSize::new(view_w, size.height));
+}
+
+/// Docks the strip at the window's left. On Linux, Tauri packs child webviews into the window's vertical box, one
+/// above the other, and ignores their bounds: the two are moved into a horizontal row instead, the strip at its
+/// fixed width. When that cannot be done the strip is hidden (the Workspace menu still switches).
+///
+/// Should a later Tauri honour child webview bounds on Linux (e.g. by packing them into a `GtkFixed`), the type
+/// filter below finds no WebKit widgets in the box and the strip is hidden: switch Linux to `relayout` then.
+#[cfg(target_os = "linux")]
+fn dock(window: &Window, strip_view: &Webview, _view: &Webview) -> bool {
+    use gtk::prelude::*;
+    let docked = (|| -> Result<(), String> {
+        let vbox = window.default_vbox().map_err(|e| e.to_string())?;
+        let views: Vec<gtk::Widget> =
+            vbox.children().into_iter().filter(|w| w.type_().name() == "WebKitWebView").collect();
+        // Added in this order: the page, then the strip.
+        let [page, strip_w] = views.as_slice() else {
+            return Err(format!("{} webviews in the window", views.len()));
+        };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        vbox.remove(page);
+        vbox.remove(strip_w);
+        strip_w.set_size_request(strip::STRIP_WIDTH as i32, -1);
+        // Nothing can be dropped on the strip: a link dragged from the server's page must not navigate it.
+        strip_w.drag_dest_unset();
+        row.pack_start(strip_w, false, false, 0);
+        row.pack_start(page, true, true, 0);
+        vbox.pack_start(&row, true, true, 0);
+        row.show_all();
+        Ok(())
+    })();
+    match docked {
+        Ok(()) => true,
+        Err(e) => {
+            // scripts/smoke-desktop.sh fails on this line.
+            eprintln!("questlog: could not dock the workspace strip: {e}");
+            let _ = strip_view.hide();
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dock(window: &Window, strip_view: &Webview, view: &Webview) -> bool {
+    relayout(window, strip_view, view);
+    true
 }
 
 fn open_external(app: &tauri::AppHandle, url: &Url) {
@@ -1184,7 +1402,7 @@ fn main() {
     let app = tauri::Builder::default()
         // Registered first, so a second launch hands over before anything else starts.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = app.get_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -1193,7 +1411,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .on_menu_event(|app, event| {
             if let Some(ws) = app.try_state::<Arc<Workspace>>() {
-                on_menu(app, &ws, event.id().as_ref());
+                on_menu(&ws, event.id().as_ref());
             }
         })
         .setup({
@@ -1205,22 +1423,15 @@ fn main() {
                 let nav_gate = gate.clone();
                 let popup_app = app.handle().clone();
                 let (menu, items) = workspace_menu(app.handle())?;
-                let workspace = Arc::new(Workspace {
-                    active: Mutex::new(Active::Off),
-                    menu: items,
-                    data: data.clone(),
-                    team: team.clone(),
-                    gate: gate.clone(),
-                    shutdown: shutdown.clone(),
-                });
-                workspace.sync_menu();
-                app.manage(workspace.clone());
-                let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(splash))
+                let window = WindowBuilder::new(app, "main")
                     .title("Questlog")
                     .menu(menu)
                     .inner_size(1280.0, 800.0)
                     .min_inner_size(640.0, 480.0)
                     .center()
+                    .build()?;
+                // The server's UI and the shell's pages. No Tauri permissions (capabilities/default.json).
+                let view_builder = WebviewBuilder::new("app", WebviewUrl::External(splash))
                     .on_navigation(move |url| {
                         let nav = lock(&nav_gate).decide(url);
                         match nav {
@@ -1236,7 +1447,7 @@ fn main() {
                             }
                         }
                     })
-                    .on_page_load(move |_window, payload| {
+                    .on_page_load(move |_view, payload| {
                         // Started is the commit (the new document replaced the old one) on WebKitGTK and WebView2.
                         // Read only by a restart; a full channel just drops the URL.
                         if matches!(payload.event(), PageLoadEvent::Started | PageLoadEvent::Finished) {
@@ -1244,29 +1455,118 @@ fn main() {
                         }
                     })
                     .on_new_window(move |url, _features| {
-                        // target=_blank and window.open: in-app files and outside links open in the browser.
-                        if matches!(url.scheme(), "http" | "https" | "mailto") {
+                        // target=_blank and window.open: in-app files and outside links open in the browser. The
+                        // shell's and the strip's addresses are not links to open.
+                        let shell_url = url.host_str() == Some(SHELL_HOST) || strip::is_strip_host(&url);
+                        if matches!(url.scheme(), "http" | "https" | "mailto") && !shell_url {
                             open_external(&popup_app, &url);
                         }
                         NewWindowResponse::Deny
+                    });
+                let size = LogicalSize::new(1280.0 - strip::STRIP_WIDTH, 800.0);
+                let view = window.add_child(view_builder, LogicalPosition::new(strip::STRIP_WIDTH, 0.0), size)?;
+
+                // The workspace strip: only the shell's own strip page, its clicks handled here (`on_strip`).
+                let strip_gate = Arc::new(Mutex::new(StripGate::default()));
+                let first = strip::page(&shell::known_servers(DesktopConfig::load(&data).as_ref(), team.as_deref()),
+                    &Current::Nothing, true);
+                let first_url = page_url(&first).ok_or("bad strip url")?;
+                *strip_gate.lock().unwrap_or_else(|p| p.into_inner()) =
+                    StripGate { expected: Some(first_url.clone()), html: first };
+                let strip_nav = strip_gate.clone();
+                let strip_app = app.handle().clone();
+                let strip_builder = WebviewBuilder::new("strip", WebviewUrl::External(first_url))
+                    .on_navigation(move |url| {
+                        let nav = strip_nav.lock().unwrap_or_else(|p| p.into_inner()).decide(url);
+                        match nav {
+                            StripNav::Allow => true,
+                            StripNav::Block => false,
+                            StripNav::Act(action) => {
+                                // Posted from another thread, so it runs once this navigation callback has returned.
+                                let app = strip_app.clone();
+                                thread::spawn(move || {
+                                    let main = app.clone();
+                                    let _ = main.run_on_main_thread(move || {
+                                        if let Some(ws) = app.try_state::<Arc<Workspace>>() {
+                                            on_strip(&ws, action);
+                                        }
+                                    });
+                                });
+                                false
+                            }
+                        }
                     })
-                    .build()?;
+                    .on_new_window(|_url, _features| NewWindowResponse::Deny);
+                let strip_view = window.add_child(
+                    strip_builder,
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(strip::STRIP_WIDTH, 800.0),
+                )?;
+                let docked = dock(&window, &strip_view, &view);
+                if !docked {
+                    let _ = items.strip.set_enabled(false);
+                }
+
+                let workspace = Arc::new(Workspace {
+                    active: Mutex::new(Active::Off),
+                    serving: Mutex::new(None),
+                    menu: items,
+                    window: window.clone(),
+                    view: view.clone(),
+                    strip: strip_view,
+                    strip_gate,
+                    docked,
+                    data: data.clone(),
+                    team: team.clone(),
+                    gate: gate.clone(),
+                    shutdown: shutdown.clone(),
+                });
+                workspace.sync();
+                app.manage(workspace.clone());
 
                 let close_shutdown = shutdown.clone();
                 let close_window = window.clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { .. } = event {
+                let layout_ws = workspace.clone();
+                window.on_window_event(move |event| match event {
+                    WindowEvent::CloseRequested { .. } => {
                         // Hidden first, so the wait for the server is not a frozen ("Not responding") window.
                         let _ = close_window.hide();
                         close_shutdown.run();
                     }
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                        relayout(&layout_ws.window, &layout_ws.strip, &layout_ws.view);
+                    }
+                    _ => {}
                 });
+
+                // SIGTERM/SIGINT/SIGHUP: the same path as closing the window (CloseRequested: hide, Shutdown::run).
+                #[cfg(unix)]
+                {
+                    let signal_app = app.handle().clone();
+                    let watched = signals::watch(move |sig| {
+                        let main = signal_app.clone();
+                        let _ = main.run_on_main_thread(move || {
+                            shell::dlog(&format!("signal {sig}: closing"));
+                            match signal_app.get_window("main") {
+                                Some(w) => {
+                                    if w.close().is_err() {
+                                        signal_app.exit(0);
+                                    }
+                                }
+                                None => signal_app.exit(0),
+                            }
+                        });
+                    });
+                    if let Err(e) = watched {
+                        eprintln!("questlog: could not watch for stop signals: {e}");
+                    }
+                }
 
                 let data = data.clone();
                 let supervise_shutdown = shutdown.clone();
                 let build = BuildInfo { version: app.package_info().version.to_string(), memory_max };
                 thread::Builder::new().name("supervisor".into()).spawn(move || {
-                    let ui = Ui { window, gate, stop: stop_rx, actions: action_rx, workspace, loads: load_rx };
+                    let ui = Ui { window, view, gate, stop: stop_rx, actions: action_rx, workspace, loads: load_rx };
                     let mut runs = AppRuns { ui, app_dir: app_dir(), data, team, build };
                     run_rounds(&supervise_shutdown, &mut runs);
                     drop(done_tx);
@@ -1510,6 +1810,7 @@ mod tests {
         assert_eq!(menu_action(MENU_TEAM), Some(MenuAction::UseTeam));
         assert_eq!(menu_action(MENU_LOCAL), Some(MenuAction::UseLocal));
         assert_eq!(menu_action(MENU_CHANGE), Some(MenuAction::Change));
+        assert_eq!(menu_action(MENU_STRIP), Some(MenuAction::FocusStrip));
         for other in ["", "local", "questlog-shell.invalid/local", "http://questlog-shell.invalid/local", "quit"] {
             assert_eq!(menu_action(other), None, "{other}");
         }
@@ -1537,6 +1838,81 @@ mod tests {
         for a in [UseTeam, UseLocal, Change] {
             assert_eq!(menu_move(a, Active::Off, true), MenuMove::Nothing);
         }
+        // Going to the strip is only a focus move: always.
+        for active in [Active::Off, Active::Choosing, team, local] {
+            assert_eq!(menu_move(FocusStrip, active, false), MenuMove::FocusStrip);
+        }
+    }
+
+    #[test]
+    fn strip_moves() {
+        let nas: Url = "http://nas:8780/".parse().unwrap();
+        let other: Url = "http://other:9/".parse().unwrap();
+        let known = [nas.clone(), other.clone()];
+        let team = Active::Working(Mode::Team);
+        let local = Active::Working(Mode::Local);
+        let server = |s: &str| StripAction::Server(s.into());
+        // This computer.
+        assert_eq!(strip_move(&StripAction::Local, team, Some(&nas), &known), StripMove::Local);
+        assert_eq!(strip_move(&StripAction::Local, Active::Choosing, None, &known), StripMove::Local);
+        assert_eq!(strip_move(&StripAction::Local, local, None, &known), StripMove::Nothing);
+        // A known team server, written as the page has it.
+        assert_eq!(strip_move(&server("http://nas:8780/"), local, None, &known), StripMove::Server(nas.clone()));
+        assert_eq!(strip_move(&server("http://other:9"), team, Some(&nas), &known), StripMove::Server(other.clone()));
+        assert_eq!(strip_move(&server("http://nas:8780/"), Active::Choosing, None, &known), StripMove::Server(nas.clone()));
+        // The one already open: nothing.
+        assert_eq!(strip_move(&server("http://nas:8780/"), team, Some(&nas), &known), StripMove::Nothing);
+        // Any address that is not a known server: nothing (the strip never takes one in).
+        for bad in ["http://evil:8780/", "nas", "javascript:alert(1)", "", "local", "ftp://nas:8780/"] {
+            assert_eq!(strip_move(&server(bad), local, None, &known), StripMove::Nothing, "{bad}");
+        }
+        assert_eq!(strip_move(&server("http://nas:8780/"), local, None, &[]), StripMove::Nothing);
+        // "+".
+        assert_eq!(strip_move(&StripAction::Choose, team, Some(&nas), &known), StripMove::Choose);
+        assert_eq!(strip_move(&StripAction::Choose, local, None, &known), StripMove::Choose);
+        assert_eq!(strip_move(&StripAction::Choose, Active::Choosing, None, &known), StripMove::Nothing);
+        // Starting, restarting, a second instance: no switch at all; Esc still goes back to the page.
+        for a in [StripAction::Local, server("http://other:9/"), StripAction::Choose] {
+            assert_eq!(strip_move(&a, Active::Off, None, &known), StripMove::Nothing, "{a:?}");
+        }
+        assert_eq!(strip_move(&StripAction::App, Active::Off, None, &known), StripMove::FocusApp);
+    }
+
+    #[test]
+    fn strip_highlight_follows_the_supervisor() {
+        let nas: Url = "http://nas:8780/".parse().unwrap();
+        assert_eq!(current_of(Active::Off, Some(&nas)), Current::Nothing);
+        assert_eq!(current_of(Active::Choosing, None), Current::Choosing);
+        assert_eq!(current_of(Active::Working(Mode::Local), Some(&nas)), Current::Local);
+        assert_eq!(current_of(Active::Working(Mode::Team), Some(&nas)), Current::Team(nas));
+        assert_eq!(current_of(Active::Working(Mode::Team), None), Current::Nothing);
+    }
+
+    #[test]
+    fn server_pages_cannot_reach_the_strip() {
+        // Whatever the page showing (shell page, busy, the server's UI), strip addresses are blocked: not acted on,
+        // not opened in the browser.
+        for showing in [Showing::App, Showing::ShellPage, Showing::Busy] {
+            for u in [
+                "http://questlog-strip.invalid/local",
+                "http://questlog-strip.invalid/server?url=http%3A%2F%2Fevil%3A8780%2F",
+                "http://questlog-strip.invalid/choose",
+                "https://questlog-strip.invalid/local",
+                "http://QUESTLOG-STRIP.invalid/app",
+            ] {
+                let mut g = NavGate { showing, ..app_gate() };
+                assert_eq!(g.decide(&u.parse().unwrap()), Nav::Block, "{u} {showing:?}");
+                assert_eq!(g.showing, showing, "a blocked strip address does not close the gate");
+            }
+        }
+    }
+
+    #[test]
+    fn strip_and_page_share_the_width() {
+        assert_eq!(split(1280, 1.0), (56, 1224));
+        assert_eq!(split(2560, 2.0), (112, 2448));
+        assert_eq!(split(1920, 1.25), (70, 1850));
+        assert_eq!(split(40, 1.0), (40, 0));
     }
 
     #[test]

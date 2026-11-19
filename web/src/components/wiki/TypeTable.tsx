@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { newEntry } from './GuidedStart';
 import type { EntryType, FieldDef, Project } from '../../../../shared/types';
 import { fieldsOf, isTypeOrChild } from '../../../../shared/wiki';
 import { dispatch } from '../../api';
@@ -253,8 +254,7 @@ function NewRowDialog({ project, type, onClose }: { project: Project; type: Entr
     if (!name.trim() || busy) return;
     setBusy(true);
     try {
-      await dispatch('wiki', 'createEntry', { projectId: project.id, typeId: type.id, name: name.trim() });
-      onClose();
+      if (await newEntry({ project, type, name: name.trim() })) onClose();
     } catch { /* toast */ } finally { setBusy(false); }
   };
   return (

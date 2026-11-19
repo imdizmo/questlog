@@ -19,6 +19,8 @@ import { useChips } from '../search';
 import { SearchResults } from '../components/SearchResults';
 import { deleteDeckNote } from '../cards';
 import { TEMPLATES } from '../../../shared/templates';
+import { goesTo } from '../../../shared/workspaceKind';
+import { useWorkspaceKind } from '../workspaceKind';
 
 const bySeq = (a: { seq: number }, b: { seq: number }) => a.seq - b.seq;
 
@@ -324,6 +326,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [visibility, setVisibility] = useState<ProjectVisibility>('full');
   const [template, setTemplate] = useState<string>('');
   const [busy, setBusy] = useState(false);
+  const where = useWorkspaceKind();
   const submit = async () => {
     if (!name.trim()) return;
     if (step === 'details') { setStep('template'); return; }
@@ -344,6 +347,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
           <input autoFocus required value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
         </label>
         <VisibilityField value={visibility} onChange={setVisibility} />
+        {where && <p className="hint ws-goes-to" data-testid="new-project-goes-to">{goesTo(where)}</p>}
       </>) : (
         <fieldset className="template-list">
           <legend>Choose a template</legend>

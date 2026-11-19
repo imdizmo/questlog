@@ -1,6 +1,7 @@
 // Vision board model: plain types and pure helpers. No DOM, no Yjs; the web layer maps these onto Y.Map writes.
 
-export const NODE_TYPES = ['text', 'card', 'container', 'filter', 'image', 'video'] as const;
+/** `work`: a project, area, list or quest on Home, drawn from the data (value `{ k, p }`: opaque keys, see web/src/board/homeWork.ts). */
+export const NODE_TYPES = ['text', 'card', 'container', 'filter', 'image', 'video', 'work'] as const;
 export type NodeType = typeof NODE_TYPES[number];
 export type Side = 'left' | 'right' | 'top' | 'bottom';
 
@@ -46,6 +47,7 @@ export const DEFAULT_SIZE: Record<NodeType, Size> = {
   filter: { w: 100, h: 100 },
   image: { w: 200, h: 200 },
   video: { w: 320, h: 180 },
+  work: { w: 120, h: 28 },
 };
 
 const IMAGE_MAX = 400;

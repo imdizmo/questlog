@@ -116,7 +116,7 @@ describe('GET /api/wiki/:projectId/export', () => {
     expect(r.headers['content-type']).toMatch(/^application\/json/);
     expect(r.headers['content-disposition']).toBe('attachment; filename="ashen_isles-gamedata.json"');
     const d = JSON.parse(r.body);
-    expect(Object.keys(d)).toEqual(['format', 'version', 'campaign', 'exportedAt', 'types', 'linkKinds', 'entries', 'links', 'checks']);
+    expect(Object.keys(d)).toEqual(['format', 'version', 'campaign', 'exportedAt', 'types', 'families', 'linkKinds', 'entries', 'links', 'random', 'tables', 'rules', 'scenarios', 'checks']);
     expect(d.format).toBe('questlog-gamedata');
     expect(d.version).toBe(1);
     expect(d.campaign).toEqual({ id: projectId, name: 'Ashen Isles' });
@@ -124,7 +124,7 @@ describe('GET /api/wiki/:projectId/export', () => {
 
     const weapon = d.types.find((t: any) => t.key === 'weapon');
     expect(weapon).toEqual({
-      key: 'weapon', name: 'Weapon', parent: 'item',
+      key: 'weapon', name: 'Weapon', parent: 'item', family: null, picture: 'dusk',
       fields: [
         { key: 'damage', kind: 'number', required: false, min: null, max: null, options: null, target: null },
         { key: 'hits', kind: 'range', required: false, min: null, max: null, options: null, target: null },
@@ -139,7 +139,7 @@ describe('GET /api/wiki/:projectId/export', () => {
     }]);
 
     const fire = d.entries.find((e: any) => e.key === 'fire_sword');
-    expect(Object.keys(fire)).toEqual(['id', 'key', 'type', 'name', 'parent', 'tags', 'fields', 'text']);
+    expect(Object.keys(fire)).toEqual(['id', 'key', 'type', 'name', 'aliases', 'parent', 'tags', 'fields', 'text', 'blocks']);
     expect(fire).toMatchObject({ id: sword, type: 'weapon', name: 'Fire Sword', parent: null, tags: [], text: '' });
     // Inherited values first (value), then own; hidden (old) and unknown (stray) values are left out.
     expect(fire.fields).toEqual({ value: 30, damage: 12, hits: { min: 1, max: 3 }, element: 'fire' });
@@ -149,6 +149,37 @@ describe('GET /api/wiki/:projectId/export', () => {
     expect(d.checks).toEqual([]);
   });
 
+  it('families: listed in order with their root types; each type names its family (a kind its root\'s) and picture', async () => {
+    const fam = (await ok('wiki/createFamily', { projectId, name: 'Items', color: '#b8862f' })).id;
+    await ok('wiki/createFamily', { projectId, name: 'Empty', color: '#123456' });
+    await ok('wiki/updateType', { id: types.item, familyId: fam });
+    await ok('wiki/updateType', { id: types.weapon, picture: { kind: 'painted', style: 'night' } });
+    const d = await exported();
+    expect(d.families).toEqual([{ name: 'Items', color: '#b8862f', types: ['item'] }, { name: 'Empty', color: '#123456', types: [] }]);
+    expect(d.types.find((t: any) => t.key === 'item')).toMatchObject({ family: 'Items', picture: 'dusk' });
+    expect(d.types.find((t: any) => t.key === 'weapon')).toMatchObject({ family: 'Items', picture: 'night', parent: 'item' });
+  });
+
+  it('typed blocks: each entry lists the ones that hold data, links by exported key and assets by id and title', async () => {
+    const shield = (db.prepare("INSERT INTO assets (id,project_id,title,kind,source,created_at,updated_at) VALUES ('as1',?,'Wolf model','model','uploaded',0,0) RETURNING id").get(projectId) as { id: string }).id;
+    await ok('wiki/setPage', { typeId: types.creature, page: { guided: false, blocks: [
+      { id: 'f', kind: 'facts', title: 'Facts', width: 'half' }, { id: 'm', kind: 'model', title: 'Model', width: 'half' },
+      { id: 'a', kind: 'table', title: 'Attacks', width: 'full', cols: ['Attack', 'Damage'] }, { id: 'b', kind: 'lines', title: 'Barks', width: 'full' },
+      { id: 'k', kind: 'links', title: 'Hunts with', width: 'full', to: '' }, { id: 'e', kind: 'steps', title: 'Empty', width: 'full' }] } });
+    await ok('wiki/setBlock', { cardId: wolf, blockId: 'm', data: { assetId: shield } });
+    await ok('wiki/setBlock', { cardId: wolf, blockId: 'a', data: { rows: [['Bite', '8']] } });
+    await ok('wiki/setBlock', { cardId: wolf, blockId: 'b', data: { items: ['Grr'] } });
+    await ok('wiki/setBlock', { cardId: wolf, blockId: 'k', data: { cardIds: [sword] } });
+    await ok('wiki/setBlock', { cardId: wolf, blockId: 'e', data: { items: [] } });
+    const d = await exported();
+    expect(d.entries.find((e: any) => e.key === 'wolf').blocks).toEqual([
+      { title: 'Model', kind: 'model', asset: { id: shield, title: 'Wolf model' } },
+      { title: 'Attacks', kind: 'table', columns: ['Attack', 'Damage'], rows: [['Bite', '8']] },
+      { title: 'Barks', kind: 'lines', items: ['Grr'] },
+      { title: 'Hunts with', kind: 'links', entries: ['fire_sword'] },
+    ]);
+    expect(d.entries.find((e: any) => e.key === 'fire_sword').blocks).toEqual([]);
+  });
   it('a value made invalid by a kind change is absent from fields and listed in checks', async () => {
     const t = (await ok('wiki/createType', { projectId, name: 'Spell', fields: [{ key: 'power', label: 'Power', kind: 'text' }] })).id;
     const fireball = (await ok('wiki/createEntry', { projectId, typeId: t, name: 'Fireball' })).id;

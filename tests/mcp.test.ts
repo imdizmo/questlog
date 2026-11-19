@@ -114,17 +114,24 @@ describe('MCP server', () => {
     const tools = r.json().result.tools as { name: string; description: string; inputSchema: { type: string } }[];
     const expected = [
       'get_context', 'list_decks', 'search_cards', 'get_card', 'get_comments', 'get_card_history', 'list_conversations',
-      'search_comments', 'list_hand', 'list_milestones', 'list_runs', 'list_members',
+      'search_comments', 'list_hand', 'list_milestones', 'list_runs', 'list_members', 'list_assets',
       'create_card', 'create_cards', 'update_card', 'update_cards', 'add_comment', 'update_comment', 'set_thread_resolved',
       'set_thread_participation', 'add_to_hand', 'remove_from_hand', 'move_in_hand', 'create_deck', 'create_milestone',
-      'update_milestone', 'track_time', 'log_time',
+      'update_milestone', 'track_time', 'log_time', 'create_project', 'delete_cards', 'delete_deck', 'delete_milestone',
     ];
     expect(tools.map((t) => t.name).sort()).toEqual([...expected].sort());
     expect([...MCP_TOOL_NAMES].sort()).toEqual([...expected].sort());
     for (const t of tools) {
       expect(t.description.length).toBeGreaterThan(0);
       expect(t.inputSchema.type).toBe('object');
-      expect(t.name).not.toMatch(/delete/);
+      // Every delete tool says it needs a "May delete" token; only the soft one promises a restore.
+      if (t.name.startsWith('delete_')) expect(t.description).toMatch(/May delete/);
+    }
+    const desc = (n: string) => tools.find((t) => t.name === n)!;
+    expect(desc('delete_cards').description).toMatch(/soft delete.*restored/i);
+    for (const n of ['delete_deck', 'delete_milestone']) {
+      expect(desc(n).description).toMatch(/for good/);
+      expect((desc(n).inputSchema as any).required).toContain('confirm');
     }
   });
 
@@ -236,6 +243,23 @@ describe('MCP server', () => {
     expect(d.json.items).toEqual([]);
   });
 
+  it('list_assets lists the Assets library of projects the token can see', async () => {
+    const owner = mkUser('owner');
+    const p = mkProject('full', 'Game');
+    const hidden = mkProject('full', 'Hidden');
+    for (const [id, pid, title] of [['a1', p, 'Ghoul'], ['a2', hidden, 'Secret']]) {
+      db.prepare("INSERT INTO assets (id,project_id,title,kind,for_tag,source,link_json,picture_id,picture_mime,picture_size,created_at,updated_at) VALUES (?,?,?,'model','Creatures','asset-shelf',?,'b','image/png',5,1,1)")
+        .run(id, pid, title, JSON.stringify({ server: 'nas', kind: 'asset', pack: 'P', path: 'G/Ghoul' }));
+    }
+    const all = await call(await mkToken(owner), 'list_assets', {});
+    expect(all.json.items.map((a: any) => a.title).sort()).toEqual(['Ghoul', 'Secret']);
+    const one = await call(await mkToken(owner), 'list_assets', { projectId: p });
+    expect(one.json.items).toEqual([{ id: 'a1', projectId: p, title: 'Ghoul', kind: 'model', for: 'Creatures', source: 'asset-shelf',
+      link: { server: 'nas', kind: 'asset', pack: 'P', path: 'G/Ghoul' }, hasPicture: true, hasModel: false, pictureUrl: '/api/assets/a1/picture' }]);
+    const confined = await call(await mkToken(owner, { role: 'producer', projectIds: [p] } as any), 'list_assets', {});
+    expect(confined.json.items.map((a: any) => a.title)).toEqual(['Ghoul']);
+  });
+
   it('create_cards with 51 → isError', async () => {
     const deck = mkDeck(mkProject());
     const token = await mkToken(mkUser('owner'));
@@ -309,7 +333,7 @@ describe('MCP server', () => {
     expect(bad.text).toMatch(/cardId/);
     const m = await rpc(token, 'nope/nope');
     expect(m.json().error.code).toBe(-32601);
-    const t = await rpc(token, 'tools/call', { name: 'delete_card', arguments: {} });
+    const t = await rpc(token, 'tools/call', { name: 'delete_everything', arguments: {} });
     expect(t.json().error.code).toBe(-32602);
     const batch = await post(token, [{ jsonrpc: '2.0', id: 1, method: 'tools/list' }]);
     expect(batch.json().error.code).toBe(-32600);
@@ -406,5 +430,164 @@ describe('MCP server', () => {
     expect(a.connections.map((c: any) => [c.name, c.calls]).sort()).toEqual([['Mo', 2], ['Olga', 1]]);
     const m = (await get(member)).json();
     expect(m.connections.map((c: any) => c.name)).toEqual(['Mo']);
+  });
+
+  describe('delete tools and create_project', () => {
+    const vis = (id: string) => (db.prepare('SELECT visibility v FROM cards WHERE id=?').get(id) as { v: string }).v;
+    const dispatchAs = (userId: string, cmd: string, payload: unknown) => app.inject({
+      method: 'POST', url: `/dispatch/${cmd}`, payload: payload as any, headers: { host: HOST, 'content-type': 'application/json', cookie: cookieFor(userId) },
+    });
+
+    it('refused without "May delete" (tokens made before it too) and for read tokens', async () => {
+      const owner = mkUser('owner');
+      const project = mkProject();
+      const deck = mkDeck(project);
+      const card = mkCard(deck, owner);
+      const plain = await mkToken(owner);
+      // A token from before the option: the migration default leaves it off.
+      expect((db.prepare('SELECT may_delete m FROM api_tokens').get() as { m: number }).m).toBe(0);
+      const m = await call(plain, 'create_milestone', { name: 'Alpha', projectIds: [project] });
+      expect(m.isError, m.text).toBe(false);
+      for (const [tool, args] of [['delete_cards', { cardIds: [card] }], ['delete_deck', { deckId: deck, confirm: true }], ['delete_milestone', { milestoneId: m.json.id, confirm: true }]] as const) {
+        const r = await call(plain, tool, args);
+        expect(r.isError, tool).toBe(true);
+        expect(r.json.error).toBe('delete_not_allowed');
+        expect(r.json.data.reason).toMatch(/May delete/);
+      }
+      expect(vis(card)).toBe('default');
+      expect(db.prepare('SELECT 1 FROM decks WHERE id=?').get(deck)).toBeDefined();
+      expect(db.prepare('SELECT 1 FROM milestones WHERE id=?').get(m.json.id)).toBeDefined();
+      expect((await call(plain, 'get_context', {})).json.token.mayDelete).toBe(false);
+
+      // Read tokens: "May delete" cannot be chosen, and a read row that somehow has it still cannot delete.
+      const bad = await app.inject({
+        method: 'POST', url: '/dispatch/apiTokens/create', headers: { host: HOST, 'content-type': 'application/json', cookie: cookieFor(owner) },
+        payload: { kind: 'user', label: 'AI', role: 'admin', access: 'read', projectIds: [], mayDelete: true },
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json().data).toEqual({ field: 'mayDelete' });
+      const read = await mkToken(owner, { access: 'read' });
+      db.prepare('UPDATE api_tokens SET may_delete=1 WHERE prefix=?').run(read.slice(0, 9));
+      const r = await call(read, 'delete_cards', { cardIds: [card] });
+      expect(r.isError).toBe(true);
+      expect(r.json.error).toBe('missing_scope');
+      expect(vis(card)).toBe('default');
+    });
+
+    it('with "May delete": tasks are soft-deleted (history, restorable), all or none, at most 100 per call', async () => {
+      const owner = mkUser('owner');
+      const deck = mkDeck(mkProject());
+      const a = mkCard(deck, owner, 'A');
+      const b = mkCard(deck, owner, 'B');
+      const token = await mkToken(owner, { mayDelete: true });
+      expect((await call(token, 'get_context', {})).json.token.mayDelete).toBe(true);
+
+      // One unknown id: nothing is deleted.
+      const miss = await call(token, 'delete_cards', { cardIds: [a, 'nope'] });
+      expect(miss.isError).toBe(true);
+      expect(miss.json.error).toBe('not_found');
+      expect(vis(a)).toBe('default');
+
+      const seqB = (db.prepare('SELECT seq FROM cards WHERE id=?').get(b) as { seq: number }).seq;
+      const r = await call(token, 'delete_cards', { cardIds: [a, String(seqB), a] });
+      expect(r.isError, r.text).toBe(false);
+      expect(r.json.ids.sort()).toEqual([a, b].sort());
+      expect([vis(a), vis(b)]).toEqual(['deleted', 'deleted']);
+      const h = db.prepare('SELECT changer_id, changes_json FROM card_history WHERE card_id=? ORDER BY version DESC').get(a) as { changer_id: string; changes_json: string };
+      expect(h.changer_id).toBe(owner);
+      expect(JSON.parse(h.changes_json)).toEqual([{ kind: 'visibility', from: 'default', to: 'deleted' }]);
+      // Gone for the tools; a second delete finds nothing.
+      expect((await call(token, 'get_card', { cardId: a })).json.error).toBe('not_found');
+      expect((await call(token, 'delete_cards', { cardIds: [a] })).json.error).toBe('not_found');
+      // Restorable from Archive, as any deleted task.
+      const back = await dispatchAs(owner, 'cards/update', { id: a, visibility: 'default' });
+      expect(back.statusCode, back.body).toBe(200);
+      expect(vis(a)).toBe('default');
+
+      // Per-call cap.
+      const many = Array.from({ length: 101 }, (_, i) => mkCard(deck, owner, `T${i}`));
+      const over = await call(token, 'delete_cards', { cardIds: many });
+      expect(over.isError).toBe(true);
+      expect(over.json.error).toBe('invalid_arguments');
+      expect(vis(many[0])).toBe('default');
+      const ok = await call(token, 'delete_cards', { cardIds: many.slice(0, 100) });
+      expect(ok.isError, ok.text).toBe(false);
+      expect(vis(many[99])).toBe('deleted');
+      expect(vis(many[100])).toBe('default');
+    });
+
+    it('the user\'s own rights still apply: observers and guarded lists', async () => {
+      const owner = mkUser('owner');
+      const project = mkProject();
+      const deck = mkDeck(project);
+      const card = mkCard(deck, owner);
+      const observer = mkUser('observer');
+      db.prepare('INSERT INTO project_access (project_id, user_id) VALUES (?,?)').run(project, observer);
+      const t1 = await mkToken(observer, { role: 'limited', projectIds: [project], mayDelete: true });
+      const r1 = await call(t1, 'delete_cards', { cardIds: [card] });
+      expect(r1.isError).toBe(true);
+      expect(r1.json.error).toBe('forbidden');
+      expect(vis(card)).toBe('default');
+      // A list with an active guardian: only the guardian may delete it, as through the API.
+      db.prepare('UPDATE decks SET guardians_enabled=1 WHERE id=?').run(deck);
+      db.prepare('INSERT INTO deck_guardians (deck_id, user_id) VALUES (?,?)').run(deck, owner);
+      const member = mkUser('member');
+      const t2 = await mkToken(member, { role: 'producer', projectIds: [project], mayDelete: true });
+      const r2 = await call(t2, 'delete_deck', { deckId: deck, confirm: true });
+      expect(r2.isError).toBe(true);
+      expect(r2.json.error).toBe('guardian_only');
+      expect(db.prepare('SELECT 1 FROM decks WHERE id=?').get(deck)).toBeDefined();
+      // A list in a project the token cannot see does not exist for it.
+      const other = mkDeck(mkProject());
+      expect((await call(t2, 'delete_deck', { deckId: other, confirm: true })).json.error).toBe('not_found');
+    });
+
+    it('delete_deck and delete_milestone need confirm: true; the list goes, its tasks are deleted; tasks keep their place when a milestone goes', async () => {
+      const owner = mkUser('owner');
+      const project = mkProject();
+      const deck = mkDeck(project);
+      const card = mkCard(deck, owner);
+      const keep = mkDeck(project);
+      const kept = mkCard(keep, owner);
+      const token = await mkToken(owner, { mayDelete: true });
+      const noConfirm = await call(token, 'delete_deck', { deckId: deck });
+      expect(noConfirm.isError).toBe(true);
+      expect(noConfirm.json.error).toBe('invalid_arguments');
+      expect((await call(token, 'delete_deck', { deckId: deck, confirm: false })).json.error).toBe('invalid_arguments');
+      const d = await call(token, 'delete_deck', { deckId: deck, confirm: true });
+      expect(d.isError, d.text).toBe(false);
+      expect(db.prepare('SELECT 1 FROM decks WHERE id=?').get(deck)).toBeUndefined();
+      expect(db.prepare('SELECT visibility, deck_id FROM cards WHERE id=?').get(card)).toEqual({ visibility: 'deleted', deck_id: null });
+
+      const m = await call(token, 'create_milestone', { name: 'Beta', projectIds: [project] });
+      await call(token, 'update_card', { cardId: kept, milestoneId: m.json.id });
+      expect((await call(token, 'delete_milestone', { milestoneId: m.json.id })).json.error).toBe('invalid_arguments');
+      const dm = await call(token, 'delete_milestone', { milestoneId: m.json.id, confirm: true });
+      expect(dm.isError, dm.text).toBe(false);
+      expect(db.prepare('SELECT 1 FROM milestones WHERE id=?').get(m.json.id)).toBeUndefined();
+      expect(db.prepare('SELECT visibility, deck_id, milestone_id FROM cards WHERE id=?').get(kept)).toEqual({ visibility: 'default', deck_id: keep, milestone_id: null });
+      expect((await call(token, 'delete_milestone', { milestoneId: m.json.id, confirm: true })).json.error).toBe('not_found');
+    });
+
+    it('create_project: admin-role write tokens of users who may create projects', async () => {
+      const owner = mkUser('owner');
+      const token = await mkToken(owner);
+      const r = await call(token, 'create_project', { name: 'Moonfall' });
+      expect(r.isError, r.text).toBe(false);
+      expect(db.prepare('SELECT name, visibility FROM projects WHERE id=?').get(r.json.id)).toEqual({ name: 'Moonfall', visibility: 'full' });
+      expect(r.json.seq).toBeGreaterThan(0);
+      expect((await call(token, 'list_decks', { projectId: r.json.id })).isError).toBe(false);
+
+      const read = await mkToken(owner, { access: 'read' });
+      expect((await call(read, 'create_project', { name: 'X' })).json.error).toBe('missing_scope');
+      const member = mkUser('member');
+      seq += 10; // projects/create took the next project numbers
+      const producer = await mkToken(member, { role: 'producer', projectIds: [mkProject()] });
+      const p = await call(producer, 'create_project', { name: 'X' });
+      expect(p.isError).toBe(true);
+      expect(p.json.error).toBe('forbidden');
+      expect((await call(token, 'create_project', { name: ' ' })).json.error).toBe('invalid_arguments');
+      expect((db.prepare("SELECT COUNT(*) n FROM projects WHERE name='X'").get() as { n: number }).n).toBe(0);
+    });
   });
 });

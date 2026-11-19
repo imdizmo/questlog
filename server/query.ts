@@ -216,6 +216,7 @@ const MODELS: Record<ModelName, Model> = {
       hasBlockingDeps: col('has_blocking_deps', 'bool'), isBlockingDep: col('is_blocking_dep', 'bool'),
       // Game wiki (Lore entries): type, stable key, field values, page-tree parent.
       entryTypeId: col('entry_type_id', 'id'), entryKey: col('entry_key'), fields: col('fields_json', 'json'), wikiParentId: col('wiki_parent_id', 'id'),
+      aliases: col('aliases_json', 'array'), linkIgnores: col('link_ignores_json', 'array'),
     },
     rels: {
       deck: { model: 'decks', kind: 'one', field: 'deckId' },

@@ -5,8 +5,8 @@ import { ensureWorkspace } from './helpers';
 test('Discord and Slack settings keep secrets hidden: only set / not set', async ({ page }) => {
   await ensureWorkspace(page);
   const token = 'e2e-discord-bot-token-0123456789abcdefghij';
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
+  await page.goto('/decks?menu=connections/discord');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
 
   await settings.getByRole('tab', { name: 'Discord' }).click();
   await expect(settings.getByText('Karma roles')).toBeVisible();

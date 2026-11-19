@@ -8,46 +8,48 @@ test('vision board: create from a card, nav link, read only for a member, delete
   const deck = await run<{ id: string }>(page, 'decks', 'create', { title: unique('Vision list'), projectId: project.id, spaceId: 1 });
   await run(page, 'cards', 'create', { deckId: deck.id, content: 'Moodboard host' });
 
-  // No boards yet: the empty state.
-  await page.goto('/vision');
-  await expect(page.getByRole('heading', { name: 'Vision board' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Pick task' })).toBeVisible();
+  // A new board: "+" in Home's Boards toolbar picks its task (or lays a project out).
+  await page.goto('/home');
+  const boards = page.getByRole('toolbar', { name: 'Boards' });
+  await boards.getByRole('button', { name: 'New board' }).click();
+  await expect(page.getByRole('dialog', { name: 'New board' }).getByRole('button', { name: 'Pick task' })).toBeVisible();
+  await page.keyboard.press('Escape');
 
-  // Create from the card's "Board" button.
+  // Create from the card's "Board" button: it opens on Home, picked in the Boards toolbar.
   await openCard(page, 'Moodboard host');
   await page.getByTestId('card-page').getByRole('button', { name: 'Board', exact: true }).click();
-  await expect(page).toHaveURL(/\/vision\/1$/);
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
+  const seq = Number(new URL(page.url()).searchParams.get('board'));
+  const here = new RegExp(`/home\\?board=${seq}$`);
   await expect(page.getByRole('region', { name: 'Board' })).toBeVisible();
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Moodboard host' })).toBeVisible();
+  await expect(boards.getByRole('button', { name: 'Moodboard host' })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText('This board is read-only for you')).toHaveCount(0);
 
-  // The nav link goes to the last opened board, from anywhere.
+  // There is no Vision board page (Home took its place in the sidebar and on Shift+4); the workspace switcher's menu
+  // opens the last opened board on Home, from anywhere; the old addresses lead there too.
   await page.goto('/decks');
-  await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Vision board' })).toHaveAttribute('href', '/vision/1');
+  await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Vision board' })).toHaveCount(0);
+  await page.getByRole('button', { name: /^Workspace:/ }).click();
+  await page.getByRole('menuitem', { name: /Vision boards/ }).click();
+  await expect(page).toHaveURL(here);
+  await page.goto('/decks');
+  await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home' })).toBeVisible();
   await page.keyboard.press('Shift+Digit4');
-  await expect(page).toHaveURL(/\/vision\/1$/);
-  // /vision redirects to it.
+  await expect(page).toHaveURL(/\/home$/);
   await page.goto('/vision');
-  await expect(page).toHaveURL(/\/vision\/1$/);
-
-  // Board picker lists it, marked as current.
-  await page.getByRole('button', { name: 'Moodboard host' }).click();
-  const picker = page.getByRole('dialog', { name: 'Choose board' });
-  await expect(picker.getByText('Last opened')).toBeVisible();
-  await expect(picker.getByText('All boards')).toBeVisible();
-  await expect(picker.getByRole('option', { name: /Moodboard host/ })).toHaveCount(2); // last opened and all
-  await expect(picker.getByRole('option', { name: /Moodboard host/ }).last()).toHaveAttribute('aria-current', 'true');
-  await page.keyboard.press('Escape');
-  await expect(picker).toHaveCount(0);
+  await expect(page).toHaveURL(here);
+  await page.goto(`/vision/${seq}`);
+  await expect(page).toHaveURL(here);
+  await expect(boards.getByRole('button', { name: 'Home' })).toHaveAttribute('aria-pressed', 'false');
 
   // Read only: the owner (creator) keeps editing, a member does not.
   await page.getByRole('button', { name: 'More' }).click();
   await page.getByRole('menuitemradio', { name: /Read only/ }).click();
-  await expect.poll(async () => (await snapshot(page)).visionBoards[0].state).toBe('read_only');
+  await expect.poll(async () => (await snapshot(page)).visionBoards.find((x: any) => x.accountSeq === seq).state).toBe('read_only');
   await expect(page.getByText('This board is read-only for you')).toHaveCount(0);
   // The creator still has the node tools; pin a note for the member to see.
-  const ownerTools = page.getByRole('group', { name: 'Node tools' });
+  const ownerTools = page.getByRole('toolbar', { name: 'Add to the board' });
   await ownerTools.getByRole('button', { name: 'Text' }).click();
   const vb = (await page.getByTestId('board-viewport').boundingBox())!;
   await page.mouse.click(vb.x + 300, vb.y + 200);
@@ -62,10 +64,10 @@ test('vision board: create from a card, nav link, read only for a member, delete
     data: { name, email: `${name.toLowerCase().replace(/\W+/g, '.')}@example.com`, password: 'another good password' },
   });
   expect(res.ok()).toBeTruthy();
-  await b.goto('/vision/1');
+  await b.goto(`/vision/${seq}`);
   await expect(b.getByText('This board is read-only for you')).toBeVisible();
   await expect(b.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  await expect(b.getByRole('group', { name: 'Node tools' })).toHaveCount(0);
+  await expect(b.getByRole('toolbar', { name: 'Add to the board' })).toHaveCount(0);
   // Read only: selecting a node offers Focus only, and dragging it pans the view instead of moving it.
   const pinned = b.locator('[data-node-type="text"]');
   await expect(pinned).toHaveText('Pinned');
@@ -88,17 +90,18 @@ test('vision board: create from a card, nav link, read only for a member, delete
   await expect(b.getByRole('menuitem', { name: 'Delete board' })).toHaveCount(0);
   await b.context().close();
 
-  // Delete returns to the empty state.
+  // Delete returns to Home, and the board leaves the Boards toolbar.
   await page.getByRole('button', { name: 'More' }).click();
   await page.getByRole('menuitem', { name: 'Delete board' }).click();
   await page.getByRole('dialog', { name: 'Delete board?' }).getByRole('button', { name: 'Delete board' }).click();
-  await expect(page).toHaveURL(/\/vision$/);
-  await expect(page.getByRole('heading', { name: 'Vision board' })).toBeVisible();
-  await expect.poll(async () => (await snapshot(page)).visionBoards.length).toBe(0);
-  // It stays on the empty state: /vision does not bounce back to the deleted board.
+  await expect(page).toHaveURL(/\/home$/);
+  await expect(boards.getByRole('button', { name: 'Moodboard host' })).toHaveCount(0);
+  await expect.poll(async () => (await snapshot(page)).visionBoards.some((x: any) => x.accountSeq === seq)).toBe(false);
+  // /vision does not bounce back to the deleted board.
+  await page.goto('/vision');
+  await expect(page).toHaveURL(/\/home$/);
   await page.waitForTimeout(500);
-  await expect(page).toHaveURL(/\/vision$/);
-  await expect(page.getByRole('heading', { name: 'Vision board' })).toBeVisible();
+  await expect(page).toHaveURL(/\/home$/);
 });
 
 async function openCard(page: import('@playwright/test').Page, title: string) {
@@ -136,7 +139,7 @@ test('vision board canvas: place, edit, move, contain, colour, delete, undo, two
   const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: card.id });
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  const tools = page.getByRole('group', { name: 'Node tools' });
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
   await expect(tools).toBeVisible();
   await expect(tools.getByRole('button', { name: 'Undo' })).toBeDisabled();
   await expect(tools.getByRole('button', { name: 'Redo' })).toBeDisabled();
@@ -344,7 +347,7 @@ test('vision board connectors: draw, label, colour, delete with node, undo, keyb
   const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: card.id });
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  const tools = page.getByRole('group', { name: 'Node tools' });
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
   const box = (await page.getByTestId('board-viewport').boundingBox())!;
 
   const put = async (label: string, x: number, y: number) => {
@@ -479,7 +482,7 @@ test('vision board media: card (existing, new), image upload, YouTube video', as
   const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host.id });
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  const tools = page.getByRole('group', { name: 'Node tools' });
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
   const view = page.getByTestId('board-viewport');
   const box = (await view.boundingBox())!;
   const click = (x: number, y: number) => page.mouse.click(box.x + x, box.y + y);
@@ -512,7 +515,7 @@ test('vision board media: card (existing, new), image upload, YouTube video', as
   await card.click();
   const panel = page.getByRole('complementary', { name: 'Open task' });
   await expect(panel.getByTestId('card-page')).toBeVisible();
-  await expect(page).toHaveURL(new RegExp(`/vision/${accountSeq}$`));
+  await expect(page).toHaveURL(new RegExp(`/home\\?board=${accountSeq}$`));
   await panel.getByRole('button', { name: 'Close task' }).click();
   await expect(panel).toHaveCount(0);
 
@@ -606,7 +609,7 @@ test('vision board smart node: filter, figures, table, add to board, keyboard', 
   const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host.id });
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  const tools = page.getByRole('group', { name: 'Node tools' });
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
   const box = (await page.getByTestId('board-viewport').boundingBox())!;
   const smart = page.locator('[data-node-type="filter"]');
 
@@ -685,7 +688,7 @@ test('vision board smart node: filter, figures, table, add to board, keyboard', 
   await panel.getByRole('button', { name: 'Save filter' }).click();
   await expect(smart).toContainText('All tasks');
   expect((await snapshot(page)).visionQueries.filter((q: any) => q.cardId === host.id)).toHaveLength(2);
-  await page.getByRole('group', { name: 'Node tools' }).getByRole('button', { name: 'Undo' }).click();
+  await page.getByRole('toolbar', { name: 'Add to the board' }).getByRole('button', { name: 'Undo' }).click();
   await expect(smart).toContainText(`#${tag} tasks`);
   await expect(smart).not.toContainText('Filter not available');
   await panel.getByRole('button', { name: 'Close filter' }).click();
@@ -709,7 +712,7 @@ test('vision board presence: named cursor, selection outline, avatar stack, leav
   const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host.id });
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
-  const tools = page.getByRole('group', { name: 'Node tools' });
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
   const box = (await page.getByTestId('board-viewport').boundingBox())!;
   await tools.getByRole('button', { name: 'Text' }).click();
   await page.mouse.click(box.x + 300, box.y + 200);
@@ -782,12 +785,12 @@ test('a project board lays the project out as frames, and shows one project', as
   const other = await run(page, 'projects', 'create', { name: otherName });
   await run(page, 'decks', 'create', { title: unique('Other list'), projectId: other.id });
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const canvas = page.getByRole('region', { name: 'Board' });
   // Open tasks only, each inside its list frame, which sits inside its area frame. No list-to-task lines.
   await expect(canvas.locator('.bcard')).toHaveCount(3);
@@ -883,7 +886,7 @@ test('"Arrange as frames" turns a board made with the old tree into frames; one 
   await page.keyboard.press('Escape');
 
   // One undo brings the tree back as it was.
-  await page.getByRole('group', { name: 'Node tools' }).getByRole('button', { name: 'Undo' }).click();
+  await page.getByRole('toolbar', { name: 'Add to the board' }).getByRole('button', { name: 'Undo' }).click();
   await expect(page.locator('[data-node-type="container"]')).toHaveCount(0);
   await expect(labels).toHaveCount(4);
   await expect(page.locator('[data-edge-id]')).toHaveCount(6);
@@ -902,12 +905,12 @@ test('lines on a project board: a task waits for another; a line from a task to 
   const a = (await run(page, 'cards', 'create', { deckId: l1.id, content: 'Line task A' })).id as string;
   const b = (await run(page, 'cards', 'create', { deckId: l1.id, content: 'Line task B' })).id as string;
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const node = (text: string) => page.locator('[data-node-type]').filter({ hasText: text });
   await expect(node('Line task B')).toHaveCount(1);
   const edges = page.locator('[data-edge-id]');
@@ -959,12 +962,12 @@ test('dragging a list frame onto another area moves the list there, even onto th
   for (let i = 1; i <= 5; i++) await run(page, 'cards', 'create', { deckId: l1.id, content: `Area task ${i}` });
   await run(page, 'cards', 'create', { deckId: l2.id, content: 'Area task other' });
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   await expect(frame(page, 'Second area')).toHaveCount(1);
   await expect(page.locator('[data-node-type="card"]').filter({ hasText: /Area task/ })).toHaveCount(6);
 
@@ -993,12 +996,12 @@ test('dropping a task card into another list frame moves the task; a drag inside
   const a = (await run(page, 'cards', 'create', { deckId: l1.id, content: 'Drop task A' })).id as string;
   await run(page, 'cards', 'create', { deckId: l2.id, content: 'Drop task B' });
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const cardA = page.locator('[data-node-type="card"]').filter({ hasText: 'Drop task A' });
   await expect(cardA).toHaveCount(1);
   await expect(page.locator('[data-node-type="card"]').filter({ hasText: 'Drop task B' })).toHaveCount(1);
@@ -1034,12 +1037,12 @@ test('an open project board follows the project: new task, task moved to another
   const l2 = await run(page, 'decks', 'create', { title: t2, projectId: project.id });
   await run(page, 'cards', 'create', { deckId: l1.id, content: 'Follow task A' });
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const cardNode = (text: string) => page.locator('[data-node-type="card"]').filter({ hasText: text });
   await expect(cardNode('Follow task A')).toHaveCount(1);
 
@@ -1122,12 +1125,12 @@ test('zoomed out, a project board shows its lists with tasks left and one thick 
   // Board writes sent to the server (y-protocols sync update frames), to show zooming sends none.
   let writes = 0;
   page.on('websocket', (ws) => ws.on('framesent', (f) => { const b = f.payload; if (typeof b !== 'string' && b[0] === 0 && b[1] === 2) writes++; }));
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const cards = page.locator('[data-node-type="card"]');
   await expect(cards).toHaveCount(3);
   const waits = page.locator('[data-edge-id][data-label="waits for"]');
@@ -1221,12 +1224,12 @@ test('an area frame drags by the middle of its name, at 100% and in the overview
   const deck = await run(page, 'decks', 'create', { title: unique('Grip list'), projectId: project.id, spaceId: 1 });
   await run(page, 'cards', 'create', { deckId: deck.id, content: 'Grip task' });
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   await expect(page.locator('[data-node-type="card"]')).toHaveCount(1);
   const area = frame(page, 'Grip area');
   await page.waitForTimeout(900); // the follow pass has run
@@ -1258,12 +1261,12 @@ test('project board: a handle on each task draws an arrow; the hint goes away fo
   const a = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Handle task A' })).id as string;
   const b = (await run(page, 'cards', 'create', { deckId: deck.id, content: 'Handle task B' })).id as string;
 
-  await page.goto('/vision');
-  await page.getByRole('button', { name: 'Project board' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Project board' });
+  await page.goto('/home');
+  await page.getByRole('button', { name: 'New board' }).click();
+  const dlg = page.getByRole('dialog', { name: 'New board' });
   await dlg.getByRole('combobox').selectOption({ label: name });
-  await dlg.getByRole('button', { name: 'Create board' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await dlg.getByRole('button', { name: 'Project board' }).click();
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const node = (text: string) => page.locator('[data-node-type="card"]').filter({ hasText: text });
   await expect(node('Handle task B')).toHaveCount(1);
 

@@ -231,7 +231,7 @@ export function registerDiscordRoutes(app: FastifyInstance, d: DiscordRouteDeps)
       if (!text) return reply(`Add some text after /${name}.`);
       const map = cfg.commands.find((c) => c.channelId === i.channel_id && c.name === name);
       const deck = map ? deckRow(db, map.deckId) : undefined;
-      if (!map || !deck || deck.deckType === 'doc') return reply(`This channel is not linked to a list for /${name}. An admin can link it in the workspace settings.`);
+      if (!map || !deck || deck.deckType === 'doc') return reply(`This channel is not linked to a list for /${name}. An admin can link it in the workspace menu (top left) → Connections → Discord.`);
       const who = String(i.member?.user?.username ?? i.user?.username ?? '').slice(0, 100);
       const content = who ? `${text}\n\nReported on Discord by ${who}` : text;
       let events: ChangeEvent[];

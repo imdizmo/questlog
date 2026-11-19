@@ -12,9 +12,8 @@ test('invite by email lands in the outbox (log mode); my notification emails can
   await expect(invite.getByText(`An email with this link to ${addr} is in the outbox.`)).toBeVisible();
   await invite.getByRole('button', { name: 'Done' }).click();
 
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'Email' }).click();
+  await page.goto('/decks?menu=connections/email');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   await expect(settings.getByText('Log mode.')).toBeVisible();
   const row = settings.getByRole('table', { name: 'Outbox' }).getByRole('row').filter({ hasText: addr });
   await expect(row).toContainText('Invite');
@@ -22,7 +21,7 @@ test('invite by email lands in the outbox (log mode); my notification emails can
   await expect(row).toContainText(/Waiting|Not sent \(log mode\)/);
 
   await page.goto('/decks');
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Email notifications' }).click();
   const prefs = page.getByRole('dialog', { name: 'Email notifications' });
   await prefs.getByLabel('No emails').check();

@@ -294,7 +294,7 @@ describe('link permissions', () => {
     await fail('wiki/updateLink', { id, sortIndex: 2 }, 403, 'missing_scope', read);
     await fail('wiki/removeLink', { id }, 403, 'missing_scope', read);
     const other = mkProject('Q');
-    const confined = { bearer: await mkToken({ role: 'producer', projectIds: [other] }) };
+    const confined = { bearer: await mkToken({ role: 'producer', projectIds: [other], mayDelete: true }) };
     await fail('wiki/addLink', add, 403, 'forbidden', confined);
     // The link's source is outside the token's project: it can't even see the link.
     await fail('wiki/updateLink', { id, sortIndex: 2 }, 404, 'not_found', confined);

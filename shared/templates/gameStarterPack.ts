@@ -1,7 +1,7 @@
 // The editable game starter pack of the Wiki: entry types and link kinds any game can use (spec "Starter pack").
 // Data only; server/commands/wiki.ts (wiki/addStarterPack) adds it to a campaign, skipping keys that already exist.
 // Order matters: a parent type comes before its children, and a type before any field that targets it.
-import type { FieldDef } from '../types';
+import type { Block, EntryType, FieldDef } from '../types';
 
 export interface StarterType {
   key: string; name: string; icon: string;
@@ -37,10 +37,96 @@ const ref = (key: string, label: string, target: string): FieldDef => ({ key, la
 const level = int('level', 'Level', { min: 1, inTable: true });
 const difficulty = enm('difficulty', 'Difficulty', ['easy', 'normal', 'hard', 'elite'], { inTable: true });
 
-export const STARTER_TYPES: StarterType[] = [
-  { key: 'item', name: 'Item', icon: '🎒', core: true, fields: [...common,
-    enm('rarity', 'Rarity', ['common', 'uncommon', 'rare', 'epic', 'legendary'], { inTable: true }),
+const refs = (key: string, label: string, target: string): FieldDef => ({ key, label, kind: 'entries', target });
+
+/**
+ * The core types' fields for a co-op survival game (redesign decision 12, the preview's GAME_TYPES): how each type
+ * plays, instead of the generic Level, Role, Friendly... Their text lives in blocks (STARTER_PAGES), so no headings.
+ */
+const GAME_FIELDS: Record<'item' | 'creature' | 'npc' | 'mission' | 'location' | 'faction', FieldDef[]> = {
+  npc: [...common, ref('found_in', 'Found in', 'location'), enm('job', 'Job', ['quest_giver', 'trader', 'crafter', 'guard', 'villager'], { inTable: true }),
+    refs('trades', 'Trades', 'item'), int('voice_lines', 'Voice lines', { unit: 'lines' }), bool('can_die', 'Can die')],
+  creature: [...common, int('health', 'Health', { inTable: true }), enm('damage_kind', 'Damage kind', ['slash', 'pierce', 'blunt', 'fire', 'poison'], { inTable: true }),
+    num('speed', 'Speed', { unit: 'm/s' }), num('notices_at', 'Notices you at', { unit: 'm' }), refs('spawns_in', 'Spawns in', 'location'),
+    bool('tameable', 'Tameable'), int('zone_tier', 'Zone tier', { inTable: true })],
+  item: [...common, enm('rarity', 'Rarity', ['common', 'uncommon', 'rare', 'epic', 'legendary'], { inTable: true }), int('tier', 'Tier', { min: 1, inTable: true }),
+    num('weight', 'Weight', { unit: 'kg' }), int('stack_size', 'Stack size', { min: 1 }), text('made_at', 'Made at'), int('durability', 'Durability')],
+  mission: [...common, ref('given_by', 'Given by', 'npc'), ref('zone', 'Zone', 'location'), int('tier', 'Tier', { min: 1, inTable: true }),
+    refs('unlocks', 'Unlocks', 'mission'), bool('can_be_skipped', 'Can be skipped')],
+  location: [...common, int('zone_tier', 'Zone tier', { inTable: true }), enm('biome', 'Biome', ['beach', 'forest', 'swamp', 'mountain', 'plains', 'caves'], { inTable: true }),
+    { key: 'level_range', label: 'Level range', kind: 'range', min: 1, inTable: true }, bool('safe_at_night', 'Safe at night')],
+  faction: [...common, enm('alignment', 'Alignment', ['friendly', 'neutral', 'hostile'], { inTable: true })],
+};
+
+type BlockSpec = [kind: Block['kind'], title: string, extra?: string | string[]];
+/** Each core type's page as blocks of the right kind; prose only where prose is needed (the preview's GAME_BLOCKS). */
+const GAME_BLOCKS: Record<keyof typeof GAME_FIELDS, BlockSpec[]> = {
+  npc: [['facts', 'Facts'], ['model', 'Model'], ['lines', 'Barks', 'Short lines they say as the player passes by.'], ['links', 'Dialogue', 'dialogue'], ['links', 'Quests they give', 'mission']],
+  creature: [['facts', 'Facts'], ['model', 'Model'], ['table', 'Attacks', ['Attack', 'Damage', 'Wind-up (s)']], ['table', 'Drops', ['Item', 'Chance %', 'Amount']],
+    ['text', 'Behaviour', 'When it switches between idle, alert, chase and flee.']],
+  item: [['facts', 'Facts'], ['model', 'Model and icon'], ['table', 'Recipe', ['Material', 'Amount']], ['links', 'Used in', 'item']],
+  mission: [['facts', 'Facts'], ['steps', 'Steps', 'Each step as the player does it.'], ['table', 'Rewards', ['Item', 'Amount']], ['links', 'Dialogue', 'dialogue']],
+  location: [['facts', 'Facts'], ['map', 'Map'], ['table', 'Spawns', ['Creature', 'How many', 'When']], ['table', 'Resources', ['Resource', 'Amount']], ['gallery', 'Landmarks']],
+  faction: [['facts', 'Facts'], ['picture', 'Banner'], ['links', 'Members', 'npc'], ['links', 'Camps', 'location']],
+};
+const HALF = new Set<Block['kind']>(['facts', 'model', 'picture', 'map']);
+/** The core types' template pages: the blocks a new entry of each is laid out by. A links block's `to` is a type key. */
+export const STARTER_PAGES: Record<string, Block[]> = Object.fromEntries(Object.entries(GAME_BLOCKS).map(([key, specs]) => [key, specs.map(([kind, title, extra], i): Block => {
+  const b: Block = { id: `${kind}${i}`, kind, title, width: HALF.has(kind) ? 'half' : 'full' };
+  if (kind === 'table') b.cols = extra as string[];
+  else if (kind === 'links') b.to = extra as string;
+  else if (kind === 'text' || kind === 'lines' || kind === 'steps') b.prompt = (extra as string | undefined) ?? '';
+  return b;
+})]));
+
+/**
+ * The core types as the pack gave them before decision 12 (fields and headings). "Update the starter types" hides
+ * these fields where the new pack has none of the same key; tests build an old project from them.
+ */
+export const PREVIOUS_CORE: Record<string, { fields: FieldDef[]; sections: string[] }> = {
+  item: { sections: [], fields: [...common, enm('rarity', 'Rarity', ['common', 'uncommon', 'rare', 'epic', 'legendary'], { inTable: true }),
     level, int('value', 'Value', { inTable: true }), int('stack_size', 'Stack size', { min: 1 })] },
+  creature: { sections: ['Behaviour', 'Lore'], fields: [...common, level, int('health', 'Health', { inTable: true }),
+    enm('kind', 'Kind', ['beast', 'humanoid', 'undead', 'elemental', 'construct', 'dragon', 'demon', 'critter'], { inTable: true }), int('xp', 'XP reward')] },
+  npc: { sections: ['Appearance', 'History', 'What they want', 'Voice'], fields: [...common, level,
+    enm('role', 'Role', ['civilian', 'vendor', 'quest_giver', 'trainer', 'guard'], { inTable: true }), bool('friendly', 'Friendly')] },
+  faction: { sections: ['What they want', 'History', 'How they treat outsiders'], fields: [...common, enm('alignment', 'Alignment', ['friendly', 'neutral', 'hostile'], { inTable: true })] },
+  location: { sections: ['Look and feel', 'History', 'Who lives here'], fields: [...common, { key: 'level_range', label: 'Level range', kind: 'range', min: 1, inTable: true }] },
+  mission: { sections: ['What happens', 'Why it matters'], fields: [...common, level, ref('giver', 'Giver', 'npc'),
+    { key: 'objectives', label: 'Objectives', kind: 'longtext', inInfobox: false }, int('xp', 'XP reward')] },
+};
+/** The core types' current fields, by type key (what "Update the starter types" adds). */
+export const CORE_FIELDS: Record<string, FieldDef[]> = GAME_FIELDS;
+
+/**
+ * Did this type come from the pack before decision 12? A top-level type with a core key that still has every field
+ * the previous pack gave it, each of the same kind. A key alone is not enough: a project's own "creature" is left alone.
+ */
+export const isPreviousCore = (t: Pick<EntryType, 'key' | 'parentTypeId' | 'fields'>): boolean =>
+  !t.parentTypeId && !!PREVIOUS_CORE[t.key] && PREVIOUS_CORE[t.key].fields.every((p) => t.fields.some((f) => f.key === p.key && f.kind === p.kind));
+
+/**
+ * Should "Update the starter types" be offered? When a type that came from the previous pack lacks one of the game
+ * fields. A key held anywhere under it counts as present (hidden ones too: hiding one is a choice).
+ */
+export function starterUpdateNeeded(types: Pick<EntryType, 'id' | 'key' | 'parentTypeId' | 'fields'>[]): boolean {
+  return types.some((t) => isPreviousCore(t) && CORE_FIELDS[t.key].some((f) => !keysUnder(types, t.id).has(f.key)));
+}
+
+/** Field keys of a type and of every type under it (a key a kind holds can't be added to its root). */
+export function keysUnder(types: Pick<EntryType, 'id' | 'parentTypeId' | 'fields'>[], rootId: string): Set<string> {
+  const keys = new Set<string>();
+  const ids = new Set([rootId]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const t of types) if (t.parentTypeId && ids.has(t.parentTypeId) && !ids.has(t.id)) { ids.add(t.id); grew = true; }
+  }
+  for (const t of types) if (ids.has(t.id)) for (const f of t.fields) keys.add(f.key);
+  return keys;
+}
+
+export const STARTER_TYPES: StarterType[] = [
+  { key: 'item', name: 'Item', icon: '🎒', core: true, fields: GAME_FIELDS.item },
   { key: 'weapon', name: 'Weapon', icon: '⚔️', parent: 'item', fields: [
     { key: 'damage', label: 'Damage', kind: 'range', min: 0, inTable: true }, num('speed', 'Speed', { inTable: true }),
     enm('slot', 'Slot', ['main_hand', 'off_hand', 'two_hands', 'ranged'], { inTable: true })] },
@@ -53,16 +139,14 @@ export const STARTER_TYPES: StarterType[] = [
   { key: 'quest_item', name: 'Quest item', icon: '📜', parent: 'item', fields: [bool('unique', 'Unique')] },
   { key: 'item_set', name: 'Item set', icon: '🧩', fields: [...common, { key: 'bonuses', label: 'Set bonuses', kind: 'longtext' }] },
   { key: 'currency', name: 'Currency', icon: '🪙', fields: [...common, int('max_amount', 'Max amount'), bool('tradable', 'Tradable')] },
-  { key: 'creature', name: 'Creature', icon: '🐺', core: true, sections: ['Behaviour', 'Lore'], fields: [...common, level, int('health', 'Health', { inTable: true }),
-    enm('kind', 'Kind', ['beast', 'humanoid', 'undead', 'elemental', 'construct', 'dragon', 'demon', 'critter'], { inTable: true }),
-    int('xp', 'XP reward')] },
-  { key: 'npc', name: 'Character', icon: '🧑', core: true, sections: ['Appearance', 'History', 'What they want', 'Voice'], fields: [...common, level,
-    enm('role', 'Role', ['civilian', 'vendor', 'quest_giver', 'trainer', 'guard'], { inTable: true }), bool('friendly', 'Friendly')] },
-  { key: 'faction', name: 'Faction', icon: '🏳️', core: true, sections: ['What they want', 'History', 'How they treat outsiders'], fields: [...common, enm('alignment', 'Alignment', ['friendly', 'neutral', 'hostile'], { inTable: true })] },
-  { key: 'location', name: 'Place', icon: '🗺️', core: true, sections: ['Look and feel', 'History', 'Who lives here'], fields: [...common, { key: 'level_range', label: 'Level range', kind: 'range', min: 1, inTable: true }] },
+  // Places come before creatures and characters: their fields point at them.
+  { key: 'location', name: 'Place', icon: '🗺️', core: true, fields: GAME_FIELDS.location },
   { key: 'region', name: 'Region', icon: '🏔️', parent: 'location', fields: [text('climate', 'Climate')] },
   { key: 'zone', name: 'Zone', icon: '🌲', parent: 'location', fields: [bool('pvp', 'PvP')] },
   { key: 'point_of_interest', name: 'Point of interest', icon: '📍', parent: 'location', fields: [bool('discoverable', 'Discoverable')] },
+  { key: 'creature', name: 'Creature', icon: '🐺', core: true, fields: GAME_FIELDS.creature },
+  { key: 'npc', name: 'Character', icon: '🧑', core: true, fields: GAME_FIELDS.npc },
+  { key: 'faction', name: 'Faction', icon: '🏳️', core: true, fields: GAME_FIELDS.faction },
   { key: 'dungeon', name: 'Dungeon', icon: '🏰', fields: [...common, { key: 'level_range', label: 'Level range', kind: 'range', min: 1, inTable: true },
     int('players', 'Players', { min: 1, inTable: true }), difficulty] },
   { key: 'encounter', name: 'Encounter', icon: '⚡', fields: [...common, level, difficulty] },
@@ -80,8 +164,7 @@ export const STARTER_TYPES: StarterType[] = [
     text('primary_stat', 'Primary stat')] },
   { key: 'race', name: 'Race', icon: '🧝', fields: [...common, bool('playable', 'Playable')] },
   { key: 'talent', name: 'Talent', icon: '🌟', fields: [...common, int('tier', 'Tier', { min: 1, inTable: true }), int('max_rank', 'Max rank', { min: 1 })] },
-  { key: 'mission', name: 'Quest', icon: '❗', core: true, sections: ['What happens', 'Why it matters'], fields: [...common, level, ref('giver', 'Giver', 'npc'),
-    { key: 'objectives', label: 'Objectives', kind: 'longtext', inInfobox: false }, int('xp', 'XP reward')] },
+  { key: 'mission', name: 'Quest', icon: '❗', core: true, fields: GAME_FIELDS.mission },
   { key: 'achievement', name: 'Achievement', icon: '🏆', fields: [...common, int('points', 'Points', { inTable: true }), bool('secret', 'Secret')] },
   { key: 'mount', name: 'Mount', icon: '🐎', fields: [...common, num('speed', 'Speed', { unit: '%', inTable: true }), bool('flying', 'Flying')] },
   { key: 'pet', name: 'Pet', icon: '🐾', fields: [...common, level, bool('battle', 'Can battle')] },
@@ -102,6 +185,18 @@ export const STARTER_TYPES: StarterType[] = [
 const qty = { key: 'qty', label: 'Quantity', kind: 'range', min: 0 } as const satisfies FieldDef;
 const chance = { key: 'chance', label: 'Chance', kind: 'number', min: 0, max: 100, unit: '%' } as const satisfies FieldDef;
 const count = (label = 'Quantity'): FieldDef => ({ key: 'qty', label, kind: 'integer', min: 1 });
+
+export interface StarterFamily { name: string; color: string; types: string[] }
+/** Families of the pack's root types, in order (the redesign preview's FAMILIES). Child types sit in their root's. */
+export const STARTER_FAMILIES: StarterFamily[] = [
+  { name: 'Characters', color: '#c9733a', types: ['npc', 'faction', 'race', 'class', 'pet', 'mount', 'title'] },
+  { name: 'Creatures', color: '#7c8f3a', types: ['creature', 'encounter'] },
+  { name: 'Items', color: '#b8862f', types: ['item', 'item_set', 'currency'] },
+  { name: 'Places', color: '#3f8a7a', types: ['location', 'dungeon', 'resource_node', 'container', 'shop'] },
+  { name: 'Story', color: '#8a4fb0', types: ['mission', 'storyline', 'dialogue', 'history', 'event', 'achievement'] },
+  { name: 'Systems', color: '#4f72c9', types: ['ability', 'status_effect', 'talent', 'stat', 'level_curve', 'profession', 'recipe'] },
+  { name: 'Production', color: '#9a6b5a', types: ['asset'] },
+];
 
 export const STARTER_KINDS: StarterKind[] = [
   { key: 'drops', label: 'drops', reverseLabel: 'dropped by', core: true, fromTypes: ['creature', 'npc', 'encounter', 'dungeon'], toTypes: ['item', 'currency'],

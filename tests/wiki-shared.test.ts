@@ -6,7 +6,7 @@ import {
 } from '../shared/wiki';
 
 const type = (id: string, key: string, parentTypeId: string | null, fields: FieldDef[] = []): EntryType =>
-  ({ id, projectId: 'p', key, name: key, icon: null, color: null, parentTypeId, fields, sortIndex: 0, sections: [], templates: [] });
+  ({ id, projectId: 'p', key, name: key, icon: null, color: null, parentTypeId, fields, sortIndex: 0, sections: [], templates: [], familyId: null, picture: null });
 const f = (key: string, kind: FieldDef['kind'], extra: Partial<FieldDef> = {}): FieldDef => ({ key, label: key, kind, ...extra });
 const entry = (id: string, entryTypeId: string | null, entryKey: string | null, fields: Record<string, unknown> = {}, visibility: Card['visibility'] = 'default') =>
   ({ id, entryTypeId, entryKey, fields, visibility, content: '' });

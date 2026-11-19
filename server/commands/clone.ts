@@ -207,7 +207,7 @@ function cloneOne(ctx: Ctx, srcId: string, visibility: 'full' | 'limited', copie
         milestone_id: ms, milestone_zone_id: zoneFor(c.milestone_id, ms, c.milestone_zone_id),
         sprint_id: sprint, sprint_joined_at: sprint ? c.sprint_joined_at : null, carry_count: sprint ? c.carry_count : 0, snoozed_at: null,
         // Entry types and the page tree belong to the source project and are not cloned: the copy is plain Lore.
-        entry_type_id: null, wiki_parent_id: null,
+        entry_type_id: null, wiki_parent_id: null, layout_json: null,
       });
     }
   }

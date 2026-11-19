@@ -84,7 +84,11 @@ test('wiki entry page', async ({ page, browser }) => {
   await expect(drops.getByTestId('wiki-link')).toHaveText(/Fire Sword \(15%\)/);
 
   // Fire Sword lists it under "What links here".
+  // In the wiki the link opens Fire Sword beside the page; Open full page makes it the main entry.
   await drops.getByRole('link', { name: 'Fire Sword' }).click();
+  await page.getByTestId('wiki-panel').getByRole('button', { name: 'Open full page' }).click();
+  await expect(page).toHaveURL(new RegExp(`/wiki/${seq}/fire_sword\\?panels=`));
+  await page.getByTestId('wiki-panel').getByRole('button', { name: /^Close / }).click();
   await expect(entryPage(page).getByRole('heading', { level: 2, name: 'Fire Sword' })).toBeVisible();
   const linksHere = entryPage(page).getByRole('region', { name: 'What links here' });
   await expect(linksHere.getByTestId('backlink-group')).toHaveText('dropped by Cinder Golem (15%)');
@@ -120,7 +124,8 @@ test('wiki entry page', async ({ page, browser }) => {
   const golem = snap.cards.find((c: any) => c.entryKey === 'cinder_golem');
   await run(page, 'cards', 'update', { id: golem.id, content: `# Cinder Golem\nGuards $${cardCode(sword.seq)}.`, contentVersion: golem.contentVersion });
   await page.goto(`/wiki/${seq}/cinder_golem`);
-  const ref = entryPage(page).getByTestId('card-markdown').getByRole('link', { name: 'Fire Sword' });
+  // A typed entry is laid out by its blocks: text before the first heading comes first.
+  const ref = entryPage(page).getByTestId('block-intro').getByRole('link', { name: 'Fire Sword' });
   await expect(ref).toHaveClass(/card-ref/);
   await ref.hover();
   const preview = page.getByTestId('entry-preview');
@@ -161,7 +166,7 @@ test('wiki entry page', async ({ page, browser }) => {
 
   // An observer can export the game data: the download parses and holds fire_sword with its damage and the drops link.
   const download = o.waitForEvent('download');
-  await o.getByRole('link', { name: 'Export JSON' }).click();
+  await o.getByRole('link', { name: 'Export game data' }).click();
   const file = await download;
   expect(file.suggestedFilename()).toMatch(/-gamedata\.json$/);
   const data = JSON.parse(readFileSync((await file.path())!, 'utf8'));
@@ -253,7 +258,8 @@ test('wiki type table', async ({ page }) => {
 
 test('wiki starter pack, types editor and checks', async ({ page }) => {
   await ensureWorkspace(page);
-  const project = await run<{ id: string }>(page, 'projects', 'create', { name: unique('Starter') });
+  const campaign = unique('Starter');
+  const project = await run<{ id: string }>(page, 'projects', 'create', { name: campaign });
   const seq = (await snapshot(page)).projects.find((p: any) => p.id === project.id).seq as number;
   await page.goto(`/wiki/${seq}`);
 
@@ -276,31 +282,36 @@ test('wiki starter pack, types editor and checks', async ({ page }) => {
   await expect(page.getByRole('link', { name: 'Item: 3', exact: true })).toBeVisible();
   await expect(badge).toHaveCount(0);
 
-  // 2. In settings, Item gets a required number field `weight`.
-  const openTypes = async (type: string) => {
-    await page.getByRole('button', { name: 'Entity types' }).click();
-    const dialog = page.getByRole('dialog', { name: 'Project settings' });
-    await expect(dialog.getByRole('tab', { name: 'Entity types' })).toHaveAttribute('aria-selected', 'true');
-    await dialog.getByRole('list', { name: 'Lore types' }).getByRole('button', { name: type, exact: true }).click();
-    return { dialog, editor: dialog.getByRole('region', { name: `Type ${type.split(' › ').pop()}` }) };
+  // 2. In settings, Item gets a required number field `heft`.
+  // The Wiki's Types: a type from the tree, on its Template (fields) or Settings tab.
+  const openTypes = async (name: string, tab: 'Template' | 'Settings' = 'Template') => {
+    await page.getByRole('navigation', { name: `${campaign} wiki` }).getByRole('link', { name: 'Types', exact: true }).click();
+    // Families start folded: find the type, open it, clear the search.
+    const tree = page.getByRole('region', { name: 'Entry types' });
+    await tree.getByLabel('Find a type').fill(name);
+    await tree.getByRole('link', { name, exact: true }).click();
+    await tree.getByLabel('Find a type').fill('');
+    const editor = page.getByRole('region', { name });
+    await editor.getByRole('tab', { name: tab }).click();
+    return { editor };
   };
-  let { dialog, editor } = await openTypes('Item');
-  await expect(editor.getByLabel('Key', { exact: true }).first()).toHaveValue('item');
+  let { editor } = await openTypes('Item', 'Settings');
+  await expect(editor.getByLabel('Key', { exact: true })).toHaveValue('item');
+  await editor.getByRole('tab', { name: 'Template' }).click();
   await editor.getByRole('button', { name: 'Add field' }).click();
   const row = editor.getByRole('list', { name: 'Fields' }).getByRole('group').last();
-  await row.getByLabel('Label').fill('weight');
-  await expect(row.getByLabel('Key')).toHaveValue('weight');
+  await row.getByLabel('Label').fill('heft');
+  await expect(row.getByLabel('Key')).toHaveValue('heft');
   await row.getByLabel('Kind').selectOption('number');
   await row.getByLabel('Required').check();
   await editor.getByRole('button', { name: 'Save fields' }).click();
-  await expect.poll(async () => (await snapshot(page)).entryTypes.find((t: any) => t.id === typeId('item')).fields.find((f: any) => f.key === 'weight'))
+  await expect.poll(async () => (await snapshot(page)).entryTypes.find((t: any) => t.id === typeId('item')).fields.find((f: any) => f.key === 'heft'))
     .toMatchObject({ kind: 'number', required: true });
   // The saved field's key is read-only now.
-  await expect(editor.getByRole('group', { name: 'weight' }).getByLabel('Key')).toHaveAttribute('readonly', '');
+  await expect(editor.getByRole('group', { name: 'heft' }).getByLabel('Key')).toHaveAttribute('readonly', '');
   await page.screenshot({ path: `${SHOTS}/wiki-types.png`, animations: 'disabled' });
-  await dialog.getByRole('button', { name: 'Close' }).last().click();
 
-  // 3. The badge counts the Item entries (Weapons included) missing weight.
+  // 3. The badge counts the Item entries (Weapons included) missing heft.
   await expect(badge).toHaveText('⚠ 3 checks');
   await badge.click();
   const panel = page.getByRole('dialog', { name: /^Checks/ });
@@ -309,12 +320,11 @@ test('wiki starter pack, types editor and checks', async ({ page }) => {
   await panel.getByRole('button', { name: 'Close' }).last().click();
 
   // 4. Weapon damage goes from range to number: the stored range shows as invalid.
-  ({ dialog, editor } = await openTypes('Item › Weapon'));
+  ({ editor } = await openTypes('Weapon'));
   const damage = editor.getByRole('group', { name: 'Damage' });
   await damage.getByLabel('Kind').selectOption('number');
   await editor.getByRole('button', { name: 'Save fields' }).click();
   await expect.poll(async () => (await snapshot(page)).entryTypes.find((t: any) => t.id === typeId('weapon')).fields.find((f: any) => f.key === 'damage').kind).toBe('number');
-  await dialog.getByRole('button', { name: 'Close' }).last().click();
   await expect(badge).toHaveText('⚠ 4 checks');
   // A strict export is blocked by the checks.
   const strict = await page.request.get(`/api/wiki/${project.id}/export?strict=1`);
@@ -328,15 +338,18 @@ test('wiki starter pack, types editor and checks', async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/wiki-checks.png`, animations: 'disabled' });
 
   // 5. Delete type asks first. A used type can't be confirmed; an unused one goes only on Delete forever.
-  ({ dialog, editor } = await openTypes('Item'));
+  ({ editor } = await openTypes('Item', 'Settings'));
   await editor.getByRole('button', { name: 'Delete type' }).click();
   const box = editor.getByRole('group', { name: 'Confirm delete type' });
   await expect(box).toContainText("Item can't be deleted while it is used by 2 entries, 5 child types");
   await expect(box.getByRole('button', { name: 'Delete forever' })).toBeDisabled();
   await box.getByRole('button', { name: 'Keep type' }).click();
-  await dialog.getByLabel('New type').fill('Scratch');
-  await dialog.getByRole('button', { name: 'Add type' }).click();
-  const scratch = dialog.getByRole('region', { name: 'Type Scratch' });
+  const tree = page.getByRole('region', { name: 'Entry types' });
+  await tree.getByRole('button', { name: 'New type' }).click();
+  await tree.getByLabel('Name of the new type').fill('Scratch');
+  await tree.getByRole('button', { name: 'Make type' }).click();
+  const scratch = page.getByRole('region', { name: 'Scratch' });
+  await scratch.getByRole('tab', { name: 'Settings' }).click();
   await scratch.getByRole('button', { name: 'Delete type' }).click();
   const scratchBox = scratch.getByRole('group', { name: 'Confirm delete type' });
   await expect(scratchBox).toContainText('Delete the type Scratch with its 0 field definitions? Trashed entries of this type come back as untyped lore');
@@ -372,12 +385,12 @@ test('wiki builder: template, gallery, places, timeline and storyboard', async (
   const build = page.getByRole('region', { name: 'New Creature' });
   await build.getByLabel('Name').fill('Red Deer');
   await build.getByLabel('Health').fill('120');
-  await build.getByRole('group', { name: 'Kind' }).getByRole('button', { name: 'beast' }).click();
+  await build.getByRole('group', { name: 'Damage kind' }).getByRole('button', { name: 'slash' }).click();
   await build.getByRole('group', { name: 'drops' }).getByRole('button', { name: /Deer hide/ }).click();
   await build.getByRole('group', { name: 'found in' }).getByRole('button', { name: /Shore/ }).click();
   const preview = build.getByRole('complementary', { name: 'Preview' });
   await expect(preview).toContainText('Red Deer');
-  await expect(preview).toContainText('beast');
+  await expect(preview).toContainText('slash');
   await expect(preview).toContainText('Deer hide');
   await build.getByRole('button', { name: 'Save these values as a template' }).click();
   await expect(build.getByRole('group', { name: 'Start from' }).getByRole('link', { name: 'Red Deer' })).toBeVisible();
@@ -396,13 +409,13 @@ test('wiki builder: template, gallery, places, timeline and storyboard', async (
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await expect(entryPage(page).getByRole('heading', { level: 2, name: 'Roe Deer' })).toBeVisible();
   const roe = (await snapshot(page)).cards.find((c: any) => c.entryKey === 'roe_deer');
-  expect(roe.fields).toMatchObject({ health: 120, kind: 'beast' });
+  expect(roe.fields).toMatchObject({ health: 120, damage_kind: 'slash' });
   await page.goto(`/wiki/${seq}/kind/creature`);
   await expect(page.getByRole('region', { name: 'Creature' }).getByRole('link', { name: /Deer/ })).toHaveCount(3); // two creatures and the template
 
   // 3. Places as a tree with what is found there; history in order by era.
   await page.goto(`/wiki/${seq}`);
-  await page.getByRole('link', { name: /^Places/ }).click();
+  await page.getByRole('navigation', { name: /wiki$/ }).getByRole('link', { name: 'Places', exact: true }).click();
   const tree = page.getByRole('list', { name: 'Place tree' });
   await expect(tree.getByRole('listitem').filter({ hasText: 'North Coast' }).first().getByRole('list').getByRole('link', { name: /Shore/ })).toContainText('Red Deer');
   await page.goto(`/wiki/${seq}/view/timeline`);
@@ -426,7 +439,7 @@ test('wiki builder: template, gallery, places, timeline and storyboard', async (
 
   // 5. The same frames as a flow on the canvas: a picture card each, joined in order; a frame made there joins the storyline.
   await board.getByRole('button', { name: 'Open as a flow' }).click();
-  await expect(page).toHaveURL(/\/vision\/\d+$/);
+  await expect(page).toHaveURL(/\/home\?board=\d+$/);
   const scenes = page.locator('[data-node-type="card"]');
   await expect(scenes).toHaveCount(2);
   await expect(scenes.first()).toContainText('First night');

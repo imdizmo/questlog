@@ -6,7 +6,8 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { WebSocket } from 'ws';
 
-export const SHOTS = `${process.env.HOME}/.cache/gametracker/scratch/shots`;
+/** E2E_SHOTS picks another folder for screenshots (two checkouts on one machine). */
+export const SHOTS = process.env.E2E_SHOTS ?? `${process.env.HOME}/.cache/gametracker/scratch/shots`;
 export const OWNER = { workspace: 'Jatify', name: 'Ada Owner', email: 'ada@example.com', password: 'correct horse battery' };
 
 /**

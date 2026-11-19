@@ -132,7 +132,8 @@ export function WhatLinksHere({ card, projectId, projectSeq }: { card: Card; pro
                   return (
                     <span key={`${it.cardId}-${i}`}>
                       {i > 0 && ' · '}
-                      <Link href={entryPath(projectSeq, from)}>{entryTitle(from)}</Link>{props && ` (${props})`}
+                      {/* Tasks (Mentioned in) open as cards; Lore as wiki pages. */}
+                      <Link href={from.isDoc ? entryPath(projectSeq, from) : cardHref(from, from.deckId ? s.decks.get(from.deckId) : null)}>{entryTitle(from)}</Link>{props && ` (${props})`}
                     </span>
                   );
                 })}

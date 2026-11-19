@@ -261,7 +261,7 @@ describe('wiki types', () => {
     const r = await fail('wiki/createType', { projectId, name: 'Item' }, 403, 'missing_scope', { bearer: read });
     expect(r.data).toEqual({ requiredScope: 'wiki:write' });
     const other = mkProject('Q');
-    const confined = await mkToken({ role: 'producer', projectIds: [other] });
+    const confined = await mkToken({ role: 'producer', projectIds: [other], mayDelete: true });
     const item = (await ok('wiki/createType', { projectId, name: 'Item' })).id;
     const kind = (await ok('wiki/createLinkKind', { projectId, label: 'drops', reverseLabel: 'dropped by', fromTypes: [], toTypes: [] })).id;
     const b = { bearer: confined };

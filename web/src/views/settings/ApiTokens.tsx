@@ -50,7 +50,7 @@ export function ApiTokens() {
                 {t.label} <code className="muted">{t.prefix}…</code>
                 {by && <small className="hint"> {by === 'owner' ? `Owner: ${name(t.userId)}` : `Created by ${name(t.creatorId)}`}</small>}
               </th>
-              <td>{ROLE_LABEL[t.role]}, {t.access === 'write' ? 'read & write' : 'read'}</td>
+              <td>{ROLE_LABEL[t.role]}, {t.access === 'write' ? 'read & write' : 'read'}{t.mayDelete ? ', May delete' : ''}</td>
               <td>{projectNames(t)}</td>
               <td>{day(t.createdAt)}</td>
               <td>{day(t.lastUsedAt) ?? 'Never'}</td>
@@ -119,6 +119,7 @@ function NewToken({ kind, admin, projects, onClose }: { kind: 'org' | 'user'; ad
   const [label, setLabel] = useState('');
   const [role, setRole] = useState<ApiToken['role']>('limited');
   const [access, setAccess] = useState<ApiToken['access']>('read');
+  const [mayDelete, setMayDelete] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [expires, setExpires] = useState('');
   const [busy, setBusy] = useState(false);
@@ -141,6 +142,7 @@ function NewToken({ kind, admin, projects, onClose }: { kind: 'org' | 'user'; ad
     try {
       const r = await dispatch<{ id: string; token: string }>('apiTokens', 'create', {
         kind, label: label.trim(), role, access, projectIds: needsProjects ? [...picked] : [], ...(expiresAt ? { expiresAt } : {}),
+        ...(kind === 'user' && access === 'write' && mayDelete ? { mayDelete: true } : {}),
       });
       setToken(r.token);
     } catch { /* toast shown by dispatch */ } finally {
@@ -175,9 +177,16 @@ function NewToken({ kind, admin, projects, onClose }: { kind: 'org' | 'user'; ad
       <fieldset className="field-set">
         <legend>Access</legend>
         <div className="inline-options">
-          <label className="radio"><input type="radio" name="tok-access" checked={access === 'read'} onChange={() => setAccess('read')} />Read</label>
+          <label className="radio"><input type="radio" name="tok-access" checked={access === 'read'} onChange={() => { setAccess('read'); setMayDelete(false); }} />Read</label>
           <label className="radio"><input type="radio" name="tok-access" checked={access === 'write'} onChange={() => setAccess('write')} />Read &amp; write</label>
         </div>
+        {kind === 'user' && (
+          <label className="check-row">
+            <input type="checkbox" checked={mayDelete} disabled={access !== 'write'} aria-describedby="tok-delete-hint"
+              onChange={(e) => setMayDelete(e.target.checked)} />
+            <span>May delete <small className="hint" id="tok-delete-hint">Lets this token delete through the API and MCP (tasks, lists, milestones, projects, wiki types and links, files…). Without it, the token can't delete anything. Deleted tasks go to Archive and can be restored; most other things are gone for good.{access !== 'write' ? ' Needs Read & write.' : ''}</small></span>
+          </label>
+        )}
       </fieldset>
       {needsProjects && (
         <fieldset className="field-set">

@@ -16,9 +16,8 @@ test('admin sets up user reports, a report arrives as a card, a switched-off tok
   const deckTitle = unique('Inbox');
   await run(page, 'decks', 'create', { title: deckTitle, projectId: project.id, spaceId: 1 });
 
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'User reports (Unity)' }).click();
+  await page.goto('/decks?menu=connections/reportsUnity');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   await settings.getByLabel('Name of the game or app').fill('Star Cave');
   await settings.getByLabel('Create tasks in').selectOption({ label: deckTitle });
   await settings.getByRole('button', { name: 'Continue' }).click();
@@ -39,7 +38,7 @@ test('admin sets up user reports, a report arrives as a card, a switched-off tok
   expect(sent.body.ok).toBe(true);
 
   // The other tab shows the same app, with the HTTP how-to.
-  await settings.getByRole('tab', { name: 'User reports via API' }).click();
+  await settings.getByRole('tab', { name: 'Player reports over the web' }).click();
   await expect(settings.getByRole('heading', { name: 'Send reports over HTTP' })).toBeVisible();
   const enabled = settings.getByRole('switch', { name: 'default enabled' });
   await expect(enabled).toBeChecked();
@@ -47,7 +46,7 @@ test('admin sets up user reports, a report arrives as a card, a switched-off tok
   await expect(enabled).not.toBeChecked();
   await expect.poll(async () => (await sendReport(page, token, 'refused')).status).toBe(403);
 
-  await page.getByRole('button', { name: 'Close' }).first().click();
+  await page.getByRole('button', { name: 'Close', exact: true }).first().click();
   await page.goto('/decks');
   await page.getByText(deckTitle).first().click();
   await expect(page.getByTestId('card-tile').filter({ hasText: content })).toBeVisible();

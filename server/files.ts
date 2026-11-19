@@ -95,7 +95,8 @@ export function sweepFilesDir(db: Db, dir: string): { tmp: number; orphans: numb
   const has = db.prepare('SELECT 1 FROM files WHERE id=?');
   try {
     for (let e = d.readSync(); e; e = d.readSync()) {
-      if (e.isDirectory() && e.name === 'covers') { sweepCoversDir(db, join(dir, 'covers'), out); continue; }
+      if (e.isDirectory() && e.name === 'covers') { sweepSubDir(join(dir, 'covers'), coverKnown(db), out); continue; }
+      if (e.isDirectory() && e.name === 'assets') { sweepSubDir(join(dir, 'assets'), assetKnown(db), out); continue; }
       if (!e.isFile()) continue;
       const tmp = e.name.startsWith('.tmp-');
       if (!tmp && has.get(e.name)) continue;
@@ -107,16 +108,28 @@ export function sweepFilesDir(db: Db, dir: string): { tmp: number; orphans: numb
   return out;
 }
 
-/** Same cleanup for the covers subdirectory (partial uploads and files without a covers row). */
-function sweepCoversDir(db: Db, dir: string, out: { tmp: number; orphans: number }): void {
+/** Whether a name in the covers folder is a cover the database lists. */
+const coverKnown = (db: Db) => {
+  const has = db.prepare('SELECT 1 FROM covers WHERE id=?');
+  return (name: string) => !!has.get(name);
+};
+
+/** Whether a name in the assets folder is an asset's picture or model (server/assets.ts). */
+const assetKnown = (db: Db) => {
+  const pic = db.prepare('SELECT 1 FROM assets WHERE picture_id=?');
+  const model = db.prepare('SELECT 1 FROM assets WHERE model_id=?');
+  return (name: string) => !!pic.get(name) || !!model.get(name);
+};
+
+/** Same cleanup for a subdirectory (covers, assets): partial uploads and files the database does not list. */
+function sweepSubDir(dir: string, known: (name: string) => boolean, out: { tmp: number; orphans: number }): void {
   let d;
   try { d = opendirSync(dir); } catch { return; }
-  const has = db.prepare('SELECT 1 FROM covers WHERE id=?');
   try {
     for (let e = d.readSync(); e; e = d.readSync()) {
       if (!e.isFile()) continue;
       const tmp = e.name.startsWith('.tmp-');
-      if (!tmp && has.get(e.name)) continue;
+      if (!tmp && known(e.name)) continue;
       try { unlinkSync(join(dir, e.name)); out[tmp ? 'tmp' : 'orphans']++; } catch { /* gone already */ }
     }
   } finally {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Card, Deck as DeckRow, DeckType } from '../../../shared/types';
 import { derivedStatus, seqFromCode, titleOf } from '../../../shared/cards';
 import { groupCards, normalizeView, type DeckView, type OrderCtx, type ViewFeatures } from '../../../shared/order';
@@ -33,6 +33,7 @@ import { heroEffort } from '../../../shared/properties';
 import { LatestActivity } from '../components/LatestActivity';
 import { CardView, shortcutTarget } from './Card';
 import { keysOf } from '../shortcuts';
+import { InPane, keysHere, usePageNavigate } from './HomePane';
 
 type Dialogs = 'type' | 'rename' | 'delete' | 'automations' | 'guardians' | 'journey' | null;
 type StepKey = 'todo' | 'started' | 'review' | 'done';
@@ -60,6 +61,7 @@ export function Deck({ seq, cardCode }: { seq: number; cardCode?: string }) {
 }
 
 function DeckPage({ deck, cardCode }: { deck: DeckRow; cardCode?: string }) {
+  const go = usePageNavigate(); // in the pane beside Home, it stays there
   const s = useStore((x) => x);
   const loc = useLocation();
   const project = s.projects.get(deck.projectId);
@@ -156,17 +158,18 @@ function DeckPage({ deck, cardCode }: { deck: DeckRow; cardCode?: string }) {
   // `o` and `t` toggle the Order and Tag panels.
   const panelKeys = useRef({ orderOpen, tagsOpen });
   panelKeys.current = { orderOpen, tagsOpen };
+  const inPane = useContext(InPane);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const panel = e.key === keysOf('deck.order') ? 'sort' : e.key === keysOf('deck.tags') ? 'tags' : null;
-      if (!panel || !shortcutTarget(e)) return;
+      if (!panel || !shortcutTarget(e) || !keysHere(e, inPane)) return;
       e.preventDefault();
       const open = panel === 'sort' ? panelKeys.current.orderOpen : panelKeys.current.tagsOpen;
       setQuery('panel', open ? null : panel);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, []);
+  }, [inPane]);
 
   const titleOfCard = (id: string) => { const p = s.cards.get(id); return p ? titleOf(p.content) : undefined; };
   // Heroes are cards with at least one sub card (the store holds no deleted cards).
@@ -456,7 +459,7 @@ function DeckPage({ deck, cardCode }: { deck: DeckRow; cardCode?: string }) {
       )}
       {dialog === 'delete' && (
         <ConfirmDialog title="Delete list?" confirmLabel="Delete list" danger onClose={() => setDialog(null)}
-          onConfirm={async () => { await dispatch('decks', 'delete', { id: deck.id }); navigate('/decks'); }}>
+          onConfirm={async () => { await dispatch('decks', 'delete', { id: deck.id }); go('/decks'); }}>
           <p>
             <strong>{deck.title}</strong> will be removed. {deleteDeckNote(deckCards.length)}
           </p>

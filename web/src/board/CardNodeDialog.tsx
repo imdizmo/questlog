@@ -21,7 +21,8 @@ async function cardArrived(id: string, ms = 3000) {
  * `onChoose` gets the card id and the caller adds the node.
  */
 export function CardNodeDialog({ host, onChoose, onClose, makeFrame }: {
-  host: Card; onChoose: (cardId: string) => void; onClose: () => void;
+  /** The board's host task (left out of the matches); null on Home. */
+  host: Card | null; onChoose: (cardId: string) => void; onClose: () => void;
   /** On a storyline's board: "Create new" makes a frame (a wiki entry) from a title instead of a task. Returns its card id. */
   makeFrame?: (title: string) => Promise<string>;
 }) {
@@ -51,7 +52,7 @@ export function CardNodeDialog({ host, onChoose, onClose, makeFrame }: {
   );
 }
 
-function FindCard({ host, onChoose }: { host: Card; onChoose: (id: string) => void }) {
+function FindCard({ host, onChoose }: { host: Card | null; onChoose: (id: string) => void }) {
   const s = useStore((x) => x);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -59,11 +60,11 @@ function FindCard({ host, onChoose }: { host: Card; onChoose: (id: string) => vo
   const options = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/^\$/, '');
     return [...s.cards.values()]
-      .filter((c) => c.visibility !== 'deleted' && c.id !== host.id)
+      .filter((c) => c.visibility !== 'deleted' && c.id !== host?.id)
       .filter((c) => !q || titleOf(c.content).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q))
       .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
       .slice(0, LIMIT);
-  }, [s.cards, query, host.id]);
+  }, [s.cards, query, host?.id]);
 
   useEffect(() => { setActive(0); }, [query]);
   useEffect(() => { document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: 'nearest' }); }, [active, listId]);
@@ -105,7 +106,7 @@ function FindCard({ host, onChoose }: { host: Card; onChoose: (id: string) => vo
   );
 }
 
-function CreateCard({ host, onChoose, makeFrame }: { host: Card; onChoose: (id: string) => void; makeFrame?: (title: string) => Promise<string> }) {
+function CreateCard({ host, onChoose, makeFrame }: { host: Card | null; onChoose: (id: string) => void; makeFrame?: (title: string) => Promise<string> }) {
   const s = useStore((x) => x);
   const decks = useMemo(() => [...s.decks.values()]
     .filter((d) => {
@@ -115,7 +116,7 @@ function CreateCard({ host, onChoose, makeFrame }: { host: Card; onChoose: (id: 
     .sort((a, b) => a.projectId.localeCompare(b.projectId) || a.sortIndex - b.sortIndex || a.seq - b.seq)
     .map((d) => ({ d, label: `${s.projects.get(d.projectId)!.name} – ${d.title}` })), [s]);
   // The host card's deck by default; the first deck that accepts cards when the host's does not.
-  const [deckId, setDeckId] = useState(() => (host.deckId && decks.some(({ d }) => d.id === host.deckId) ? host.deckId : decks[0]?.d.id ?? ''));
+  const [deckId, setDeckId] = useState(() => (host?.deckId && decks.some(({ d }) => d.id === host.deckId) ? host.deckId : decks[0]?.d.id ?? ''));
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

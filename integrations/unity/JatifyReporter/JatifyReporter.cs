@@ -40,7 +40,7 @@ namespace Jatify.Reporter
         [Tooltip("Address of the tracker, e.g. http://10.0.0.20:8780 (no trailing path).")]
         public string serverUrl = "";
 
-        [Tooltip("A report token from Workspace settings → User reports. Its name becomes a tag on the reports.")]
+        [Tooltip("A report token from the workspace menu (top left) → Connections → Player reports from Unity. Its name becomes a tag on the reports.")]
         public string reportToken = "";
 
         [Tooltip("Seconds before a request is given up.")]

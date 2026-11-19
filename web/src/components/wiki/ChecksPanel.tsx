@@ -30,8 +30,9 @@ export function ChecksBadge({ project }: { project: Project }) {
 const CODE_TEXT: Record<string, string> = {
   wrong_kind: 'not the right kind of value', below_min: 'below the minimum', above_max: 'above the maximum',
   not_an_option: 'not one of the options', broken_ref: 'points at missing lore', wrong_type_ref: 'points at lore of the wrong type',
+  not_ascending: 'numbers of a key must go up', too_large: 'too large',
 };
-const readable = (detail: string) => detail.replace(/: (wrong_kind|below_min|above_max|not_an_option|broken_ref|wrong_type_ref)$/, (_, c: string) => `: ${CODE_TEXT[c]}`);
+const readable = (detail: string) => detail.replace(/: (wrong_kind|below_min|above_max|not_an_option|broken_ref|wrong_type_ref|not_ascending|too_large)$/, (_, c: string) => `: ${CODE_TEXT[c]}`);
 
 /** The project's failing checks (the first CHECKS_LIMIT), grouped by problem; each names its entry and links to it. */
 export function ChecksPanel({ project, checks: result, onClose }: { project: Project; checks: ChecksResult; onClose: () => void }) {

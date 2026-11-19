@@ -1,5 +1,7 @@
 /**
- * Outbound HTTP: the only way the server calls other hosts (Stripe, Discord, Slack, HacknPlan).
+ * Outbound HTTP: the only way the server calls other hosts (Stripe, Discord, Slack, HacknPlan). The one exception is
+ * the desktop server's suggestion forward (server/suggestions.ts): plain http to the team's own library service, on a
+ * private or Tailscale address only, at an address the desktop app gave it (never one from a request).
  *
  * - The allow-list (ALLOWED_HOSTS) is fixed in code. A URL is refused unless it is https, on the default port, without
  *   user info, and its host is exactly one of the list (no subdomains, no IP addresses).

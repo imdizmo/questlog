@@ -52,8 +52,8 @@ export function newTokenSecret(kind: 'org' | 'user'): { token: string; hash: str
 
 /** Client shape of a token row: never the hash. */
 export function apiTokenRow(r: Record<string, unknown>): ApiToken {
-  const { tokenHash: _h, projectIds, ...rest } = toCamel<Record<string, unknown>>(r);
-  return { ...rest, projectIds: JSON.parse(String(projectIds ?? '[]')) } as ApiToken;
+  const { tokenHash: _h, projectIds, mayDelete, ...rest } = toCamel<Record<string, unknown>>(r);
+  return { ...rest, mayDelete: !!mayDelete, projectIds: JSON.parse(String(projectIds ?? '[]')) } as ApiToken;
 }
 
 /**
@@ -99,6 +99,28 @@ export function tokenActor(db: Db, token: string): Actor {
     tokenRole: role,
     tokenId: row.id as string,
   };
+}
+
+/**
+ * Whether a token was created with "May delete" (reported by MCP get_context; the rule itself is tokenCanDelete).
+ * False for unknown tokens and for every token made before the option existed.
+ */
+export function tokenMayDelete(db: Db, tokenId: string | null): boolean {
+  if (!tokenId) return false;
+  const r = db.prepare('SELECT may_delete m FROM api_tokens WHERE id=?').get(tokenId) as { m: number } | undefined;
+  return r?.m === 1;
+}
+
+/**
+ * The one "May delete" rule (dispatch.ts assertTokenMayDelete for every deleting command, mcp.ts for its delete
+ * tools): a personal token deletes only when created with "May delete". Sessions and the system always pass; org
+ * (integration) tokens are not affected and delete as their role and access allow.
+ */
+export function tokenCanDelete(db: Db, actor: Pick<Actor, 'via' | 'tokenId'>): boolean {
+  if (actor.via !== 'token') return true;
+  const r = actor.tokenId ? db.prepare('SELECT kind, may_delete m FROM api_tokens WHERE id=?').get(actor.tokenId) as { kind: string; m: number } | undefined : undefined;
+  if (!r) return false;
+  return r.kind === 'org' || r.m === 1;
 }
 
 /**

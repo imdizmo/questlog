@@ -24,6 +24,8 @@ const createSchema = z.object({
   access: z.enum(['read', 'write']),
   projectIds: z.array(z.string()).max(500),
   expiresAt: z.number().int().nullable().optional(),
+  /** MCP may delete tasks, lists and milestones: personal write tokens only (MCP takes personal tokens only). */
+  mayDelete: z.boolean().optional(),
 });
 
 export const apiTokenCommands: Record<string, Command> = {
@@ -44,6 +46,7 @@ export const apiTokenCommands: Record<string, Command> = {
         const acc = db.prepare('SELECT user_api_tokens_enabled e FROM account').get() as { e: number } | undefined;
         if (!acc?.e) throw new AppError(403, 'user_api_tokens_disabled');
       }
+      if (input.mayDelete && (input.kind !== 'user' || input.access !== 'write')) throw new AppError(400, 'invalid_payload', { field: 'mayDelete' });
       if (input.expiresAt != null && input.expiresAt <= t) throw new AppError(400, 'invalid_payload', { field: 'expiresAt' });
       // Admin-role tokens are not confined to projects; the others need at least one project their creator can see.
       const projectIds = input.role === 'admin' ? [] : [...new Set(input.projectIds)];
@@ -73,9 +76,9 @@ export const apiTokenCommands: Record<string, Command> = {
       }
       const id = newId();
       const secret = newTokenSecret(input.kind);
-      db.prepare(`INSERT INTO api_tokens (id,kind,label,token_hash,prefix,role,access,project_ids,user_id,creator_id,created_at,expires_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(id, input.kind, input.label, secret.hash, secret.prefix, input.role, input.access, JSON.stringify(projectIds), userId, actor.id, t, input.expiresAt ?? null);
+      db.prepare(`INSERT INTO api_tokens (id,kind,label,token_hash,prefix,role,access,project_ids,user_id,creator_id,created_at,expires_at,may_delete)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, input.kind, input.label, secret.hash, secret.prefix, input.role, input.access, JSON.stringify(projectIds), userId, actor.id, t, input.expiresAt ?? null, input.mayDelete ? 1 : 0);
       ctx.emit('apiToken', 'upsert', apiTokenRow(tokenRow(ctx, id)!));
       return { id, token: secret.token };
     },

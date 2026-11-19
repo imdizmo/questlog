@@ -95,6 +95,29 @@ describe('API tokens', () => {
     expect(listed).not.toHaveProperty('tokenHash');
   });
 
+  it('"May delete": off by default, chosen at creation for personal write tokens only, listed with the token', async () => {
+    const owner = mkUser('owner');
+    const cookie = cookieFor(owner);
+    const plain = await mkToken(cookie, { label: 'Plain' });
+    const del = await mkToken(cookie, { label: 'Deleter', mayDelete: true });
+    const flag = (id: string) => (db.prepare('SELECT may_delete m FROM api_tokens WHERE id=?').get(id) as { m: number }).m;
+    expect([flag(plain.id), flag(del.id)]).toEqual([0, 1]);
+    const listed = (await snapshot({ cookie })).json().apiTokens as { id: string; mayDelete: boolean }[];
+    expect(Object.fromEntries(listed.map((t) => [t.id, t.mayDelete]))).toEqual({ [plain.id]: false, [del.id]: true });
+    // A read token, or an org token (MCP takes personal tokens only), cannot have it.
+    for (const input of [{ access: 'read' }, { kind: 'org' }]) {
+      const r = await send({ cookie }, 'apiTokens/create', { kind: 'user', label: 'x', role: 'admin', access: 'write', projectIds: [], mayDelete: true, ...input });
+      expect(r.statusCode, JSON.stringify(input)).toBe(400);
+      expect(r.json().data).toEqual({ field: 'mayDelete' });
+    }
+    // The command API needs it too (tests/token-deletes.test.ts has every deleting command).
+    const card = mkCard(mkDeck(mkProject()), owner);
+    const r = await send({ bearer: plain.token }, 'cards/update', { id: card, visibility: 'deleted' });
+    expect(r.statusCode, r.body).toBe(403);
+    expect(r.json().error).toBe('token_cannot_delete');
+    expect((await send({ bearer: del.token }, 'cards/update', { id: card, visibility: 'deleted' })).statusCode).toBe(200);
+  });
+
   it('bearer read token can query but dispatch → 403 missing_scope requiredScope tasks:write', async () => {
     const owner = mkUser('owner');
     const p = mkProject();
@@ -364,8 +387,9 @@ describe('token confinement on workspace-wide and own-row commands', () => {
     const b = mkProject('full', 'B');
     const da = mkDeck(a);
     const dbk = mkDeck(b);
-    const confined = await mkToken(cookie, { role: 'producer', access: 'write', projectIds: [a] });
-    const admin = await mkToken(cookie, { role: 'admin', access: 'write' });
+    // "May delete", so the deletes below test confinement, not the flag.
+    const confined = await mkToken(cookie, { role: 'producer', access: 'write', projectIds: [a], mayDelete: true });
+    const admin = await mkToken(cookie, { role: 'admin', access: 'write', mayDelete: true });
     return { owner, cookie, a, b, da, dbk, confined: confined.token, admin: admin.token };
   }
 
@@ -462,7 +486,7 @@ describe('token confinement on workspace-wide and own-row commands', () => {
     // Reviewed as token-safe: each command checks its own rights through can()/canSeeCard. A new namespace must be
     // added here (or to TOKEN_DENIED_NAMESPACES) after the same review.
     const allowed = new Set(['users', 'accounts', 'cards', 'decks', 'handQueue', 'bookmarks', 'journeys', 'milestones', 'milestoneZones',
-      'presets', 'projects', 'missionControl', 'resolvables', 'search', 'sprints', 'timeTracking', 'visionBoard', 'watchings', 'wiki']);
+      'presets', 'projects', 'missionControl', 'resolvables', 'search', 'sprints', 'timeTracking', 'visionBoard', 'watchings', 'wiki', 'assets']);
     const unclassified = [...new Set(Object.keys(registry).map((k) => k.split('/')[0]))]
       .filter((ns) => !allowed.has(ns) && !TOKEN_DENIED_NAMESPACES.has(ns));
     expect(unclassified).toEqual([]);

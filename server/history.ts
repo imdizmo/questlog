@@ -7,10 +7,11 @@ export const SYSTEM_ID = 'system';
 /**
  * One card_history row per command; bumps cards.version and last_updated_at.
  * Central place for "any user write clears the stale snooze": every non-system write that reaches here
- * clears snoozed_at (adding an 'unsnoozed' row unless the write was itself a status change).
+ * clears snoozed_at (adding an 'unsnoozed' row unless the write was itself a status change). `keepSnooze`: a write that
+ * is no sign of activity on the card (a link turned off in its text) leaves the snooze alone.
  */
-export function recordHistory(db: Db, cardId: string, changerId: string, changes: HistoryChange[]): number {
-  if (changes.length > 0 && changerId !== SYSTEM_ID) {
+export function recordHistory(db: Db, cardId: string, changerId: string, changes: HistoryChange[], opts: { keepSnooze?: boolean } = {}): number {
+  if (changes.length > 0 && changerId !== SYSTEM_ID && !opts.keepSnooze) {
     const r = db.prepare('UPDATE cards SET snoozed_at=NULL WHERE id=? AND snoozed_at IS NOT NULL').run(cardId);
     if (r.changes && !changes.some((c) => c.kind === 'status')) changes = [...changes, { kind: 'unsnoozed' }];
   }

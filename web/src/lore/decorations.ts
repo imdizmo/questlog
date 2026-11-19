@@ -1,6 +1,10 @@
-import { ChangeSet, EditorState, type Extension, type Range, type Transaction, type TransactionSpec } from '@codemirror/state';
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
+import { ChangeSet, EditorState, StateEffect, StateField, type Extension, type Range, type Transaction, type TransactionSpec } from '@codemirror/state';
+import {
+  closeHoverTooltips, Decoration, type DecorationSet, EditorView, hoverTooltip, keymap, showTooltip, type Tooltip, ViewPlugin, type ViewUpdate, WidgetType,
+} from '@codemirror/view';
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
+import { findMentions, type Mention, type NameIndex } from '../../../shared/autolink';
+import { openModifier } from '../linkIgnores';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { html } from '@codemirror/lang-html';
 import { seqFromCode } from '../../../shared/cards';
@@ -30,12 +34,39 @@ export interface LoreDecoration {
     | 'chip-code'
     | 'chip-mention'
     | 'chip-tag'
-    | 'image';
+    | 'image'
+    | 'name';
   /** checkbox: ticked. */
   checked?: boolean;
-  /** chip-*: the token's name without its sigil; image: the file URL. */
+  /** chip-*: the token's name without its sigil; image: the file URL; name: the entry's card id. */
   ref?: string;
+  /** name: the name as indexed (what "Not a link here" stores). */
+  name?: string;
 }
+
+/**
+ * Wiki entry names recognised in the text (shared/autolink), as the editor gets them from the store. Swapped with
+ * setLoreNames when the campaign's index or the card's ignores change; the decorations follow at once.
+ */
+export interface LoreNames {
+  index: NameIndex;
+  /** The card being edited: its own names are never marked. */
+  selfId: string | null;
+  ignores: readonly string[];
+  title(cardId: string): string | null;
+  /** Opens the entry (Ctrl/⌘-click, the popover's Open). */
+  open(cardId: string): void;
+  /** "Not a link here" for this text; null when the text has no card yet. */
+  ignore: ((name: string) => void) | null;
+}
+export const setLoreNames = StateEffect.define<LoreNames | null>();
+export const loreNamesField = StateField.define<LoreNames | null>({
+  create: () => null,
+  update(v, tr) {
+    for (const e of tr.effects) if (e.is(setLoreNames)) v = e.value;
+    return v;
+  },
+});
 
 /**
  * The line break a document is edited with: "\r\n" when every line break in `text` is CRLF,
@@ -281,7 +312,61 @@ export function loreDecorations(state: EditorState, visible?: readonly { from: n
     }
   }
 
+  // Entry names: each visible range widened to whole lines (a name may wrap onto the next line), matched once, then
+  // kept only outside what the syntax tree shows raw (code, HTML, URLs) and outside links.
+  const names = state.field(loreNamesField, false);
+  if (names && names.index.size > 0) {
+    // Not on the title line (the card's own name; the reader never links it either).
+    let done = firstLine.to;
+    for (const range of ranges) {
+      const from = Math.max(doc.lineAt(range.from).from, done);
+      const to = doc.lineAt(range.to).to;
+      if (from >= to) continue;
+      done = to;
+      const text = doc.sliceString(from, to);
+      for (const m of findMentions(text, names.index, { ignores: names.ignores, selfId: names.selfId })) {
+        const a = from + m.from, b = from + m.to;
+        if (a < firstLine.to || overlaps(raw, a, b) || overlaps(links, a, b)) continue;
+        add({ from: a, to: b, kind: 'name', ref: m.cardId, name: m.name });
+      }
+    }
+  }
+
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
+}
+
+const overlaps = (list: readonly { from: number; to: number }[], from: number, to: number) => list.some((r) => r.from < to && r.to > from);
+
+/** Syntax nodes no name is recognised in: what loreDecorations collects as raw (RAW, inline code, images) and links. */
+const NO_NAMES = new Set([...RAW, 'InlineCode', 'Image', 'Link']);
+/** True when [from, to) overlaps such a node: the same overlap test the decorations apply. */
+function overlapsUnlinkable(state: EditorState, from: number, to: number): boolean {
+  let hit = false;
+  syntaxTree(state).iterate({
+    from, to,
+    enter: (n) => {
+      if (hit) return false;
+      if (NO_NAMES.has(n.name) && n.from < to && n.to > from) { hit = true; return false; }
+      return undefined;
+    },
+  });
+  return hit;
+}
+
+/** The recognised name at `pos` (its line and the ones around it are matched), or null. */
+export function nameAt(state: EditorState, pos: number): Mention | null {
+  const names = state.field(loreNamesField, false);
+  if (!names || names.index.size === 0) return null;
+  const doc = state.doc;
+  const line = doc.lineAt(pos);
+  const from = line.number > 1 ? doc.line(line.number - 1).from : line.from;
+  const to = line.number < doc.lines ? doc.line(line.number + 1).to : line.to;
+  const text = doc.sliceString(from, to);
+  for (const m of findMentions(text, names.index, { ignores: names.ignores, selfId: names.selfId })) {
+    const a = from + m.from, b = from + m.to;
+    if (a <= pos && pos <= b) return a < doc.line(1).to || overlapsUnlinkable(state, a, b) ? null : { ...m, from: a, to: b };
+  }
+  return null;
 }
 
 class BulletWidget extends WidgetType {
@@ -364,6 +449,109 @@ class ImageWidget extends WidgetType {
   }
 }
 
+/**
+ * The small popover of a recognised name: Open, and "Not a link here" when the text has a card. Buttons keep the
+ * editor's selection on mouse down; Esc closes it and returns to the text.
+ */
+function namePopover(view: EditorView, m: Mention, close: () => void): HTMLElement {
+  const names = view.state.field(loreNamesField, false);
+  const title = names?.title(m.cardId) ?? m.name;
+  const el = document.createElement('div');
+  el.className = 'lore-name-pop';
+  el.setAttribute('role', 'group');
+  el.setAttribute('aria-label', `Link to ${title}`);
+  el.dataset.testid = 'name-popover';
+  const label = document.createElement('span');
+  label.className = 'lore-name-pop-title';
+  label.textContent = title;
+  el.append(label);
+  const button = (text: string, hint: string, run: () => void) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-ghost btn-sm';
+    b.textContent = text;
+    b.title = hint;
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', (e) => { e.preventDefault(); run(); });
+    el.append(b);
+    return b;
+  };
+  button('Open', 'Opens the entry in a new tab (Ctrl/⌘-click the name does too)', () => { close(); names?.open(m.cardId); });
+  const ignore = names?.ignore;
+  if (ignore) button('Not a link here', `Stops linking "${m.name}" in this text`, () => { close(); view.focus(); ignore(m.name); });
+  // Focus leaving the popover (Tab past its last button, a click elsewhere) closes it; checked after the move settles,
+  // never inside an editor update.
+  el.addEventListener('focusout', () => {
+    setTimeout(() => { if (el.isConnected && !el.contains(document.activeElement)) close(); }, 0);
+  });
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+    view.focus();
+  });
+  return el;
+}
+
+/** The popover opened from the keyboard (Alt+Enter on a name), until the text or the selection changes. */
+const showNamePop = StateEffect.define<Mention | null>();
+const namePopField = StateField.define<Tooltip | null>({
+  create: () => null,
+  update(v, tr) {
+    for (const e of tr.effects) {
+      if (!e.is(showNamePop)) continue;
+      const m = e.value;
+      v = m && {
+        pos: m.from, end: m.to, above: false,
+        create: (view) => ({
+          dom: namePopover(view, m, () => view.dispatch({ effects: showNamePop.of(null) })),
+          // From the keyboard, focus goes to the first action.
+          mount: () => (view.dom.querySelector('.lore-name-pop button') as HTMLButtonElement | null)?.focus(),
+        }),
+      };
+      return v;
+    }
+    return v && (tr.docChanged || tr.selection) ? null : v;
+  },
+  provide: (f) => showTooltip.from(f),
+});
+
+/** Alt+Enter on a recognised name opens its popover. */
+export function openNamePopover(view: EditorView): boolean {
+  const m = nameAt(view.state, view.state.selection.main.head);
+  if (!m) return false;
+  view.dispatch({ effects: [closeHoverTooltips, showNamePop.of(m)] });
+  return true;
+}
+
+/** Ctrl/⌘-click on a name opens the entry; hovering it a moment shows the popover; Alt+Enter shows it from the keyboard. */
+function nameInteractions(): Extension {
+  return [
+    namePopField,
+    keymap.of([{ key: 'Alt-Enter', run: openNamePopover }]),
+    EditorView.domEventHandlers({
+      mousedown(e, view) {
+        if (!openModifier(e) || e.button !== 0) return false;
+        const id = (e.target as HTMLElement | null)?.closest?.('[data-entry]')?.getAttribute('data-entry');
+        const names = view.state.field(loreNamesField, false);
+        if (!id || !names) return false;
+        e.preventDefault();
+        names.open(id);
+        return true;
+      },
+    }),
+    hoverTooltip((view, pos) => {
+      const m = nameAt(view.state, pos);
+      if (!m || view.state.field(namePopField)) return null;
+      return {
+        pos: m.from, end: m.to, above: false,
+        create: (v) => ({ dom: namePopover(v, m, () => v.dispatch({ effects: closeHoverTooltips })) }),
+      };
+    }, { hoverTime: 400 }),
+  ];
+}
+
 const LINE_CLASS = { title: 'lore-title', h1: 'lore-h1', h2: 'lore-h2', h3: 'lore-h3', quote: 'lore-quote' } as const;
 const MARK_CLASS = { bold: 'lore-bold', italic: 'lore-italic', code: 'lore-code' } as const;
 const hidden = Decoration.replace({});
@@ -403,6 +591,9 @@ function toDecorations(view: EditorView): DecorationSet {
       case 'chip-tag':
         out.push(Decoration.replace({ widget: new ChipWidget(d.kind, state.sliceDoc(d.from, d.to)) }).range(d.from, d.to));
         break;
+      case 'name':
+        out.push(Decoration.mark({ class: 'entry-link lore-name', attributes: { 'data-entry': d.ref ?? '' } }).range(d.from, d.to));
+        break;
       case 'image': {
         const alt = /^!\[([^\]]*)\]/.exec(state.sliceDoc(d.from, d.to))?.[1] ?? '';
         out.push(Decoration.replace({ widget: new ImageWidget(d.ref ?? '', alt) }).range(d.from, d.to));
@@ -413,20 +604,24 @@ function toDecorations(view: EditorView): DecorationSet {
   return Decoration.set(out, true);
 }
 
-/** The decorations as CodeMirror sees them, recomputed when the text, selection, viewport or parse changes. */
+/**
+ * The decorations as CodeMirror sees them, recomputed when the text, selection, viewport, parse or the recognised names
+ * (loreNamesField) change; with the names' Ctrl/⌘-click, hover popover and Alt+Enter.
+ */
 export function loreDecorationsExtension(): Extension {
-  return ViewPlugin.fromClass(
+  return [nameInteractions(), ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
       constructor(view: EditorView) {
         this.decorations = toDecorations(view);
       }
       update(u: ViewUpdate) {
-        if (u.docChanged || u.selectionSet || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state)) {
+        if (u.docChanged || u.selectionSet || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state)
+          || u.startState.field(loreNamesField, false) !== u.state.field(loreNamesField, false)) {
           this.decorations = toDecorations(u.view);
         }
       }
     },
     { decorations: (v) => v.decorations },
-  );
+  )];
 }

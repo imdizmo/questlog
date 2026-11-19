@@ -11,6 +11,7 @@ import { stopCardTimers } from './timers';
 import { accountRow, cardLinkRefs, cardLinkRows, cardRow, deckRow, handCardRow, projectRow } from './rows';
 import { allowedActions, titleOf } from '../../shared/cards';
 import { parseContent } from '../../shared/content';
+import { LINK_IGNORE_LIMITS, cleanName, nameKey } from '../../shared/autolink';
 import { normalizeTagName } from '../../shared/csv';
 import { isPastDate } from '../../shared/properties';
 import { now as clockNow } from '../auth';
@@ -712,6 +713,14 @@ const bulkImportSchema = z.object({
   })).min(1).max(2000),
 });
 
+const linkIgnoreSchema = z.object({ cardId: z.string(), name: z.string().max(1000) });
+function setLinkIgnores(ctx: Ctx, card: any, next: string[]): { linkIgnores: string[] } {
+  ctx.db.prepare('UPDATE cards SET link_ignores_json=? WHERE id=?').run(JSON.stringify(next), card.id);
+  recordHistory(ctx.db, card.id, ctx.actor.id, [{ kind: 'linkIgnores', from: card.linkIgnores, to: next }], { keepSnooze: true });
+  emitCard(ctx, card.id);
+  return { linkIgnores: next };
+}
+
 export const cardCommands: Record<string, Command> = {
   'cards/create': {
     schema: createSchema,
@@ -770,14 +779,49 @@ export const cardCommands: Record<string, Command> = {
       milestoneZoneId: z.string().nullable().optional(),
       sprintId: z.string().nullable().optional(),
     }),
+    deletes: (input) => input.visibility === 'deleted',
     run(ctx, input) {
       const { id, ...patch } = input;
       applyCardUpdate(ctx, loadCard(ctx, id), patch);
     },
   },
 
+  /**
+   * "Not a link here": the card's text stops linking this name (an entry name or alias; compared case-insensitively).
+   * Idempotent; 409 limit over LINK_IGNORE_LIMITS.perCard. Returns the card's ignores.
+   */
+  'cards/addLinkIgnore': {
+    schema: linkIgnoreSchema,
+    run(ctx, input) {
+      const card = loadCard(ctx, input.cardId);
+      assertNotDeleted(card);
+      const old = card.linkIgnores as string[];
+      const name = cleanName(input.name);
+      if (!name || [...name].length > LINK_IGNORE_LIMITS.chars) throw new AppError(400, 'invalid_payload', { field: 'name', maxChars: LINK_IGNORE_LIMITS.chars });
+      const key = nameKey(name);
+      if (old.some((x) => nameKey(x) === key)) return { linkIgnores: old };
+      if (old.length >= LINK_IGNORE_LIMITS.perCard) throw new AppError(409, 'limit', { max: LINK_IGNORE_LIMITS.perCard });
+      return setLinkIgnores(ctx, card, [...old, name]);
+    },
+  },
+  /** The card's text links this name again (undoes cards/addLinkIgnore). Idempotent. Returns the card's ignores. */
+  'cards/removeLinkIgnore': {
+    schema: linkIgnoreSchema,
+    run(ctx, input) {
+      const card = loadCard(ctx, input.cardId);
+      assertNotDeleted(card);
+      const old = card.linkIgnores as string[];
+      const key = nameKey(input.name);
+      const next = old.filter((x) => nameKey(x) !== key);
+      if (next.length === old.length) return { linkIgnores: old };
+      return setLinkIgnores(ctx, card, next);
+    },
+  },
+
   'cards/removeFile': {
     schema: z.object({ fileId: z.string() }),
+    // The attachment's file is removed from disk: it cannot be restored.
+    deletes: true,
     run(ctx, { fileId }) {
       const { db } = ctx;
       const f = fileRow(db, fileId);
@@ -825,6 +869,7 @@ export const cardCommands: Record<string, Command> = {
       addMasterTags: tagNamesSchema.optional(),
       removeMasterTags: tagNamesSchema.optional(),
     }).refine(({ ids, ...rest }) => Object.values(rest).some((v) => v !== undefined), 'at least one change is required'),
+    deletes: (input) => input.visibility === 'deleted',
     run(ctx, input) {
       // All or nothing: the first card that fails throws, and the dispatch transaction rolls everything back.
       const { ids, addMasterTags, removeMasterTags, ...patch } = input;

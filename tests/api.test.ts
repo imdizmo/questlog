@@ -65,14 +65,14 @@ async function world() {
 
 describe('api', () => {
   it('setup flow', async () => {
-    expect((await get('/api/status')).json()).toEqual({ setup: false, disabled: false });
+    expect((await get('/api/status')).json()).toMatchObject({ setup: false, disabled: false });
     const r = await post('/api/setup', SETUP);
     expect(r.statusCode).toBe(200);
     const set = r.headers['set-cookie'] as string[];
     expect(set.some((c) => c.startsWith('jt_session=') && /HttpOnly/i.test(c) && /SameSite=Lax/i.test(c) && !/Secure/i.test(c))).toBe(true);
     expect(set.some((c) => c.startsWith('jt_device=') && /Max-Age=31536000/.test(c))).toBe(true);
     expect(JSON.stringify(r.json())).not.toMatch(/password/i);
-    expect((await get('/api/status')).json()).toEqual({ setup: true, disabled: false });
+    expect((await get('/api/status')).json()).toMatchObject({ setup: true, disabled: false });
     expect((await post('/api/setup', SETUP)).statusCode).toBe(409);
     const cookie = cookieOf(r);
     const snap = (await get('/api/snapshot', cookie)).json();

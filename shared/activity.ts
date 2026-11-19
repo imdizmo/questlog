@@ -129,6 +129,8 @@ function fragment(c: HistoryChange, card: string, l: ActivityLookup): string {
     case 'commit': return `${card} referenced in commit ${commitLabel(to)}`;
     case 'file': return typeof to === 'string' ? `${card} attached ${to}` : `${card} removed ${String(c.from)}`;
     case 'entry': return `${card} lore fields changed`;
+    case 'aliases': return `${card} aliases changed`;
+    case 'linkIgnores': return `${card} links changed`;
     default: return `${card} changed`;
   }
 }

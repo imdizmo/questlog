@@ -36,7 +36,20 @@ export const boardOfCard = (s: State, cardId: string): VisionBoard | undefined =
 export const boardBySeq = (s: State, seq: number): VisionBoard | undefined =>
   [...s.visionBoards.values()].find((b) => b.accountSeq === seq);
 
-export const boardPath = (seq: number) => `/vision/${seq}`;
+/** A card board opens on Home, picked in its Boards toolbar. */
+export const boardPath = (seq: number) => `/home?board=${seq}`;
+
+/**
+ * Where an old link leads now that the Vision board page is gone: `/vision/<seq>` to Home with that board picked,
+ * `/vision` to `fallback` (the last opened board, or Home). Its other query parameters (`tree`, `story`) are kept.
+ */
+export function oldBoardUrl(seq: number | null, query: URLSearchParams, fallback = '/home'): string {
+  const head = seq ? boardPath(seq) : fallback;
+  const q = new URLSearchParams(query);
+  q.delete('board');
+  const rest = q.toString();
+  return rest ? `${head}${head.includes('?') ? '&' : '?'}${rest}` : head;
+}
 
 export const STATE_LABEL: Record<BoardState, string> = { default: 'Default', read_only: 'Read only', locked: 'Locked' };
 export const STATE_HINT: Record<BoardState, string> = {
@@ -79,10 +92,10 @@ export function forgetBoard(seq: number) {
   write(RECENT_KEY, JSON.stringify(recentBoardSeqs().filter((n) => n !== seq)));
 }
 
-/** Where the Vision link and Shift+4 go: the last opened board if it still exists, else /vision (which picks one). */
+/** Where the Workspace menu's "Vision boards" goes: the last opened board on Home if it still exists, else Home. */
 export function visionHref(s: State = store.get()): string {
   const seq = lastBoardSeq();
-  return seq !== null && boardBySeq(s, seq) ? boardPath(seq) : '/vision';
+  return seq !== null && boardBySeq(s, seq) ? boardPath(seq) : '/home';
 }
 
 /** Creates the board of a card and returns its seq. The row is added locally so the page can open before the live push. */
@@ -124,6 +137,17 @@ export function hostProject(s: State, hostId: string): string | null {
 }
 
 export const OTHER_PROJECT = 'A board can only show the project it belongs to.';
+
+export const HOME_CARD_REFUSED = 'Home is shared with the whole workspace: only tasks of projects every member sees can go on it.';
+
+/**
+ * Whether a task may go on Home as a card node: Home's doc goes to everyone in the workspace, so only a task of a
+ * project every member sees (visibility 'full', server/permissions.ts canView), never a deckless or limited one.
+ */
+export function homeCardAllowed(s: State, cardId: string): boolean {
+  const c = s.cards.get(cardId), d = c?.deckId ? s.decks.get(c.deckId) : undefined, p = d ? s.projects.get(d.projectId) : undefined;
+  return p?.visibility === 'full';
+}
 
 /** Why "Add project" / "Arrange as frames" may not show `projectId` on the board hosted by `hostId`, or null. */
 export function refuseProject(s: State, hostId: string, projectId: string): string | null {
@@ -178,5 +202,5 @@ export async function createProjectBoard(projectId: string): Promise<string> {
   const made = await dispatch<{ id: string }>('cards', 'create', { deckId: deck.id, content, isDoc: true })
     .catch(() => dispatch<{ id: string }>('cards', 'create', { deckId: deck.id, content })); // a list that takes no lore gets a plain task
   const seq = await createBoard({ id: made.id } as Card);
-  return `${boardPath(seq)}?tree=${encodeURIComponent(projectId)}`;
+  return `${boardPath(seq)}&tree=${encodeURIComponent(projectId)}`;
 }

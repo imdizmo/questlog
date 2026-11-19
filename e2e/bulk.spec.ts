@@ -65,7 +65,7 @@ test('group select, bulk delete with confirm, navigating away clears', async ({ 
 
 test('observer sees no Select buttons', async ({ page, browser }) => {
   const { name, deckPath } = await seed(page);
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Members' }).click();
   const members = page.getByRole('dialog', { name: 'Members' });
   await members.getByRole('button', { name: 'Invite people' }).click();

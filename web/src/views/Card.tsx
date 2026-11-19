@@ -1,5 +1,6 @@
 import { taskId } from '../taskId';
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { dropDraft, getDraft, keepDraft } from '../drafts';
+import { useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { Card, Deck, Reaction, Resolvable, ResolvableContext, ResolvableEntry } from '../../../shared/types';
 import { InlineTitle } from '../components/InlineTitle';
 import { allowedActions, cardCode, derivedStatus, seqFromCode, STATUS_LABEL, titleOf } from '../../../shared/cards';
@@ -34,6 +35,7 @@ import { childrenOf, subCountLabel, unfinishedLockers } from '../relations';
 import { boardOfCard, boardPath, createBoard } from '../board/boards';
 import { entryPath } from '../wiki';
 import { WorksOnRow } from '../components/wiki/LinksSection';
+import { InPane, keysHere } from './HomePane';
 
 type SideTab = 'conversations' | 'history' | 'properties' | 'subcards' | 'attachments';
 const SIDE_TABS: SideTab[] = ['conversations', 'history', 'properties', 'subcards', 'attachments'];
@@ -133,10 +135,11 @@ function CardBody({ card, deck, remote, inDeck }: { card: Card; deck: Deck | nul
   const setTab = (t: SideTab) => { setTabState(t); writeSideTab(t); };
 
   // `z` opens and closes the Properties tab, `s` the Sub cards tab.
+  const inPane = useContext(InPane);
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const want = TAB_KEYS[e.key];
-      if (!want || !shortcutTarget(e)) return;
+      if (!want || !shortcutTarget(e) || !keysHere(e, inPane)) return;
       e.preventDefault();
       setTabState((cur) => {
         const next = cur === want && want !== 'conversations' ? 'conversations' : want;
@@ -146,7 +149,7 @@ function CardBody({ card, deck, remote, inDeck }: { card: Card; deck: Deck | nul
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, []);
+  }, [inPane]);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
@@ -157,7 +160,10 @@ function CardBody({ card, deck, remote, inDeck }: { card: Card; deck: Deck | nul
   useEffect(() => {
     if (wantTab !== 'conversations') return;
     setTab('conversations');
-    navigate(location.pathname, { replace: true });
+    // Only `tab` goes (the rest of the query may be the page's, or Home's when the task is beside it).
+    const q = new URLSearchParams(location.search);
+    q.delete('tab');
+    navigate(location.pathname + (q.size ? `?${q}` : ''), { replace: true });
   }, [wantTab]);
 
   const threads = useMemo(() => {
@@ -434,11 +440,14 @@ function CardBody({ card, deck, remote, inDeck }: { card: Card; deck: Deck | nul
  * Title + Markdown text; Edit swaps in the editor, which saves with Ctrl+Enter against the version it
  * started from. Checklist boxes in the view save straight away, one line at a time.
  */
-export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick, projectId, onSetProperties }: {
+export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick, projectId, onSetProperties, persistDraft = false }: {
   card: Card; titleId: string; Heading: 'h1' | 'h2'; editing: boolean; onDone: () => void;
   canTick: boolean; projectId: string | null; onSetProperties?: () => void;
+  /** Keep the unsaved text in the draft store (web/src/drafts.ts), so a remounted editor gets it back (wiki panels). */
+  persistDraft?: boolean;
 }) {
   const files = useStore((s) => s.files);
+  const meId = useStore((s) => s.me?.id ?? null);
   const images = useMemo(() => [...files.values()].filter((f) => f.cardId === card.id), [files, card.id]);
   const { title, body, bodyStart } = splitTitle(card.content);
   const [draft, setDraft] = useState<string | null>(null);
@@ -446,13 +455,20 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
   const [conflict, setConflict] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // Entering edit mode snapshots the text and the version it is based on.
+  // Entering edit mode snapshots the text and the version it is based on (or takes back a kept draft).
   useEffect(() => {
-    if (editing) { setDraft(card.content); setBase(card.contentVersion); setConflict(false); }
+    const kept = editing && persistDraft ? getDraft(meId, card.id) : undefined;
+    if (editing) { setDraft(kept?.text ?? card.content); setBase(kept?.base ?? card.contentVersion); setConflict(false); }
     else setDraft(null);
   }, [editing]);
+  // A changed text is kept while it is unsaved; going back to the stored text drops it.
+  useEffect(() => {
+    if (!persistDraft || draft === null) return;
+    if (draft === card.content && base === card.contentVersion) dropDraft(meId, card.id);
+    else keepDraft(meId, card.id, draft, base);
+  }, [draft, base, persistDraft]);
 
-  const cancel = () => { setDraft(null); setConflict(false); onDone(); };
+  const cancel = () => { setDraft(null); setConflict(false); if (persistDraft) dropDraft(meId, card.id); onDone(); };
   const save = async () => {
     if (draft === null || busy) return;
     if (draft === card.content) { cancel(); return; }
@@ -460,6 +476,7 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
     try {
       // Queued behind any checkbox save still in flight; sent against the version editing started from.
       await queueContentSave(card.id, () => ({ content: draft, contentVersion: base }), card);
+      if (persistDraft) dropDraft(meId, card.id);
       setDraft(null);
       setConflict(false);
       onDone();
@@ -502,11 +519,12 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
         )}
         {card.isDoc
           ? <LoreEditor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Text"
-              projectId={projectId} images={images} onSetProperties={onSetProperties} />
+              projectId={projectId} images={images} onSetProperties={onSetProperties} cardId={card.id} />
           : <Editor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Task text"
-              projectId={projectId} images={images} onSetProperties={onSetProperties} />}
+              projectId={projectId} images={images} onSetProperties={onSetProperties} cardId={card.id} />}
+        <LinkIgnores card={card} editable />
         <div className="row">
-          <span className="hint foot-hint">Ctrl+Enter saves · Esc cancels</span>
+          <span className="hint foot-hint">Ctrl+Enter saves · Esc cancels{card.isDoc && ' · Alt+Enter on a name'}</span>
           <button type="button" className="btn btn-ghost" onClick={cancel}>Cancel</button>
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>Save</button>
         </div>
@@ -517,9 +535,30 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
     <div className="card-content">
       <Heading id={titleId} className="card-heading"><InlineTitle text={title} links /></Heading>
       {body.trim()
-        ? <MarkdownView content={body} lineOffset={bodyStart} onToggle={canTick ? tick : undefined} testId="card-markdown" />
+        ? <MarkdownView content={body} lineOffset={bodyStart} onToggle={canTick ? tick : undefined} testId="card-markdown" card={card} editable={canTick} />
         : <p className="muted">No text yet.</p>}
+      <LinkIgnores card={card} editable={canTick} />
     </div>
+  );
+}
+
+/** The names this text does not link ("Not a link here"), small under the text; × links one again. */
+export function LinkIgnores({ card, editable }: { card: Card; editable: boolean }) {
+  const list = card.linkIgnores ?? [];
+  if (!list.length) return null;
+  return (
+    <p className="link-ignores hint" data-testid="link-ignores">
+      <span title="Entry names that are not links in this text">Not linked here:</span>
+      {list.map((name) => (
+        <span key={name} className="link-ignore">
+          {name}
+          {editable && (
+            <button type="button" className="chip-x" aria-label={`Link "${name}" again`} title="Link it again"
+              onClick={() => void dispatch('cards', 'removeLinkIgnore', { cardId: card.id, name }).catch(() => {})}>×</button>
+          )}
+        </span>
+      ))}
+    </p>
   );
 }
 

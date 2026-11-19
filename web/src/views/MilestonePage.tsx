@@ -3,7 +3,8 @@ import type { Card, Milestone, MilestoneZone } from '../../../shared/types';
 import { dispatch } from '../api';
 import { canEditContent, canManageProject, isAdmin, settingsOf, useStore, type State } from '../store';
 import { useMinuteClock } from '../clock';
-import { Link, navigate } from '../router';
+import { Link } from '../router';
+import { usePageNavigate } from './HomePane';
 import { BurnChart } from '../components/BurnChart';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Dialog } from '../components/Dialog';
@@ -19,6 +20,7 @@ function canManage(s: State, m: Milestone): boolean {
 }
 
 export function MilestonePage({ seq }: { seq: number }) {
+  const go = usePageNavigate(); // in the pane beside Home, it stays there
   const s = useStore((x) => x);
   useMinuteClock();
   const today = localToday();
@@ -135,7 +137,7 @@ export function MilestonePage({ seq }: { seq: number }) {
       )}
       {dialog === 'delete' && (
         <ConfirmDialog title={`Delete milestone "${m.name}"?`} confirmLabel="Delete milestone" danger onClose={() => setDialog(null)}
-          onConfirm={async () => { await dispatch('milestones', 'delete', { id: m.id }); navigate('/milestones'); }}>
+          onConfirm={async () => { await dispatch('milestones', 'delete', { id: m.id }); go('/milestones'); }}>
           <p>{cards.length} task{cards.length === 1 ? '' : 's'} will leave the milestone. The tasks themselves stay.</p>
         </ConfirmDialog>
       )}

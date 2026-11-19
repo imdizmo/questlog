@@ -15,7 +15,7 @@ function card(o: Partial<Card> = {}): Card {
     snoozedAt: null, doneAt: null, priority: null, effort: null, dueDate: null, parentCardId: null, milestoneId: null,
     milestoneZoneId: null, sprintId: null, carryCount: 0, sprintJoinedAt: null, masterTags: [], tags: [],
     mentionedUserIds: [], checkboxStats: null, coverFileId: null,
-    entryTypeId: null, entryKey: null, fields: {}, wikiParentId: null, ...o,
+    entryTypeId: null, entryKey: null, fields: {}, wikiParentId: null, aliases: [], linkIgnores: [], ...o,
   } as Card;
 }
 const sprints = [

@@ -129,12 +129,12 @@ test('due date gated', async ({ page }) => {
   await openProps(page);
   await expect(props(page).getByLabel('Due date', { exact: true })).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Workspace settings' }).click();
-  const dlg = page.getByRole('dialog', { name: 'Workspace settings' });
+  const dlg = page.getByRole('dialog', { name: 'Workspace menu' });
   await dlg.getByRole('tab', { name: 'Features' }).click();
   await dlg.getByRole('switch', { name: 'Due dates' }).check();
-  await dlg.getByRole('button', { name: 'Save settings' }).click();
+  await dlg.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('Settings saved')).toBeVisible();
   await dlg.getByRole('button', { name: 'Close' }).first().click();
   await expect(dlg).toBeHidden();

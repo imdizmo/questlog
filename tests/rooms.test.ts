@@ -487,3 +487,59 @@ describe('vision board rooms', () => {
     await start(db);
   });
 });
+
+describe('the Home board room', () => {
+  const home = async (cookie = owner) => (await ok('visionBoard/openHome', {}, cookie)).id as string;
+  const hub = () => (app as any).rooms as { refreshAll(): void };
+
+  it('members edit, observers only see, guests never get in; the vision-board setting does not switch it off', async () => {
+    const h = await home();
+    const member = await mkUser('mem', 'member');
+    const observer = await mkUser('obs', 'observer');
+    const guest = await mkUser('gst', 'guest');
+    const a = await open(h);
+    const m = await open(h, member);
+    m.setText('n1', 'hello');
+    expect(await until(() => nodesOf(a.doc).get('n1')?.value === 'hello')).toBe(true);
+    const o = await open(h, observer);
+    expect(await until(() => nodesOf(o.doc).get('n1')?.value === 'hello')).toBe(true);
+    o.setText('n2', 'nope');
+    expect(await until(() => rooms().inspect(h)!.droppedUpdates === 1)).toBe(true);
+    expect(nodesOf(a.doc).has('n2')).toBe(false);
+    expect(await closeCodeOf(h, guest)).toBe(4403);
+    db.prepare("UPDATE account SET settings_json=json_set(settings_json, '$.visionBoardEnabled', json('false'))").run();
+    hub().refreshAll();
+    const late = await open(h, member);
+    expect(nodesOf(late.doc).get('n1')?.value).toBe('hello');
+    expect(a.closeCode).toBe(null);
+  });
+
+  it('takes more than 20 tabs, and opens while 20 card boards are busy', async () => {
+    const h = await home();
+    // 25 sockets on Home: past a card board's 20
+    for (let i = 0; i < 25; i++) await open(h);
+    expect(rooms().inspect(h)!.sockets).toBe(25);
+    expect(ROOM_LIMITS.maxSocketsPerHomeRoom).toBeGreaterThan(ROOM_LIMITS.maxSocketsPerRoom);
+    for (const c of clients.splice(0)) c.dispose();
+    expect(await until(() => rooms().inspect(h)?.sockets === 0)).toBe(true);
+    (app as any).rooms.closeBoard(h, 4503);
+    // 20 busy card boards: Home still opens; a 21st card board is still refused
+    const ids: string[] = [];
+    for (let i = 0; i < 21; i++) ids.push(await mkBoard());
+    for (let i = 0; i < 20; i++) await open(ids[i]);
+    await open(h);
+    expect(rooms().loadedIds()).toHaveLength(21);
+    expect(await closeCodeOf(ids[20], owner)).toBe(4503);
+  });
+
+  it('a member made observer stops editing at once', async () => {
+    const h = await home();
+    const member = await mkUser('mem', 'member');
+    const m = await open(h, member);
+    db.prepare("UPDATE account_roles SET role='observer' WHERE role='member'").run();
+    hub().refreshAll();
+    m.setText('x', 'late');
+    expect(await until(() => rooms().inspect(h)!.droppedUpdates === 1)).toBe(true);
+    expect(m.closeCode).toBe(null);
+  });
+});

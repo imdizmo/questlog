@@ -5,7 +5,7 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import type { Db } from './db';
 import type { ChangeEvent } from './dispatch';
-import { boardAccess, visionBoardRow } from './boards';
+import { anyBoardRow, boardAccess } from './boards';
 import { accountRow } from './commands/rows';
 import { now } from './auth';
 
@@ -14,6 +14,12 @@ export const ROOM_LIMITS = {
   /** 20, not 50: a full 5 MB doc takes ~32 MB of heap, so the worst case stays near 650 MB on a shared desktop. */
   maxRooms: 20,
   maxSocketsPerRoom: 20,
+  /**
+   * The Home board is one room for the whole workspace, one socket per open Home tab. A socket costs its awareness
+   * (at most maxAwarenessClients x maxAwarenessStateBytes) plus what is queued for it, cut at maxBufferedBytes only
+   * for a stalled reader; 200 idle sockets are a few MB. The Home room is also always let in past maxRooms (one more).
+   */
+  maxSocketsPerHomeRoom: 200,
   maxDocBytes: 5 * 1024 * 1024,
   /**
    * How much the encoded doc may grow per update byte before the exact size is measured. Scattered single-character
@@ -94,7 +100,7 @@ export class Room {
   saveTimer: unknown = null;
   unloadTimer: unknown = null;
 
-  constructor(readonly boardId: string, readonly cardId: string, blob: Uint8Array | null) {
+  constructor(readonly boardId: string, readonly cardId: string | null, blob: Uint8Array | null) {
     this.doc = docFrom(blob);
     this.savedBytes = this.exactBytes = this.sizeBound = blob?.byteLength ?? 0;
     // Awareness only borrows a doc for its own clientID; a separate one survives reload().
@@ -158,12 +164,12 @@ export class RoomHub {
 
   /**
    * Authenticate and add a socket to a board's room, or close it:
-   * 4401 no session, 4409 feature off, 4404 no board, 4403 no view access, 4503 room or hub full.
+   * 4401 no session, 4409 feature off (not for Home), 4404 no board, 4403 no view access, 4503 room or hub full.
    */
   connect(socket: RoomSocket, user: { id: string } | null, session: string | null, boardId: string): boolean {
     if (!user) return refuse(socket, CLOSE.noSession, 'unauthenticated');
-    if (!this.enabled()) return refuse(socket, CLOSE.featureOff, 'feature_disabled');
-    const board = visionBoardRow(this.db, boardId);
+    const board = anyBoardRow(this.db, boardId);
+    if (board?.kind !== 'home' && !this.enabled()) return refuse(socket, CLOSE.featureOff, 'feature_disabled');
     if (!board) return refuse(socket, CLOSE.noBoard, 'not_found');
     const level = boardAccess(this.db, user, board);
     if (level === 'none') return refuse(socket, CLOSE.forbidden, 'forbidden');
@@ -180,12 +186,14 @@ export class RoomHub {
       this.rooms.set(boardId, loaded);
       return loaded;
     }
-    if (this.rooms.size >= ROOM_LIMITS.maxRooms) {
-      const idle = [...this.rooms.values()].find((r) => r.members.size === 0);
+    const home = (this.db.prepare('SELECT kind FROM vision_boards WHERE id=?').get(boardId) as { kind: string } | undefined)?.kind === 'home';
+    // maxRooms counts the card boards; Home never waits for one of them to go idle.
+    if (!home && [...this.rooms.values()].filter((x) => x.cardId !== null).length >= ROOM_LIMITS.maxRooms) {
+      const idle = [...this.rooms.values()].find((x) => x.members.size === 0 && x.cardId !== null);
       if (!idle) return null;
       this.unload(idle);
     }
-    const r = this.db.prepare('SELECT card_id, doc FROM vision_boards WHERE id=?').get(boardId) as { card_id: string; doc: Uint8Array | null } | undefined;
+    const r = this.db.prepare('SELECT card_id, doc FROM vision_boards WHERE id=?').get(boardId) as { card_id: string | null; doc: Uint8Array | null } | undefined;
     if (!r) return null;
     const room = new Room(boardId, r.card_id, r.doc);
     this.rooms.set(boardId, room);
@@ -193,7 +201,8 @@ export class RoomHub {
   }
 
   join(room: Room, socket: RoomSocket, user: { id: string }, session: string | null, canEdit: boolean): boolean {
-    if (room.members.size >= ROOM_LIMITS.maxSocketsPerRoom) return refuse(socket, CLOSE.busy, 'room_full');
+    const cap = room.cardId === null ? ROOM_LIMITS.maxSocketsPerHomeRoom : ROOM_LIMITS.maxSocketsPerRoom;
+    if (room.members.size >= cap) return refuse(socket, CLOSE.busy, 'room_full');
     if (room.unloadTimer !== null) {
       this.timers.clearTimeout(room.unloadTimer);
       room.unloadTimer = null;
@@ -405,14 +414,14 @@ export class RoomHub {
 
   /**
    * Re-check a loaded board after a state, card, project or membership change: the room closes when the board is
-   * gone (4404) or the feature is off (4409); sockets whose session ended (4401) or whose access became none (4403,
-   * or 4410 when the host card was deleted) close; the rest get their canEdit updated.
+   * gone (4404) or the feature is off (4409, never for Home); sockets whose session ended (4401) or whose access became
+   * none (4403, or 4410 when the host card was deleted) close; the rest get their canEdit updated.
    */
   refreshAccess(boardId: string): void {
     const room = this.rooms.get(boardId);
     if (!room) return;
-    if (!this.enabled()) return this.closeBoard(boardId, CLOSE.featureOff);
-    const board = visionBoardRow(this.db, boardId);
+    const board = anyBoardRow(this.db, boardId);
+    if (board?.kind !== 'home' && !this.enabled()) return this.closeBoard(boardId, CLOSE.featureOff);
     if (!board) return this.closeBoard(boardId, CLOSE.noBoard);
     for (const [s, m] of [...room.members]) {
       if (!this.alive(m)) {
@@ -428,8 +437,8 @@ export class RoomHub {
     }
   }
 
-  private hostDeleted(cardId: string): boolean {
-    return (this.db.prepare('SELECT visibility v FROM cards WHERE id=?').get(cardId) as { v: string } | undefined)?.v === 'deleted';
+  private hostDeleted(cardId: string | null): boolean {
+    return !!cardId && (this.db.prepare('SELECT visibility v FROM cards WHERE id=?').get(cardId) as { v: string } | undefined)?.v === 'deleted';
   }
 
   refreshAll(): void {
@@ -466,7 +475,7 @@ export class RoomHub {
           cards.add((ev.row as { id: string }).id);
       }
     }
-    if (cards.size) for (const room of [...this.rooms.values()]) if (cards.has(room.cardId)) this.refreshAccess(room.boardId);
+    if (cards.size) for (const room of [...this.rooms.values()]) if (room.cardId && cards.has(room.cardId)) this.refreshAccess(room.boardId);
   }
 
   /** Server shutdown: save and free every room. */

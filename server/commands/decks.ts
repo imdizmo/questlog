@@ -140,6 +140,7 @@ export const deckCommands: Record<string, Command> = {
   },
   'decks/delete': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, { id }) {
       const { db } = ctx;
       const d = deckRow(db, id);

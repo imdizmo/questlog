@@ -5,12 +5,13 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { newId, tx, type Db } from './db';
 import { AppError } from './errors';
-import { nextActionId, type ChangeEvent, type Ctx } from './dispatch';
+import { dispatch, nextActionId, type ChangeEvent, type Ctx } from './dispatch';
 import { assertCardAccess, assertNotDeleted, emitCard } from './commands/cards';
 import { recordHistory } from './history';
 import { cardRow } from './commands/rows';
 import { fileRow, filePath, INLINE_MIMES, refreshCover } from './files';
-import { storeCoverUpload, coverRow, coversDirOf, coverPath } from './covers';
+import { storeCoverUpload, coverRow, coversDirOf, coverPath, releaseCover } from './covers';
+import { entryTypeRow } from './commands/wiki';
 import { can, sessionActor } from './permissions';
 import { uploadRoom } from './billing';
 import { COVER_MAX_BYTES, COVER_MIMES } from '../shared/covers';
@@ -87,6 +88,8 @@ export interface StoreFileInput {
   mime: string;
   /** An inline image type whose bytes don't match it is stored as application/octet-stream (served as a download). */
   checkImage?: boolean;
+  /** The asset this file is a copy of ("Use as a picture of…", server/assets.ts). */
+  assetId?: string;
 }
 
 /**
@@ -134,8 +137,8 @@ export async function storeCardFile(o: StoreFileInput): Promise<string> {
         // Other uploads may have used the storage while this one streamed in.
         const { storageLeft } = uploadRoom(db);
         if (storageLeft !== null && counter.size > storageLeft) throw new AppError(413, 'plan_limit', { limit: 'storage' });
-        db.prepare('INSERT INTO files (id,card_id,uploader_id,name,mime,size,created_at) VALUES (?,?,?,?,?,?,?)')
-          .run(id, cardId, ctx.actor.id, o.name, mime, counter.size, Date.now());
+        db.prepare('INSERT INTO files (id,card_id,uploader_id,name,mime,size,created_at,asset_id) VALUES (?,?,?,?,?,?,?,?)')
+          .run(id, cardId, ctx.actor.id, o.name, mime, counter.size, Date.now(), o.assetId ?? null);
         renameSync(tmp, final);
         ctx.emit('file', 'upsert', fileRow(db, id));
         recordHistory(db, cardId, ctx.actor.id, [{ kind: 'file', from: null, to: o.name }]);
@@ -212,6 +215,40 @@ export function registerFileRoutes(app: FastifyInstance, d: FileRouteDeps): void
       } catch (e) {
         throw refuse(e);
       }
+    });
+
+    /**
+     * A wiki type's picture from the computer: stored as a cover of the type's project and set on the type
+     * (wiki/updateType, which releases its previous upload) in one request, so a refused update never leaves an
+     * orphan. Refusals that need no bytes come first.
+     */
+    inst.post('/api/wiki/types/:id/picture', { bodyLimit: Number.MAX_SAFE_INTEGER }, async (req, reply) => {
+      const user = d.needUser(req);
+      const type = entryTypeRow(db, (req.params as { id: string }).id);
+      const refuse = (e: unknown) => {
+        reply.header('connection', 'close');
+        reply.raw.once('finish', () => req.raw.destroy());
+        return e;
+      };
+      if (!type || !can(db, user, 'project.manage', type.projectId)) throw refuse(new AppError(404, 'not_found'));
+      const mime = cleanMime(req.headers['content-type']);
+      const declared = Number(req.headers['content-length']);
+      const stream = req.body as NodeJS.ReadableStream | undefined;
+      if (!(COVER_MIMES as readonly string[]).includes(mime)) throw refuse(new AppError(415, 'bad_type'));
+      if (Number.isFinite(declared) && declared > COVER_MAX_BYTES) throw refuse(new AppError(413, 'too_large'));
+      if (!stream || typeof (stream as any).pipe !== 'function') throw new AppError(400, 'invalid_input');
+      const ctx: Ctx = { db, actor: sessionActor(user), events: [], emit: () => {}, afterCommit: (fn) => fn() };
+      let fileId: string;
+      try { fileId = await storeCoverUpload(ctx, type.projectId, stream, mime); } catch (e) { throw refuse(e); }
+      let done;
+      try {
+        done = dispatch(db, user, 'wiki/updateType', { id: type.id, picture: { kind: 'file', fileId } });
+      } catch (e) {
+        releaseCover(ctx, { kind: 'file', fileId });
+        throw e;
+      }
+      try { d.hub.publish(done.actionId, done.events); } catch (e) { console.error('live publish failed', e); }
+      return { fileId };
     });
   });
 

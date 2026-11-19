@@ -41,6 +41,10 @@ export interface AccountSettings {
   mcpEnabled: boolean;
   /** Workspace-wide MCP tool calls per UTC day; null = unlimited. */
   mcpDailyLimit: number | null;
+  /** A few lines about the workspace, shown at the top of the workspace menu. */
+  description: string;
+  /** The workspace's picture: one of the built-in artworks (shared/covers.ts COVER_ARTWORKS), or none. */
+  coverArt: number | null;
 }
 
 export const DEFAULT_SETTINGS: AccountSettings = {
@@ -68,6 +72,8 @@ export const DEFAULT_SETTINGS: AccountSettings = {
   timeTrackingMode: null,
   mcpEnabled: true,
   mcpDailyLimit: null,
+  description: '',
+  coverArt: null,
 };
 
 export interface Account {
@@ -118,6 +124,8 @@ export interface ApiToken {
   prefix: string;
   role: 'admin' | 'producer' | 'limited';
   access: 'read' | 'write';
+  /** MCP may delete tasks, lists and milestones (personal write tokens only; off unless chosen at creation). */
+  mayDelete: boolean;
   projectIds: string[];
   /** Acting user: the owner (personal token) or the service user (org token). */
   userId: string;
@@ -241,13 +249,47 @@ export interface Card {
   fields: Record<string, unknown>;
   /** Wiki: the entry this one is filed under (page tree). */
   wikiParentId: string | null;
+  /** Wiki: other names of the entry, recognised in text like its title (shared/autolink). */
+  aliases: string[];
+  /** Names (entry names or aliases) this card's text does not link: "Not a link here". */
+  linkIgnores: string[];
+  /** Wiki: the entry's own block layout and typed blocks' data (shared/blocks); none: its type's page, at view time. */
+  layout?: EntryLayout | null;
   /** Derived: some locking card is not done. */
   hasBlockingDeps?: boolean;
   /** Derived: this card locks some card that is not done. */
   isBlockingDep?: boolean;
 }
 
-export type FieldKind = 'text' | 'longtext' | 'number' | 'integer' | 'boolean' | 'enum' | 'multienum' | 'entry' | 'entries' | 'image' | 'color' | 'range';
+export type FieldKind = 'text' | 'longtext' | 'number' | 'integer' | 'boolean' | 'enum' | 'multienum' | 'entry' | 'entries' | 'image' | 'color' | 'range'
+  | 'table' | 'rule' | 'scenario';
+
+/**
+ * A `table` field's value: numbers looked up by one or two keys (shared/formula: `table(name, key[, key2])`). A key's
+ * values are words (an enum field's options, always matched exactly) or numbers going up (thresholds); `field` names
+ * the field the key usually comes from. Cells are row-major: `cells[i0 * keys[1].values.length + i1]`.
+ */
+export interface TableValue {
+  keys: { field?: string; values: string[] | number[] }[];
+  mode: 'exact' | 'step' | 'linear';
+  cells: number[];
+}
+/** A role of a rule or scenario: a name used in its formulas, bound to an entry of a type (key) or a child of it. */
+export interface FormulaRole { name: string; type: string }
+export interface NamedFormula { name: string; formula: string }
+/** A saved example of a rule: an entry (key) per role and a seed; the export runs it into a golden sample. */
+export interface RuleExample { roles: Record<string, string>; seed: number }
+/** A `rule` field's value: named parts (each may use the ones before) and a result, written in the formula language. */
+export interface RuleValue { roles: FormulaRole[]; parts: NamedFormula[]; result: string; examples: RuleExample[] }
+/**
+ * A clock of a scenario: first fires `first` seconds after the start (a formula; none = at once), then every `every`
+ * seconds (a formula, re-evaluated after each tick), and applies `do` to the state, in order.
+ */
+export interface ScenarioClock { name: string; every: string; first?: string; do: NamedFormula[] }
+/** A `scenario` field's value: state with start formulas, clocks, an end condition, a time cap (s), and measures. */
+export interface ScenarioValue {
+  roles: FormulaRole[]; state: { name: string; start: string }[]; clocks: ScenarioClock[]; end: string; cap: number; measures: NamedFormula[];
+}
 export interface FieldDef {
   key: string; label: string; kind: FieldKind; required?: boolean; min?: number; max?: number; unit?: string;
   options?: string[];
@@ -263,7 +305,34 @@ export interface EntryType {
   sections: string[];
   /** Starting values and links offered when making an entry of this type. */
   templates: EntryTemplate[];
+  /** The family it is filed under; root types only (a kind sits in its root's family). null: "No family". */
+  familyId: string | null;
+  /** Its picture; null is the painted "dusk" one. */
+  picture: TypePicture | null;
+  /** Its template as a page of blocks (shared/blocks); none: its parent's, else one made from its headings. */
+  page?: TypePage | null;
 }
+export type BlockKind = 'text' | 'facts' | 'model' | 'picture' | 'map' | 'lines' | 'steps' | 'table' | 'links' | 'gallery';
+/**
+ * A block of a template page or an entry layout. Text blocks are the entry's `## title` sections of its markdown; the
+ * rest keep their data in the entry's layout. `prompt`: the grey writing prompt (text, lines, steps); `cols`: a table's
+ * columns; `to`: the type key a links block points at ('' any).
+ */
+export interface Block { id: string; kind: BlockKind; title: string; width: 'full' | 'half'; prompt?: string; cols?: string[]; to?: string }
+/** A type's template page; `version` goes up with every save, so entries made from an older one can be found. */
+export interface TypePage { version: number; guided: boolean; blocks: Block[] }
+/** A typed block's data in an entry, by kind: lines/steps items, table rows, an asset, assets, linked entries (card ids). */
+export interface BlockData { items?: string[]; rows?: string[][]; assetId?: string; assetIds?: string[]; cardIds?: string[] }
+/**
+ * An entry's own layout: the blocks it was made with and their data by block id. `owner` is the type whose page it came
+ * from ('' for a page made from headings), `version` that page's version: a different owner or an older version is
+ * out of date.
+ */
+export interface EntryLayout { version: number; owner?: string; blocks: Block[]; data: Record<string, BlockData> }
+/** A type's picture: painted in its family's colour with its icon, or an uploaded one (a cover of the project). */
+export type TypePicture = { kind: 'painted'; style: 'dusk' | 'dawn' | 'night' | 'flat' } | { kind: 'file'; fileId: string };
+/** A named, coloured fold of root entry types (Characters, Items, ...) in the Wiki's Types tree. */
+export interface EntryFamily { id: string; projectId: string; name: string; color: string; sortIndex: number }
 /** A type's template: field values by key, and links to entries by key. */
 export interface EntryTemplate {
   name: string; fields: Record<string, unknown>;
@@ -405,11 +474,19 @@ export interface HistoryChange {
     /** A git commit that referenced the card: `to` is {sha, author, url} (server/integrations/git.ts). */
     | 'commit'
     /** Wiki: field values (`fields`: the changed keys), the entry type (`type`), the key (`key`) or the wiki parent (`parent`) changed. */
-    | 'entry';
+    | 'entry'
+    /** Wiki: the entry's aliases (`from`/`to`: the lists). */
+    | 'aliases'
+    /** The names this card's text does not link (`from`/`to`: the lists). */
+    | 'linkIgnores'
+    /** Wiki: a typed block's data (`title`: the block's; `from`/`to`: its data, null when empty). */
+    | 'block';
   from?: unknown;
   to?: unknown;
   /** 'entry' only. */
   fields?: string[];
+  /** 'block' only: the block's title. */
+  title?: string;
   type?: { from: string | null; to: string | null };
   key?: { from: string | null; to: string | null };
   parent?: { from: string | null; to: string | null };

@@ -29,9 +29,8 @@ test('admin creates a limited read token, uses it, revokes it; a member sees onl
   await projectWithCard(page, mine, cardIn);
   await projectWithCard(page, other, cardOut);
 
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'API tokens' }).click();
+  await page.goto('/decks?menu=preferences/tokens');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   await expect(settings.getByRole('heading', { name: 'Organization tokens' })).toBeVisible();
   await expect(settings.getByRole('heading', { name: 'Personal tokens' })).toBeVisible();
   await expect(settings.getByRole('heading', { name: "Other members' tokens" })).toBeVisible();
@@ -100,11 +99,68 @@ test('admin creates a limited read token, uses it, revokes it; a member sees onl
   await b.context().close();
 });
 
+test('a personal token can be given "May delete"; MCP then deletes with it, a plain token cannot', async ({ page }) => {
+  await ensureWorkspace(page);
+  const project = await run<{ id: string }>(page, 'projects', 'create', { name: unique('Deletes') });
+  const deck = await run<{ id: string }>(page, 'decks', 'create', { title: unique('List'), projectId: project.id, spaceId: 1 });
+  const card = await run<{ id: string }>(page, 'cards', 'create', { deckId: deck.id, content: unique('Doomed task') });
+  await page.goto('/decks?menu=preferences/tokens');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
+  const sw = settings.getByRole('switch', { name: 'Allow personal tokens in this workspace' });
+  if (!(await sw.isChecked())) await sw.click();
+  await expect(sw).toBeChecked();
+
+  const make = async (label: string, mayDelete: boolean) => {
+    await settings.getByRole('button', { name: 'New personal token' }).click();
+    const dlg = page.getByRole('dialog', { name: 'New token' });
+    await dlg.getByLabel('Name').fill(label);
+    await dlg.getByRole('radio', { name: /^Admin/ }).check();
+    const box = dlg.getByRole('checkbox', { name: /^May delete/ });
+    await expect(dlg.getByText('Lets this token delete through the API and MCP', { exact: false })).toBeVisible();
+    // Off by default, and only for Read & write.
+    await expect(box).not.toBeChecked();
+    await dlg.getByRole('radio', { name: /^Read$/ }).check();
+    await expect(box).toBeDisabled();
+    await dlg.getByRole('radio', { name: /^Read & write$/ }).check();
+    await expect(box).toBeEnabled();
+    if (mayDelete) await box.check();
+    await dlg.getByRole('button', { name: 'Create' }).click();
+    const token = await dlg.getByLabel('Token', { exact: true }).inputValue();
+    await dlg.getByRole('button', { name: 'Done' }).click();
+    await expect(dlg).toBeHidden();
+    return token;
+  };
+  const delLabel = unique('Deleter');
+  const plainLabel = unique('Plain');
+  const del = await make(delLabel, true);
+  const plain = await make(plainLabel, false);
+  await expect(settings.getByRole('row', { name: new RegExp(delLabel) })).toContainText('May delete');
+  await expect(settings.getByRole('row', { name: new RegExp(plainLabel) })).not.toContainText('May delete');
+
+  const deleteCard = async (token: string) => (await (await page.request.post('/mcp', {
+    headers: { authorization: `Bearer ${token}` },
+    data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'delete_cards', arguments: { cardIds: [card.id] } } },
+  })).json()).result;
+  const refused = await deleteCard(plain);
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain('delete_not_allowed');
+  expect((await deleteCard(del)).isError).toBeFalsy();
+
+  // The command API asks for the same: a plain token can't delete there either, the may-delete token can.
+  const other = await run<{ id: string }>(page, 'cards', 'create', { deckId: deck.id, content: unique('Second doomed task') });
+  const viaApi = (token: string) => page.request.post('/dispatch/cards/update', {
+    headers: { authorization: `Bearer ${token}` }, data: { id: other.id, visibility: 'deleted' },
+  });
+  const no = await viaApi(plain);
+  expect(no.status()).toBe(403);
+  expect((await no.json()).error).toBe('token_cannot_delete');
+  expect((await viaApi(del)).status()).toBe(200);
+});
+
 test('MCP page shows the switch and connection instructions', async ({ page }) => {
   await ensureWorkspace(page);
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'MCP' }).click();
+  await page.goto('/decks?menu=connections/mcp');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   const sw = settings.getByRole('switch', { name: 'Enabled' });
   await expect(sw).toBeChecked();
   await expect(settings.getByText('How to connect')).toBeVisible();
@@ -126,8 +182,8 @@ test('MCP page shows the switch and connection instructions', async ({ page }) =
     data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_context', arguments: {} } },
   });
   expect((await call.json()).result.isError).toBeFalsy();
-  await settings.getByRole('tab', { name: 'General' }).click();
-  await settings.getByRole('tab', { name: 'MCP' }).click();
+  await settings.getByRole('tab', { name: 'Discord' }).click();
+  await settings.getByRole('tab', { name: 'AI assistants (MCP)' }).click();
   await expect(settings.getByText(/Tool calls today/)).toBeVisible();
   await expect(settings.getByRole('heading', { name: "Members' connections" })).toBeVisible();
 });

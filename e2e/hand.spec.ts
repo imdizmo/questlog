@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { cardCode } from '../shared/cards';
 import { ensureWorkspace, run, snapshot, SHOTS, unique } from './helpers';
+import { BASE_URL } from '../playwright.config';
 
 async function seed(page: Page) {
   await ensureWorkspace(page);
@@ -37,7 +38,7 @@ test('nav shortcuts and timezone', async ({ page }) => {
 
 test('timezone is sent only when it differs', async ({ browser }) => {
   const sent = async (zone: string) => {
-    const ctx = await browser.newContext({ baseURL: 'http://localhost:8781', timezoneId: zone });
+    const ctx = await browser.newContext({ baseURL: BASE_URL, timezoneId: zone });
     const page = await ctx.newPage();
     const posts: string[] = [];
     page.on('request', (r) => { if (r.url().endsWith('/dispatch/users/update')) posts.push(r.postData() ?? ''); });

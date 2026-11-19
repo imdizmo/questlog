@@ -7,7 +7,7 @@ import { runChecks } from '../shared/wiki';
 let seq = 0;
 const card = (id: string, extra: object = {}) =>
   ({ id, seq: ++seq, deckId: 'lore', isDoc: true, visibility: 'default', status: 'not_started', content: `# ${id}`,
-    entryTypeId: null, entryKey: null, fields: {}, wikiParentId: null, ...extra }) as any;
+    entryTypeId: null, entryKey: null, fields: {}, wikiParentId: null, aliases: [], linkIgnores: [], ...extra }) as any;
 
 const decks = new Map<string, any>([['lore', { id: 'lore', projectId: 'p1' }], ['tasks', { id: 'tasks', projectId: 'p1' }], ['far', { id: 'far', projectId: 'p2' }]]);
 const types = new Map<string, any>([

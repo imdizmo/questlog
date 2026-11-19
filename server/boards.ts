@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
-import type { Db } from './db';
-import { can, type Who } from './permissions';
+import { newId, type Db } from './db';
+import { can, projectConfined, type Who } from './permissions';
 import { canSeeCard } from './access';
 import type { VisionBoard, VisionQuery, BoardState } from '../shared/types';
 
@@ -35,12 +35,44 @@ export function referencedQueryIds(db: Db, boardId: string): Set<string> {
   return ids;
 }
 
-type BoardRef = Pick<VisionBoard, 'cardId' | 'creatorId' | 'state'>;
+export type BoardKind = 'card' | 'home';
+/** What access is decided from. `kind` 'home' (the workspace's Home board) has no host card; absent means 'card'. */
+type BoardRef = Pick<VisionBoard, 'creatorId' | 'state'> & { cardId: string | null; kind?: BoardKind };
 type BoardRow = { id: string; account_seq: number; card_id: string; creator_id: string; state: BoardState; created_at: number; updated_at: number };
 
+/** A card board's row. The Home board is not one: it has no host card and is never in the store's visionBoards. */
 export function visionBoardRow(db: Db, id: string): VisionBoard | undefined {
-  const r = db.prepare('SELECT id, account_seq, card_id, creator_id, state, created_at, updated_at FROM vision_boards WHERE id=?').get(id) as BoardRow | undefined;
+  const r = db.prepare("SELECT id, account_seq, card_id, creator_id, state, created_at, updated_at FROM vision_boards WHERE id=? AND kind='card'").get(id) as BoardRow | undefined;
   return r && { id: r.id, accountSeq: r.account_seq, cardId: r.card_id, creatorId: r.creator_id, state: r.state, createdAt: r.created_at, updatedAt: r.updated_at };
+}
+
+/** Any board, Home included: what the realtime rooms need to admit a socket. */
+export function anyBoardRow(db: Db, id: string): (BoardRef & { id: string; kind: BoardKind }) | undefined {
+  const r = db.prepare('SELECT id, kind, card_id, creator_id, state FROM vision_boards WHERE id=?').get(id) as
+    { id: string; kind: BoardKind; card_id: string | null; creator_id: string; state: BoardState } | undefined;
+  return r && { id: r.id, kind: r.kind, cardId: r.card_id, creatorId: r.creator_id, state: r.state };
+}
+
+/**
+ * The workspace's Home board, made on first use (idempotent: one home row, see migration 039). `account_seq` 0: card
+ * boards count from 1, so Home never takes a board's number.
+ */
+export function homeBoardId(db: Db, creatorId: string): string {
+  const found = db.prepare("SELECT id FROM vision_boards WHERE kind='home'").get() as { id: string } | undefined;
+  if (found) return found.id;
+  const t = Date.now();
+  db.prepare("INSERT OR IGNORE INTO vision_boards (id, kind, account_seq, card_id, creator_id, state, created_at, updated_at) VALUES (?, 'home', 0, NULL, ?, 'default', ?, ?)")
+    .run(newId(), creatorId, t, t);
+  return (db.prepare("SELECT id FROM vision_boards WHERE kind='home'").get() as { id: string }).id;
+}
+
+/**
+ * Home: owner, admins and members edit; observers see it; guests (Open Decks visitors) and project-confined tokens
+ * never. Not switched off by the vision-board setting (Home is always there).
+ */
+export function homeAccess(db: Db, user: Who): 'none' | 'view' | 'edit' {
+  if (projectConfined(user) || !can(db, user, 'workspace.personal')) return 'none';
+  return can(db, user, 'workspace.edit') ? 'edit' : 'view';
 }
 
 export function visionQueryRow(db: Db, id: string): VisionQuery | undefined {
@@ -49,12 +81,13 @@ export function visionQueryRow(db: Db, id: string): VisionQuery | undefined {
 }
 
 /**
- * What a user may do with a board.
+ * What a user may do with a board. Home: homeAccess.
  * none: host card deleted or gone, or its project/deck not visible to the user. An archived host card still gives view.
  * edit: default = anyone who may edit the host card; read_only = only the board's creator (who also may edit the card); locked = nobody.
  */
 export function boardAccess(db: Db, user: Who, board: BoardRef): 'none' | 'view' | 'edit' {
-  const h = hostCard(db, user, board.cardId);
+  if (board.kind === 'home') return homeAccess(db, user);
+  const h = board.cardId ? hostCard(db, user, board.cardId) : null;
   if (!h) return 'none';
   if (board.state === 'locked' || (board.state === 'read_only' && board.creatorId !== user.id)) return 'view';
   return h.mayEdit ? 'edit' : 'view';

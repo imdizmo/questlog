@@ -16,7 +16,7 @@ describe('constants', () => {
     expect(GRID).toBe(20);
     expect([ZOOM_STEP, ZOOM_MIN, ZOOM_MAX]).toEqual([0.1, 0.2, 3]);
     expect(COLORS).toEqual(['green', 'blue', 'pink', 'orange', 'purple', 'grey']);
-    expect(NODE_TYPES).toEqual(['text', 'card', 'container', 'filter', 'image', 'video']);
+    expect(NODE_TYPES).toEqual(['text', 'card', 'container', 'filter', 'image', 'video', 'work']); // work: Home's projects, areas, lists and quests
     expect(DEFAULT_SIZE.text).toEqual({ w: 160, h: 40 });
     expect(DEFAULT_SIZE.card).toEqual({ w: 120, h: 160 });
     expect(DEFAULT_SIZE.container).toEqual({ w: 200, h: 100 });

@@ -1,17 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
+import { newEntry } from '../components/wiki/GuidedStart';
 import type { Card, Project } from '../../../shared/types';
 import { dispatch } from '../api';
 import { canEditContent, canManageProject, projectVisible, useStore, type State } from '../store';
 import { Link, navigate, type Route } from '../router';
+import { usePageNavigate } from './HomePane';
 import { Dialog } from '../components/Dialog';
-import { Icon } from '../components/icons';
-import { EntryPage } from '../components/wiki/EntryPage';
+import { Icon, type IconName } from '../components/icons';
+import { EntryStack } from '../components/wiki/EntryStack';
 import { TypeTable } from '../components/wiki/TypeTable';
-import { ChecksBadge } from '../components/wiki/ChecksPanel';
+import { ChecksBadge, ChecksPanel } from '../components/wiki/ChecksPanel';
 import { EntryBuilder, KindGallery, PlacesView, TimelineView, WikiHome } from '../components/wiki/Builder';
-import { ProjectSettings } from './ProjectSettings';
+import { CampaignGraph } from '../components/wiki/CampaignGraph';
 import { entryTitle } from '../components/wiki/FieldEditor';
-import { campaignLore, campaignTypes, entryBySegment, entryPath, searchEntries, wikiPath, connectionTree, type WikiNode } from '../wiki';
+import { LinkKinds } from './settings/WikiTypes';
+import { WikiTypesPage } from './wiki/WikiTypesPage';
+import {
+  campaignChecks, checksBadgeText, campaignLore, campaignTypes, entryBySegment, entryPath, kindPath, searchEntries, typesPath, wikiPath, wikiViewPath, connectionTree, type WikiNode,
+} from '../wiki';
 
 const LAST_KEY = 'jt:wikiProject';
 /** Projects whose editor chose "Start empty": the starter pack offer stays hidden there. */
@@ -28,7 +34,7 @@ const rememberEmpty = (projectId: string) => {
 const wikiProjects = (s: State): Project[] =>
   [...s.projects.values()].filter((p) => !p.isArchived && projectVisible(s, p.id)).sort((a, b) => a.seq - b.seq);
 
-type WikiRoute = Extract<Route, { name: 'wiki' | 'wikiProject' | 'wikiEntry' | 'wikiType' | 'wikiKind' | 'wikiNew' | 'wikiView' }>;
+type WikiRoute = Extract<Route, { name: 'wiki' | 'wikiProject' | 'wikiEntry' | 'wikiType' | 'wikiKind' | 'wikiNew' | 'wikiView' | 'wikiTypes' }>;
 
 /** The Wiki: a project's Lore as a tree of typed entries, with the entry page beside it. */
 export function Wiki({ route }: { route: WikiRoute }) {
@@ -66,6 +72,7 @@ export function Wiki({ route }: { route: WikiRoute }) {
 }
 
 function CampaignWiki({ project, projects, route }: { project: Project; projects: Project[]; route: Exclude<WikiRoute, { name: 'wiki' }> }) {
+  const go = usePageNavigate(); // in the pane beside Home, it stays there
   const entry = route.name === 'wikiEntry' ? route.entry : null;
   const typeKey = route.name === 'wikiType' || route.name === 'wikiKind' || route.name === 'wikiNew' ? route.typeKey : null;
   const s = useStore((x) => x);
@@ -81,7 +88,6 @@ function CampaignWiki({ project, projects, route }: { project: Project; projects
   }, [pending]);
   const canCreate = canEditContent(s, project);
   const canManage = canManageProject(s, project);
-  const [settings, setSettings] = useState(false);
   const noTypes = useMemo(() => campaignTypes(s.entryTypes, project.id).length === 0, [s.entryTypes, project.id]);
   const tableType = typeKey ? campaignTypes(s.entryTypes, project.id).find((t) => t.key === typeKey) : undefined;
 
@@ -94,22 +100,22 @@ function CampaignWiki({ project, projects, route }: { project: Project; projects
         </div>
         <div className="row">
           <ChecksBadge project={project} />
-          {/* The game-data file (server/wikiExport.ts); the server names it <project>-gamedata.json. */}
-          <a className="btn btn-sm" href={`/api/wiki/${encodeURIComponent(project.id)}/export`} download
-            title="Download the typed entries, links and checks as JSON for the game">Export JSON</a>
-          {canManage && <button type="button" className="btn btn-sm" onClick={() => setSettings(true)}>Entity types</button>}
         </div>
       </div>
+      <div className="wk-shell">
+      <WikiParts project={project} route={route} />
+      {route.name === 'wikiTypes' ? <WikiTypesPage key={project.id} project={project} typeKey={route.typeKey} /> : (
       <div className="wiki-layout">
         <WikiSidebar project={project} projects={projects} currentId={current?.id ?? null} canCreate={canCreate} onNew={() => setCreating(true)} />
         <div className="wiki-main">
-          {route.name === 'wikiView' ? (route.view === 'places' ? <PlacesView project={project} /> : <TimelineView project={project} />)
+          {route.name === 'wikiView' ? (route.view === 'places' ? <PlacesView project={project} /> : route.view === 'graph' ? <CampaignGraph project={project} />
+            : route.view === 'links' ? <LinkKindsView project={project} canManage={canManage} /> : <TimelineView project={project} />)
           : typeKey ? (
             !tableType ? <div className="empty"><h2>Entity type not found</h2><p className="muted">No entity type with that key in {project.name}.</p></div>
-              : route.name === 'wikiKind' ? <KindGallery key={tableType.id} project={project} type={tableType} onEditTypes={canManage ? () => setSettings(true) : undefined} />
+              : route.name === 'wikiKind' ? <KindGallery key={tableType.id} project={project} type={tableType} onEditTypes={canManage ? () => navigate(typesPath(project.seq, tableType.key)) : undefined} />
               : route.name === 'wikiNew' ? (canCreate ? <EntryBuilder key={tableType.id} project={project} type={tableType} /> : <p className="muted">You can't add lore to {project.name}.</p>)
               : <TypeTable key={tableType.id} project={project} type={tableType} />
-          ) : current ? <EntryPage key={current.id} card={current} project={project} />
+          ) : current ? <EntryStack main={current} project={project} />
             : entry && pending === entry ? <p className="muted" aria-busy="true">Loading…</p>
             : entry ? (
               <div className="empty"><h2>Lore not found</h2><p className="muted">No lore with that key in {project.name}. It may have been deleted or renamed.</p></div>
@@ -117,12 +123,66 @@ function CampaignWiki({ project, projects, route }: { project: Project; projects
             : <WikiHome project={project} />}
         </div>
       </div>
+      )}
+      </div>
       {creating && (
         <NewEntryDialog project={project} onClose={() => setCreating(false)}
-          onCreated={(key) => { setCreating(false); setPending(key); navigate(`${wikiPath(project.seq)}/${key}`); }} />
+          onCreated={(key) => { setCreating(false); setPending(key); go(`${wikiPath(project.seq)}/${key}`); }} />
       )}
-      {settings && <ProjectSettings project={project} initialTab="wikiTypes" onClose={() => setSettings(false)} />}
     </main>
+  );
+}
+
+/** The parts of a project's wiki, as a column of icons beside it; Export at the bottom. */
+function WikiParts({ project, route }: { project: Project; route: Exclude<WikiRoute, { name: 'wiki' }> }) {
+  const hasStoryline = useStore((s) => campaignTypes(s.entryTypes, project.id).some((t) => t.key === 'storyline'));
+  const checks = useStore((s) => campaignChecks(s, project.id));
+  const [checksOpen, setChecksOpen] = useState(false);
+  const view = route.name === 'wikiView' ? route.view : null;
+  const parts: { icon: IconName; label: string; href: string; current: boolean }[] = [
+    { icon: 'doc', label: 'Entries', href: wikiPath(project.seq), current: ['wikiProject', 'wikiEntry', 'wikiType', 'wikiNew'].includes(route.name) || (route.name === 'wikiKind' && route.typeKey !== 'storyline') },
+    { icon: 'tag', label: 'Types', href: typesPath(project.seq), current: route.name === 'wikiTypes' },
+    { icon: 'link', label: 'Link kinds', href: wikiViewPath(project.seq, 'links'), current: view === 'links' },
+    { icon: 'graph', label: 'Graph', href: wikiViewPath(project.seq, 'graph'), current: view === 'graph' },
+    { icon: 'globe', label: 'Places', href: wikiViewPath(project.seq, 'places'), current: view === 'places' },
+    { icon: 'calendar', label: 'Timeline', href: wikiViewPath(project.seq, 'timeline'), current: view === 'timeline' },
+    ...(hasStoryline ? [{ icon: 'frame' as const, label: 'Storyboard', href: kindPath(project.seq, 'storyline'), current: route.name === 'wikiKind' && route.typeKey === 'storyline' }] : []),
+  ];
+  return (
+    <nav className="wk-col" aria-label={`${project.name} wiki`}>
+      {parts.map((p) => (
+        <Link key={p.label} href={p.href} className="wk-col-btn" aria-current={p.current ? 'page' : undefined} aria-label={p.label} title={p.label}>
+          <Icon name={p.icon} size={17} />
+        </Link>
+      ))}
+      <button type="button" className="wk-col-btn" aria-label={checks.total ? `Checks: ${checks.total} failing` : 'Checks: every check passes'}
+        title={checks.total ? checksBadgeText(checks) : 'Every check passes'} disabled={!checks.total} onClick={() => setChecksOpen(true)}>
+        <Icon name="sliders" size={17} />{checks.total > 0 && <span className="wk-col-dot" aria-hidden />}
+      </button>
+      <span className="wk-col-grow" />
+      {/* The game-data file (server/wikiExport.ts); the server names it <project>-gamedata.json. */}
+      <a className="wk-col-btn" href={`/api/wiki/${encodeURIComponent(project.id)}/export`} download aria-label="Export game data" title="Export game data (JSON)">
+        <Icon name="download" size={17} />
+      </a>
+      {checksOpen && checks.total > 0 && <ChecksPanel project={project} checks={checks} onClose={() => setChecksOpen(false)} />}
+    </nav>
+  );
+}
+
+/** Link kinds as their own part of the wiki: the editor for managers, the list for everyone else. */
+function LinkKindsView({ project, canManage }: { project: Project; canManage: boolean }) {
+  const entryTypes = useStore((s) => s.entryTypes);
+  const linkKinds = useStore((s) => s.linkKinds);
+  const types = useMemo(() => campaignTypes(entryTypes, project.id), [entryTypes, project.id]);
+  if (canManage) return <div className="wiki-types"><LinkKinds project={project} types={types} /></div>;
+  const kinds = [...linkKinds.values()].filter((k) => k.projectId === project.id).sort((a, b) => a.label.localeCompare(b.label));
+  return (
+    <div className="wiki-types">
+      <h3 className="sub">Link kinds</h3>
+      {kinds.length ? <ul className="wiki-types-list" aria-label="Link kinds">{kinds.map((k) => <li key={k.id}>{k.label} / {k.reverseLabel}</li>)}</ul>
+        : <p className="muted">No link kinds yet.</p>}
+      <p className="hint">Only people who manage this project can change link kinds.</p>
+    </div>
   );
 }
 
@@ -131,7 +191,7 @@ function StarterOffer({ project }: { project: Project }) {
   const [dismissed, setDismissed] = useState(() => startedEmpty(project.id));
   const [busy, setBusy] = useState(false);
   if (dismissed) {
-    return <div className="empty"><h2>{project.name}</h2><p className="muted">No entity types yet. Add some under Entity types, or start a plain page.</p></div>;
+    return <div className="empty"><h2>{project.name}</h2><p className="muted">No entity types yet. Add some under Types, or start a plain page.</p></div>;
   }
   const add = async () => {
     setBusy(true);
@@ -140,7 +200,7 @@ function StarterOffer({ project }: { project: Project }) {
   return (
     <div className="empty wiki-starter">
       <h2>Set up the wiki of {project.name}</h2>
-      <p className="muted">The starter set adds eight entity types (Character, Creature, Faction, Place, Item, Quest, History, Storyline) and the few links between them. Recipes, abilities, shops and the rest are an extra pack under Entity types. You can edit or delete any of it later under Wiki types.</p>
+      <p className="muted">The starter set adds eight entity types (Character, Creature, Faction, Place, Item, Quest, History, Storyline) and the few links between them. Recipes, abilities, shops and the rest are an extra pack under Types. You can edit or delete any of it later under Types.</p>
       <div className="row">
         <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>Add the game starter pack</button>
         <button type="button" className="btn" disabled={busy} onClick={() => { rememberEmpty(project.id); setDismissed(true); }}>Start empty</button>
@@ -219,8 +279,11 @@ function NewEntryDialog({ project, onClose, onCreated }: { project: Project; onC
     if (!name.trim() || busy) return;
     setBusy(true);
     try {
-      const r = await dispatch<{ id: string; key: string }>('wiki', 'createEntry', { projectId: project.id, typeId: typeId || null, name: name.trim() });
-      onCreated(r.key);
+      const type = typeId ? entryTypes.get(typeId) : undefined;
+      // A type with a guided start asks its questions first (null: cancelled there).
+      const r = type ? await newEntry({ project, type, name: name.trim() })
+        : await dispatch<{ id: string; key: string }>('wiki', 'createEntry', { projectId: project.id, typeId: null, name: name.trim() });
+      if (r) onCreated(r.key);
     } catch { /* toast */ } finally { setBusy(false); }
   };
   return (

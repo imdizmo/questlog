@@ -206,6 +206,7 @@ export const milestoneCommands: Record<string, Command> = {
   },
   'milestones/delete': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, { id }) {
       const { db } = ctx;
       const m = loadManaged(ctx, id);
@@ -252,6 +253,7 @@ export const milestoneCommands: Record<string, Command> = {
   },
   'milestoneZones/delete': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, { id }) {
       const { db } = ctx;
       const z = zoneRow(db, id);

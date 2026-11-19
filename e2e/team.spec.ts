@@ -15,7 +15,7 @@ async function projectWithDeck(page: Page, name: string, deckTitle: string) {
 
 /** Owner side: creates an invite through Members → Invite people and returns the link it shows. */
 async function inviteLink(page: Page, role: 'Admin' | 'Member' | 'Observer', projects: string[] = []) {
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Members' }).click();
   const members = page.getByRole('dialog', { name: 'Members' });
   await expect(members).toBeVisible();
@@ -90,7 +90,10 @@ test('observer is read-only and scoped', async ({ page, browser }) => {
   await expect(c.getByRole('region', { name: pName })).toBeVisible();
   await expect(c.getByRole('region', { name: qName })).toHaveCount(0);
   await expect(c.getByRole('button', { name: 'New project' })).toHaveCount(0);
-  await expect(c.getByRole('button', { name: 'Workspace menu' })).toHaveCount(0);
+  // Observers get no admin items: their account menu has no Members, their workspace menu no admin sections.
+  await c.getByRole('button', { name: 'Account menu' }).click();
+  await expect(c.getByRole('menuitem', { name: 'Members' })).toHaveCount(0);
+  await c.keyboard.press('Escape');
 
   await c.goto(p.deckPath);
   await expect(c.getByTestId('card-tile').filter({ hasText: 'Rope coil' })).toBeVisible();
@@ -145,29 +148,30 @@ test('content conflict toast', async ({ page, browser }) => {
 
 test('settings persist', async ({ page }) => {
   await ensureWorkspace(page);
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Workspace settings' }).click();
-  await expect(page).toHaveURL(/[?&]show=accountSettings/);
-  let dlg = page.getByRole('dialog', { name: 'Workspace settings' });
-  const slots = () => dlg.getByLabel('Stale after (hours)');
+  await expect(page).toHaveURL(/[?&]menu=workspace/);
+  let dlg = page.getByRole('dialog', { name: 'Workspace menu' });
+  await dlg.getByRole('tab', { name: 'Tasks' }).click();
+  const slots = () => dlg.getByLabel('Snooze untouched started tasks after (hours)');
 
   await page.screenshot({ path: `${SHOTS}/settings-general.png`, animations: 'disabled' });
   await slots().fill('200');
-  await dlg.getByRole('button', { name: 'Save settings' }).click();
+  await dlg.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByRole('status').getByText('Settings saved')).toBeVisible();
 
   await page.reload();
-  dlg = page.getByRole('dialog', { name: 'Workspace settings' });
+  dlg = page.getByRole('dialog', { name: 'Workspace menu' });
   await expect(slots()).toHaveValue('200');
 
   await slots().fill('0');
-  await dlg.getByRole('button', { name: 'Save settings' }).click();
+  await dlg.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.locator('.toast-error')).toBeVisible();
   await page.reload();
-  dlg = page.getByRole('dialog', { name: 'Workspace settings' });
+  dlg = page.getByRole('dialog', { name: 'Workspace menu' });
   await expect(slots()).toHaveValue('200');
 
-  // The Features tab holds the seven switches.
+  // The Features section holds the eight switches.
   await dlg.getByRole('tab', { name: 'Features' }).click();
   await expect(dlg.getByRole('switch')).toHaveCount(8);
   await expect(dlg.getByRole('switch', { name: 'Milestones' })).toBeChecked();
@@ -180,7 +184,7 @@ test('settings persist', async ({ page }) => {
 
 test('Members page without Tailscale', async ({ page }) => {
   await ensureWorkspace(page);
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Members' }).click();
   const members = page.getByRole('dialog', { name: 'Members' });
   await expect(members.getByRole('table', { name: 'People' })).toBeVisible();
@@ -195,7 +199,7 @@ test('no Tailscale button when Tailscale is off', async ({ page }) => {
   await ensureWorkspace(page);
   const state = await page.evaluate(async () => (await fetch('/api/tailscale')).json());
   expect(state.enabled).toBe(false);
-  await page.getByRole('button', { name: 'Workspace menu' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await expect(page.getByRole('menuitem', { name: 'Email notifications' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'My account' })).toHaveCount(0);
   await page.keyboard.press('Escape');

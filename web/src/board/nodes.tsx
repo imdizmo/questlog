@@ -1,5 +1,5 @@
 import { taskId } from '../taskId';
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { memo, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { isFileUrl, isVideoId, SMART_LABEL_MAX, type BoardNode, type NodeType } from '../../../shared/board';
 import { cardCode, derivedStatus, STATUS_LABEL, titleOf } from '../../../shared/cards';
 import type { ResolvableContext } from '../../../shared/types';
@@ -13,10 +13,11 @@ import { Picture, isStartFrame } from '../components/wiki/Builder';
 import { entryExcerpt } from '../wiki';
 import { WORKS_ON } from '../../../shared/wiki';
 import { tasksLeft } from './macro';
+import { WorkBody, WorkContext, workLabel } from './WorkNode';
 
 /** What the tool rail calls each type, and how a node is announced. */
 export const TYPE_LABEL: Record<NodeType, string> = {
-  text: 'Text', image: 'Image', video: 'Video', card: 'Task', filter: 'Smart Node', container: 'Container',
+  text: 'Text', image: 'Image', video: 'Video', card: 'Task', filter: 'Smart Node', container: 'Container', work: 'Work',
 };
 
 /** The value a freshly placed node starts with. Card, image and video get theirs from their dialogs, so they start empty here. */
@@ -24,7 +25,7 @@ export function initialValue(type: NodeType): Record<string, unknown> {
   switch (type) {
     case 'text': return { content: '' };
     case 'filter': return { queryId: null, mode: 'horBar' };
-    case 'card': case 'image': case 'video': case 'container': return {};
+    case 'card': case 'image': case 'video': case 'container': case 'work': return {};
   }
 }
 
@@ -65,6 +66,7 @@ export interface NodeViewProps {
 /** One node on the board layer. Stored pos goes in data-x/y/w/h/parent/color (the e2e reads those). */
 export const NodeView = memo(function NodeView({ node, preview, selected, editing, onCommit, onEndEdit, onSetup, onGrow, tasks }: NodeViewProps) {
   const r = preview ?? node.pos;
+  const work = useContext(WorkContext)?.nodes.get(node.type === 'work' ? str(node.value.k) : '');
   const macro = node.type === 'container' && tasks !== undefined;
   // A frame is as tall as its title, text and links need; its stored height is only the least it can be.
   const scene = node.type === 'card' && node.value.mode === 'scene';
@@ -80,8 +82,8 @@ export const NodeView = memo(function NodeView({ node, preview, selected, editin
     <div ref={box}
       className={`bnode bnode-${node.type}${scene ? ' is-scene' : ''}${macro ? ' is-macro' : ''}${node.type === 'text' && str(node.value.ref).startsWith('project:') ? ' is-header' : ''}${selected ? ' is-selected' : ''}${node.color ? ` bc-${node.color}` : ''}`}
       style={{ transform: `translate(${r.x}px, ${r.y}px)`, width: r.w, ...(scene ? { minHeight: r.h } : { height: r.h }) }}
-      role="group" aria-label={macro ? `${str(node.value.label) || 'List'}, ${tasksLeft(tasks ?? 0)}` : nodeName(node)} tabIndex={0}
-      data-node-id={node.id} data-node-type={node.type} data-tasks-left={macro ? tasks : undefined}
+      role="group" aria-label={macro ? `${str(node.value.label) || 'List'}, ${tasksLeft(tasks ?? 0)}` : work ? workLabel(work) : nodeName(node)} tabIndex={0}
+      data-node-id={node.id} data-node-type={node.type} data-tasks-left={macro ? tasks : undefined} data-ref={work?.id}
       data-x={node.pos.x} data-y={node.pos.y} data-w={node.pos.w} data-h={node.pos.h}
       data-parent={node.pos.parent ?? ''} data-color={node.color ?? ''}
     >
@@ -132,6 +134,7 @@ function NodeBody({ node, editing, onCommit, onEndEdit, onSetup }: Pick<NodeView
     }
     case 'image': return <ImageBody url={str(v.url)} />;
     case 'video': return <VideoBody videoId={str(v.videoId)} />;
+    case 'work': return <WorkBody refId={str(v.k)} />;
   }
 }
 

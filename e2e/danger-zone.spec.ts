@@ -7,9 +7,8 @@ test('owner disables the workspace, open tabs are sent to the disabled screen, o
   const other = await newPerson(browser);
   await ensureWorkspace(other);
   try {
-    await page.goto('/decks?show=accountSettings');
-    const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-    await settings.getByRole('tab', { name: 'Danger Zone' }).click();
+    await page.goto('/decks?menu=disable');
+    const settings = page.getByRole('dialog', { name: 'Workspace menu' });
     await expect(settings.getByText('Every project, task and file is kept.')).toBeVisible();
     await settings.getByRole('button', { name: 'Disable workspace…' }).click();
 

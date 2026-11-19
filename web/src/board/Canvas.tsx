@@ -1,5 +1,5 @@
 import {
-  Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode,
   type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent,
 } from 'react';
 import type * as Y from 'yjs';
@@ -10,7 +10,7 @@ import {
 import { cardCode, titleOf } from '../../../shared/cards';
 import { planStoryboard, refOf, SCENE, SUBTASK, WAITS_FOR } from './projectTree';
 import { convertTree, layoutFrames, originBelow, treeProjects, type BoardPatch } from './projectFrames';
-import { frameInput, refuseProject } from './boards';
+import { frameInput, HOME_CARD_REFUSED, homeCardAllowed, refuseProject } from './boards';
 import { isStoryline, makeFrame } from '../components/wiki/Builder';
 import { showToast } from '../toast';
 import { dispatch } from '../api';
@@ -18,13 +18,17 @@ import { Dialog } from '../components/Dialog';
 import { projectVisible } from '../store';
 import type { Card } from '../../../shared/types';
 import { encodeChips } from '../../../shared/search';
-import { navigate, setQuery, useLocation } from '../router';
+import { isNewTabClick, navigate, setQuery, useLocation } from '../router';
+import { keysHere } from '../views/HomePane';
+import { sideOf } from '../homeSplit';
 import { settingsOf, store, useStore } from '../store';
 import { CardView } from '../views/Card';
 import { Icon, type IconName } from '../components/icons';
 import { CardNodeDialog } from './CardNodeDialog';
 import { ImageDialog, VideoDialog } from './MediaDialogs';
 import { LOCAL, readBoard, readNode, useBoard } from './useBoard';
+import { drawnBoard } from './homeWork';
+import { Rail } from '../components/Rail';
 import { Holds, useFollowProject } from './follow';
 import { HOLD_MS, listMoveToSend, markListMove, moveBackSync, OFFLINE_DROP, OFFLINE_LIST, parentChanges, planMove, readListMove, saveDrop, type DropIntent } from './drop';
 import { ASK_ADMIN, deletable, depChoice, edgeStepCalls, FRAME_DELETE, isProjectFrame, meaningOf, saveLink, unlinkCall } from './links';
@@ -52,6 +56,8 @@ const FOCUS_FILL = 0.6;
 const BIG_STEP = 5;
 /** Arrow keys on the empty canvas pan by this many pixels. */
 const PAN_STEP = 40;
+/** Pixels along Home's canvas edges that its toolbars may cover. */
+const EDGE = 60;
 
 const clampZoom = (s: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(s * 10) / 10));
 
@@ -120,12 +126,34 @@ function planArrange(nodes: BoardNode[], edges: BoardEdge[], projectId: string |
   return inp && convertTree(inp, deckProject);
 }
 
-export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
-  doc: Y.Doc | null; canEdit: boolean; host: Card; awareness?: Awareness | null;
+/**
+ * Home's work on the board (web/src/board/homeWork.ts): where this person draws each work node, the lines from the
+ * data, and what opening one does. Without it, work nodes are never drawn.
+ */
+export interface WorkLayer {
+  /** Where this person draws each work node (board units); a work node left out is not drawn. */
+  place: (nodes: BoardNode[]) => Map<string, Rect>;
+  /** Drawn under the nodes, in board units; `rectOf` gives a node's drawn rect (following a drag), or undefined. */
+  lines: (rectOf: (id: string) => Rect | undefined) => ReactNode;
+  /** `newTab`: Ctrl/⌘ or a middle click. */
+  open: (ref: string, newTab: boolean) => void;
+  /** Screen pixels on the left that the first fit keeps clear (the welcome column). */
+  clearLeft: number;
+  /** Another value fits the board to the view again (Home's split pane opened or closed). */
+  fit?: string;
+}
+
+export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }: {
+  /** The board's host task; null for Home, which has none (no project upkeep, Smart Nodes or uploads there). */
+  doc: Y.Doc | null; canEdit: boolean; host: Card | null; awareness?: Awareness | null;
   /** Hands up "Arrange as frames" while this board has an old tree to arrange (null when it has none). */
   onArrange?: (run: (() => void) | null) => void;
+  work?: WorkLayer;
 }) {
-  const board = useBoard(doc);
+  const stored = useBoard(doc);
+  const board = useMemo(() => drawnBoard(stored, work ? work.place(stored.nodes) : null), [stored, work]);
+  const tools = useMemo(() => (host ? TOOLS : TOOLS.filter((t) => t.type !== 'filter' && t.type !== 'image')), [host]);
+  const hostId = host?.id ?? '';
   const meId = useStore((x) => x.me?.id);
   const settings = useStore(settingsOf);
   const { nodes, edges } = board;
@@ -175,6 +203,9 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
   /** One selection at a time: a node or a connector. */
   const setSelected = useCallback((id: string | null) => { setSelectedNode(id); if (id) setSelectedEdge(null); }, []);
   const selectEdge = useCallback((id: string | null) => { setSelectedEdge(id); if (id) setSelectedNode(null); }, []);
+  // A page opening beside Home (web/src/views/HomePane.tsx) leaves nothing picked on the board, for its keys to act on.
+  const paneOpen = !!sideOf(useLocation().query);
+  useEffect(() => { if (paneOpen) { setSelected(null); selectEdge(null); setMulti(new Set()); } }, [paneOpen, setSelected, selectEdge]);
 
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const selNode = selected ? byId.get(selected) : undefined;
@@ -247,6 +278,22 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     setView({ s, x: vw / (2 * s) - (r.x + r.w / 2), y: vh / (2 * s) - (r.y + r.h / 2) });
   }, []);
 
+  // Home opens with the board fitted beside the welcome column, never smaller than 70 % so the words stay readable: a
+  // board bigger than that starts at its top left (drag or zoom to see the rest). Once, and again when `work.fit` changes
+  // (the view got narrower or wider); otherwise the view is the person's.
+  const fitted = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const el = viewportRef.current;
+    if (!work || fitted.current === (work.fit ?? '') || !nodes.length || !el) return;
+    fitted.current = work.fit ?? '';
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of nodes) { x0 = Math.min(x0, n.pos.x); y0 = Math.min(y0, n.pos.y); x1 = Math.max(x1, n.pos.x + n.pos.w); y1 = Math.max(y1, n.pos.y + n.pos.h); }
+    const left = Math.min(work.clearLeft, el.clientWidth / 2), w = Math.max(100, el.clientWidth - left - 120), h = Math.max(100, el.clientHeight - 100);
+    const s = Math.max(0.7, Math.min(1, Math.floor(Math.min(w / (x1 - x0 || 1), h / (y1 - y0 || 1)) * 10) / 10));
+    const at = (start: number, avail: number, lo: number, hi: number) => ((hi - lo) * s <= avail ? (start + avail / 2) / s - (lo + hi) / 2 : start / s - lo);
+    setView({ s, x: at(left + 60, w, x0, x1), y: at(50, h, y0, y1) });
+  }, [work, nodes]);
+
   const remove = useCallback((id: string) => {
     live.current.board.deleteNode(id);
     setSelected(null);
@@ -256,7 +303,8 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
   /** Deletes the nodes named, except, on a project board, the project's own frames and header (which say why instead). */
   const removeMany = useCallback((ids: Iterable<string>) => {
     const b = live.current.board;
-    const { ok, refused } = deletable(b.nodes, ids, !!b.projectId);
+    // Home's work nodes stand for the data: they leave with it, never by hand.
+    const { ok, refused } = deletable(b.nodes, [...ids].filter((id) => !b.nodes.some((n) => n.id === id && n.type === 'work')), !!b.projectId);
     for (const id of ok) remove(id);
     if (refused) showToast(FRAME_DELETE, 'info', 5000);
     return ok.length > 0;
@@ -337,7 +385,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     if (current && current !== projectId) return `This board shows ${s.projects.get(current)?.name ?? 'another project'}; make a new project board for another.`;
     setTreeAsk(false);
     // Only the project of the board's host task: another one could be one the board's other editors may not see.
-    const refused = refuseProject(s, host.id, projectId);
+    const refused = refuseProject(s, hostId, projectId);
     if (refused) { showToast(refused, 'info', 5000); return null; }
     if (current === projectId) { showToast(`This board already shows ${project.name}.`, 'info', 4000); return null; }
     const named = treeProjects(now, deckProject);
@@ -362,22 +410,22 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
   // `holds`: nodes reconcile must not move, such as a card dropped into another list frame while the task's move is
   // being saved (saveDrop), so it is not pulled back to its old list meanwhile.
   const [holds] = useState(() => new Holds());
-  useFollowProject(doc, host.id, canEdit, () => gesture.current?.kind === 'move' || gesture.current?.kind === 'resize', holds);
+  useFollowProject(doc, hostId, canEdit && !!host, () => gesture.current?.kind === 'move' || gesture.current?.kind === 'resize', holds);
   // "Arrange as frames" is offered while the board holds an old tree of one project.
   const decks = useStore((x) => x.decks);
   const cardsNow = useStore((x) => x.cards);
   // Not offered when it would be refused: a tree of another project than the board's own (its host task's).
   const arrangeable = useMemo(() => {
     const pid = canEdit ? treeProject(nodes, board.projectId) : null;
-    return !!pid && !refuseProject(store.get(), host.id, pid);
-  }, [canEdit, nodes, board.projectId, decks, cardsNow, host.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    return !!pid && !refuseProject(store.get(), hostId, pid);
+  }, [canEdit, nodes, board.projectId, decks, cardsNow, hostId]); // eslint-disable-line react-hooks/exhaustive-deps
   const arrange = useRef(() => {});
   arrange.current = () => {
     if (!doc || !live.current.canEdit) return;
     const now = readBoard(doc);
     const pid = treeProject(now.nodes, now.projectId);
     if (pid && !store.get().projects.has(pid)) { showToast(NOT_LOADED, 'info', 4000); return; }
-    const refused = pid ? refuseProject(store.get(), host.id, pid) : null;
+    const refused = pid ? refuseProject(store.get(), hostId, pid) : null;
     if (refused) { showToast(refused, 'info', 5000); return; }
     const plan = planArrange(now.nodes, now.edges, now.projectId);
     if (!plan) return;
@@ -397,7 +445,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     // Only once the board's own content is here: planned against an empty board, every frame would be added again.
     void doc.whenSynced.then(() => {
       const s = store.get();
-      const frames = [...s.entryLinks.values()].filter((l) => l.fromCardId === host.id && l.kindKey === 'frames' && s.cards.has(l.toCardId)).sort((a, b) => a.sortIndex - b.sortIndex);
+      const frames = [...s.entryLinks.values()].filter((l) => l.fromCardId === hostId && l.kindKey === 'frames' && s.cards.has(l.toCardId)).sort((a, b) => a.sortIndex - b.sortIndex);
       // Read from the document itself: React has not drawn the just-arrived nodes yet.
       const onBoard: BoardNode[] = [];
       doc.getMap<Y.Map<unknown>>('nodes').forEach((m, id) => { const n = readNode(id, m); if (n) onBoard.push(n); });
@@ -441,11 +489,11 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
   const moveNode = (id: string, dx: number, dy: number, at?: Point, ids: string[] = [id]) => {
     if (!byId.has(id) || !live.current.canEdit) return;
     const s = store.get(), pid = live.current.board.projectId;
-    const plan = planMove(nodes, ids, id, dx, dy, at ?? null, s, pid, host.id);
+    const plan = planMove(nodes, ids, id, dx, dy, at ?? null, s, pid, hostId);
     if (plan.changes.length) board.setPos(plan.changes);
     if (plan.offline) showToast(OFFLINE_LIST, 'info', 4000);
     for (const d of plan.drops) {
-      void saveDrop(d.node, d.parent, s, pid, host.id, {
+      void saveDrop(d.node, d.parent, s, pid, hostId, {
         holds, dispatch, revert: () => { if (doc) moveBackSync(doc, d.node.id, d.start); }, offline: () => showToast(OFFLINE_DROP, 'info', 4000),
       }).then((done) => toastDrop(done, s));
     }
@@ -486,7 +534,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     }
     if (!after.projectId) return;
     for (const { node, parent, was } of parentChanges(before, after.nodes)) {
-      void saveDrop(node, parent, s, after.projectId, host.id, {
+      void saveDrop(node, parent, s, after.projectId, hostId, {
         holds, dispatch, revert: () => moveBackSync(doc, node.id, was.pos), offline: () => showToast(OFFLINE_DROP, 'info', 4000),
       }).then((done) => toastDrop(done, s, parent ?? undefined));
     }
@@ -546,8 +594,9 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     addPlaced(dialog.type, dialog.at, value);
   };
 
-  const openCard = (nodeId: string) => {
+  const openCard = (nodeId: string, newTab = false) => {
     const n = byId.get(nodeId);
+    if (n?.type === 'work') { work?.open(String(n.value.k), newTab); return; }
     const c = n?.type === 'card' ? store.get().cards.get(String(n.value.id)) : undefined;
     if (c && c.visibility !== 'deleted') { setSetupNode(null); setOpenNode(nodeId); }
   };
@@ -592,7 +641,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
   // Keyboard anywhere on the page: Esc, Delete/Backspace, Ctrl+Z, Ctrl+Shift+Z. Inputs keep their own keys.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || editable(e.target) || document.querySelector('dialog[open]') || (e.target as Element).closest?.('.board-card-panel')) return;
+      if (e.defaultPrevented || editable(e.target) || document.querySelector('dialog[open]') || (e.target as Element).closest?.('.board-card-panel') || !keysHere(e, false)) return;
       const { tool: t, selected: sel, selectedEdge: selE, canEdit: ce } = live.current;
       const mod = e.ctrlKey || e.metaKey;
       // Editing keys act only with focus on the board (or nowhere): not from the header menus or the node toolbar.
@@ -645,7 +694,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     if (e.key === ' ' && node) { e.preventDefault(); setSelected(node.id); return; }
     if (e.key === 'Enter') {
       if (node && canEdit && (node.type === 'text' || node.type === 'container')) { e.preventDefault(); setSelected(node.id); if (!frozen(node)) setEditing(node.id); }
-      else if (node?.type === 'card') { e.preventDefault(); openCard(node.id); }
+      else if (node?.type === 'card' || node?.type === 'work') { e.preventDefault(); openCard(node.id); }
       else if (node?.type === 'filter' && canEdit) { e.preventDefault(); setupFilter(node.id); }
       else if (!node && tool && canEdit) { e.preventDefault(); place(tool, viewportCentre(), true); }
     }
@@ -666,8 +715,10 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     if (n) {
       const v = live.current.view;
       const left = v.s * (n.pos.x + v.x), top = v.s * (n.pos.y + v.y);
-      if (left < 0 || top < 0 || left + v.s * n.pos.w > vp.clientWidth || top + v.s * n.pos.h > vp.clientHeight) {
-        setView({ ...v, x: vp.clientWidth / (2 * v.s) - (n.pos.x + n.pos.w / 2), y: vp.clientHeight / (2 * v.s) - (n.pos.y + n.pos.h / 2) });
+      // On Home the floating toolbars cover the edges and the welcome column the left: a node there counts as out of view.
+      const e = work ? EDGE : 0, l = work ? Math.max(EDGE, Math.min(work.clearLeft, vp.clientWidth / 2)) : 0;
+      if (left < l || top < e || left + v.s * n.pos.w > vp.clientWidth - e || top + v.s * n.pos.h > vp.clientHeight - 2 * e) {
+        setView({ ...v, x: (work ? l + vp.clientWidth : vp.clientWidth) / (2 * v.s) - (n.pos.x + n.pos.w / 2), y: vp.clientHeight / (2 * v.s) - (n.pos.y + n.pos.h / 2) });
       }
     }
     if (!quietFocus.current && id !== live.current.selected) setSelected(id);
@@ -823,7 +874,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
       if (!g.moved && g.onEmpty) { setSelected(null); setEditing(null); selectEdge(null); }
       else if (!g.moved) {
         const id = (e.target as Element).closest<HTMLElement>('[data-node-id]')?.dataset.nodeId;
-        if (id) openCard(id);
+        if (id) openCard(id, isNewTabClick(e));
       }
       return;
     }
@@ -836,7 +887,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
       }
       return;
     }
-    if (!g.moved) { if (g.kind === 'resize') setSelected(g.id); else if (g.kind === 'move') openCard(g.id); return; }
+    if (!g.moved) { if (g.kind === 'resize') setSelected(g.id); else if (g.kind === 'move') openCard(g.id, isNewTabClick(e)); return; }
     // moveNode / resizeNode re-check canEdit: rights can be lost in the middle of a drag.
     const px = (e.clientX - g.start.x) / view.s, py = (e.clientY - g.start.y) / view.s;
     // A picked group moves as one (snapped by the node it was dragged by), each member dropped like a single node.
@@ -878,7 +929,8 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
     && isShown(selEdge.value.source.nodeId) && isShown(selEdge.value.target.nodeId);
   // Connect handles: on the hovered node, else the selected one; not while it is being edited, moved or resized.
   // None in the overview: per-card lines are drawn in the detail, and a frame's top handle would cover its name strip.
-  const handleNode = canEdit && !overview && !drag && !resize && editing === null ? [byId.get(hover ?? ''), selNode].find((n) => n && isShown(n.id)) : undefined;
+  // None on Home's work nodes: their lines come from the data, and on a small pill a handle would take the press.
+  const handleNode = canEdit && !overview && !drag && !resize && editing === null ? [byId.get(hover ?? ''), selNode].find((n) => n && isShown(n.id) && n.type !== 'work') : undefined;
   const handleRect = handleNode && rectOf(handleNode);
   const connectPreview: ConnectPreview | null = (() => {
     const from = connecting && byId.get(connecting.from.nodeId);
@@ -889,6 +941,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
   const leaves = shown.findIndex((n) => n.type !== 'container');
   const edgeLayer = (
     <>
+      {work?.lines((id) => { const n = byId.get(id); return n && isShown(id) ? rectOf(n) : undefined; })}
       {overview && <MacroLinks links={overview.links} byId={byId} rectOf={rectOf} nameOf={(n) => String(n.value.label ?? '')} />}
       <Edges edges={overview?.edges ?? edges} byId={byId} rectOf={rectOf} projectBoard={projectBoard} selected={selectedEdge} editing={editingEdge} preview={connectPreview}
         labels={!projectBoard}
@@ -950,7 +1003,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
                           connect({ nodeId: selNode.id, side: nearestSide(selNode.pos, centre(to.pos)) },
                             { nodeId: to.id, side: nearestSide(to.pos, centre(selNode.pos)) });
                         }}
-                        onEdit={frozen(selNode) ? undefined : () => setEditing(selNode.id)}
+                        onEdit={frozen(selNode) || selNode.type === 'work' ? undefined : () => setEditing(selNode.id)}
                         onOpen={() => openCard(selNode.id)}
                         smart={selNode.type === 'filter' ? {
                           display: {
@@ -963,7 +1016,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
                         } : undefined}
                         onColor={(c) => board.setColor(selNode.id, c)}
                         onFocus={() => focusRect(selNode.pos)}
-                        onDelete={frozen(selNode) ? undefined : () => remove(selNode.id)}
+                        onDelete={frozen(selNode) || selNode.type === 'work' ? undefined : () => remove(selNode.id)}
                         onClose={() => { quietFocus.current = true; pendingFocus.current = selNode.id; setSelected(null); }} />
                     </div>
                   )}
@@ -1002,7 +1055,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
           )}
           {menu && canEdit && (
             <div className="menu board-menu" role="menu" aria-label="Add to the board" style={{ left: menu.left, top: menu.top }}>
-              {TOOLS.map((t) => (
+              {tools.map((t) => (
                 <button key={t.type} type="button" role="menuitem" className="menu-item" onClick={() => { const at = menu.at; setMenu(null); place(t.type, at); }}>
                   <Icon name={t.icon} size={15} /> Add {TYPE_LABEL[t.type].toLowerCase()}
                 </button>
@@ -1010,23 +1063,26 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
             </div>
           )}
           {canEdit && (
-            <div className="board-rail" role="group" aria-label="Node tools">
-              {TOOLS.map((t) => (
-                <button key={t.type} type="button" className={`icon-btn${tool === t.type ? ' is-active' : ''}`}
-                  aria-label={TYPE_LABEL[t.type]} title={`${TYPE_LABEL[t.type]} node`} aria-pressed={tool === t.type}
+            <Rail className="v l" label="Add to the board" vertical>
+              <div className="vh" aria-hidden>Add</div>
+              {tools.map((t) => (
+                <button key={t.type} type="button" className={tool === t.type ? 'is-active' : undefined}
+                  aria-label={TYPE_LABEL[t.type]} aria-pressed={tool === t.type}
                   onClick={(e) => chooseTool(t.type, e)}>
-                  <Icon name={t.icon} />
+                  <Icon name={t.icon} size={16} /><span className="tip2">{TYPE_LABEL[t.type]} node</span>
                 </button>
               ))}
-              <button type="button" className="icon-btn" aria-label="Add project" title="Lay a project out on this board as frames" onClick={() => setTreeAsk(true)}>
-                <Icon name="hero" />
-              </button>
-              <span className="board-rail-sep" />
-              <button type="button" className="icon-btn" aria-label="Undo" title="Undo (Ctrl+Z)" aria-keyshortcuts="Control+Z"
-                disabled={!board.canUndo} onClick={() => undoRedo(false)}><Icon name="undo" /></button>
-              <button type="button" className="icon-btn" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" aria-keyshortcuts="Control+Shift+Z"
-                disabled={!board.canRedo} onClick={() => undoRedo(true)}><Icon name="redo" /></button>
-            </div>
+              {host && (
+                <button type="button" aria-label="Add project" onClick={() => setTreeAsk(true)}>
+                  <Icon name="hero" size={16} /><span className="tip2">Lay a project out on this board as frames</span>
+                </button>
+              )}
+              <hr />
+              <button type="button" aria-label="Undo" aria-keyshortcuts="Control+Z"
+                disabled={!board.canUndo} onClick={() => undoRedo(false)}><Icon name="undo" size={16} /><span className="tip2">Undo (Ctrl+Z)</span></button>
+              <button type="button" aria-label="Redo" aria-keyshortcuts="Control+Shift+Z"
+                disabled={!board.canRedo} onClick={() => undoRedo(true)}><Icon name="redo" size={16} /><span className="tip2">Redo (Ctrl+Shift+Z)</span></button>
+            </Rail>
           )}
           {panelCard && (
             <aside className="card-panel board-card-panel" aria-label="Open task"
@@ -1036,7 +1092,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
             </aside>
           )}
           {filterNode && filterNode.type === 'filter' && (
-            <SmartFilterPanel key={filterNode.id} host={host} queryId={smartValue(filterNode.value).queryId} canEdit={canEdit}
+            host && <SmartFilterPanel key={filterNode.id} host={host} queryId={smartValue(filterNode.value).queryId} canEdit={canEdit}
               onSaved={(queryId, label) => {
                 const cur = live.current.board.nodes.find((n) => n.id === filterNode.id); // the node may have changed while saving
                 if (cur) live.current.board.setValue(cur.id, smartToStored({ ...smartValue(cur.value), queryId, label }));
@@ -1061,16 +1117,18 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange }: {
             );
           })()}
           {dialog?.type === 'card' && <CardNodeDialog host={host} onClose={cancelDialog}
-            makeFrame={isStoryline(store.get(), host) ? (title) => makeFrame(store.get(), host, title) : undefined}
+            makeFrame={host && isStoryline(store.get(), host) ? (title) => makeFrame(store.get(), host, title) : undefined}
             onChoose={(id) => {
+            // On Home (no host) only a task of a project every member sees: the doc goes to the whole workspace.
+            if (!host && !homeCardAllowed(store.get(), id)) { cancelDialog(); showToast(HOME_CARD_REFUSED, 'info', 5000); return; }
             // On a storyline's board a picked wiki entry becomes a frame: a picture card, and a "shows" link from the storyline.
-            const s = store.get(), picked = s.cards.get(id), frame = isStoryline(s, host) && !!picked?.isDoc;
+            const s = store.get(), picked = s.cards.get(id), frame = !!host && isStoryline(s, host) && !!picked?.isDoc;
             if (frame && picked && isStoryline(s, picked)) { finishDialog({ id, mode: 'scene' }); return; }
-            const linked = [...s.entryLinks.values()].some((l) => l.fromCardId === host.id && l.toCardId === id && l.kindKey === 'frames');
-            if (frame && !linked) void dispatch('wiki', 'addLink', { kindKey: 'frames', fromCardId: host.id, toCardId: id, props: {} }).catch(() => {});
+            const linked = [...s.entryLinks.values()].some((l) => l.fromCardId === hostId && l.toCardId === id && l.kindKey === 'frames');
+            if (frame && !linked) void dispatch('wiki', 'addLink', { kindKey: 'frames', fromCardId: hostId, toCardId: id, props: {} }).catch(() => {});
             finishDialog({ id, mode: frame ? 'scene' : 'mini' });
           }} />}
-          {dialog?.type === 'image' && <ImageDialog hostCardId={host.id} onClose={cancelDialog} onDone={(v) => finishDialog({ ...v })} />}
+          {dialog?.type === 'image' && host && <ImageDialog hostCardId={hostId} onClose={cancelDialog} onDone={(v) => finishDialog({ ...v })} />}
           {dialog?.type === 'video' && <VideoDialog onClose={cancelDialog} onDone={(videoId) => finishDialog({ videoId })} />}
           <div className="board-zoom" role="group" aria-label="Zoom">
             <button type="button" className="icon-btn" aria-label="Zoom out" aria-keyshortcuts="-" disabled={view.s <= ZOOM_MIN} onClick={() => zoomTo(view.s - ZOOM_STEP)}><Icon name="minus" /></button>

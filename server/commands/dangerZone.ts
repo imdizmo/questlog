@@ -154,13 +154,23 @@ const inside = (root: string, path: string) => {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 };
 
-/** Regular files directly in `dir` (and its covers folder), for the "left untouched" count. */
+/** Regular files directly in `dir` (and its covers and assets folders), for the "left untouched" count. */
 function countFiles(dir: string): number {
   let n = 0;
-  for (const d of [dir, join(dir, 'covers')]) {
+  for (const d of [dir, join(dir, 'covers'), join(dir, 'assets')]) {
     try { for (const e of readdirSync(d, { withFileTypes: true })) if (e.isFile()) n++; } catch { /* no folder */ }
   }
   return n;
+}
+
+/** Every asset copy (server/assets.ts); none in a database from before the assets table. */
+function assetBlobIds(db: Db): string[] {
+  try {
+    return (db.prepare('SELECT picture_id p, model_id m FROM assets').all() as { p: string | null; m: string | null }[])
+      .flatMap((r) => [r.p, r.m]).filter((x): x is string => !!x);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -168,7 +178,7 @@ function countFiles(dir: string): number {
  * - Refuses while a server has the database open (an exclusive lock is taken and held until the blobs are gone), while
  *   the workspace is active, and unless the name is repeated exactly.
  * - Removes only the blobs the database knows about: one file per `files` row (`<filesDir>/<id>`) and per `covers` row
- *   (`<filesDir>/covers/<id>`), each resolved inside the files folder; an id that would land outside it is refused.
+ *   (`<filesDir>/covers/<id>`) and per asset copy (`<filesDir>/assets/<id>`), each resolved inside the files folder; an id that would land outside it is refused.
  *   User report uploads are stored as `files` rows, so they are covered. Anything else in the folder is left alone and
  *   counted; the folders themselves are removed only when that leaves them empty.
  * - Then removes the database with its -wal and -shm files.
@@ -192,11 +202,12 @@ export function deleteWorkspace(dbPath: string, filesDir: string, confirmName: s
       throw new Error('This database holds no workspace that can be deleted.');
     }
     if (!acc) throw new Error('This database holds no workspace.');
-    if (acc.d !== 1) throw new Error('The workspace is still active. Its owner disables it first (Workspace settings, Danger Zone).');
+    if (acc.d !== 1) throw new Error('The workspace is still active. Its owner disables it first (the workspace menu (top left) → Disable workspace).');
     if (confirmName !== acc.name) throw new Error(`To delete it, repeat its name: --confirm "${acc.name}"`);
     const blobs = [
       ...(db.prepare('SELECT id FROM files').all() as { id: string }[]).map((r) => resolve(root, r.id)),
       ...(db.prepare('SELECT id FROM covers').all() as { id: string }[]).map((r) => resolve(root, 'covers', r.id)),
+      ...assetBlobIds(db).map((id) => resolve(root, 'assets', id)),
     ];
     for (const path of blobs) {
       if (!inside(root, path)) { out.refused++; continue; }
@@ -212,6 +223,6 @@ export function deleteWorkspace(dbPath: string, filesDir: string, confirmName: s
   for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) rmSync(f, { force: true });
   out.unknown = countFiles(root);
   // Only empty folders go; rmdir refuses anything else.
-  for (const d of [join(root, 'covers'), root]) { try { rmdirSync(d); } catch { /* not empty, or absent */ } }
+  for (const d of [join(root, 'covers'), join(root, 'assets'), root]) { try { rmdirSync(d); } catch { /* not empty, or absent */ } }
   return out;
 }

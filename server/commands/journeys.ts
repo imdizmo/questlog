@@ -30,6 +30,8 @@ function assertEnabled(db: Db): void {
 export const journeyCommands: Record<string, Command> = {
   'journeys/set': {
     schema: z.object({ deckId: z.string(), steps: z.array(stepSchema).max(MAX_JOURNEY_STEPS) }),
+    // No steps removes the list's journey.
+    deletes: (input) => input.steps.length === 0,
     run(ctx: Ctx, { deckId, steps }) {
       const { db, actor } = ctx;
       assertEnabled(db);

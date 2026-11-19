@@ -210,7 +210,7 @@ export function registerSlackRoutes(app: FastifyInstance, d: SlackRouteDeps): vo
       if (f.get('command') !== '/addcard') return ephemeral('This command is not supported.');
       const cfgTeam = slackConfig(db).teamId;
       const team = f.get('team_id') ?? '';
-      if (!cfgTeam) return ephemeral('/addcard is not set up yet. An admin can enter the Slack workspace id in the workspace settings.');
+      if (!cfgTeam) return ephemeral('/addcard is not set up yet. An admin can enter the Slack workspace id in the workspace menu (top left) → Connections → Slack.');
       if (team !== cfgTeam) return ephemeral('This Slack workspace is not connected to the workspace.');
       // Without a trigger id a signed body could be replayed within the 5 minutes: refused.
       const trigger = f.get('trigger_id') ?? '';
@@ -220,7 +220,7 @@ export function registerSlackRoutes(app: FastifyInstance, d: SlackRouteDeps): vo
       if (!text) return ephemeral('Add some text after /addcard.');
       const cfg = slackConfig(db);
       const deck = cfg.addCardDeckId ? deckRow(db, cfg.addCardDeckId) : undefined;
-      if (!deck || deck.deckType === 'doc') return ephemeral('/addcard is not set up yet. An admin can pick its deck in the workspace settings.');
+      if (!deck || deck.deckType === 'doc') return ephemeral('/addcard is not set up yet. An admin can pick its list in the workspace menu (top left) → Connections → Slack.');
       const token = getSecret(db, 'slack', 'botToken');
       const slackUser = f.get('user_id') ?? '';
       const email = token && SLACK_USER.test(slackUser) ? await emailOf(team, f.get('enterprise_id') || null, slackUser, token) : null;

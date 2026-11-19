@@ -54,12 +54,16 @@ export function parseCsv(input: string): string[][] {
   return rows;
 }
 
-/** Splits parsed rows into headers and data rows, dropping every column that is empty in all rows. */
+/**
+ * Splits parsed rows into headers and data rows, dropping every column with no value in any data row (its header may
+ * have a name). A file with only a header row keeps all its columns.
+ */
 export function columnsOf(rows: string[][]): { headers: string[]; rows: string[][] } {
   if (rows.length === 0) return { headers: [], rows: [] };
   const width = Math.max(...rows.map((r) => r.length));
+  const data = rows.slice(1);
   const keep: number[] = [];
-  for (let c = 0; c < width; c++) if (rows.some((r) => (r[c] ?? '').trim() !== '')) keep.push(c);
+  for (let c = 0; c < width; c++) if (!data.length || data.some((r) => (r[c] ?? '').trim() !== '')) keep.push(c);
   return { headers: keep.map((c) => rows[0][c] ?? ''), rows: rows.slice(1).map((r) => keep.map((c) => r[c] ?? '')) };
 }
 

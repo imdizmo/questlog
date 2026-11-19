@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use tauri::Url;
+
 use crate::shell::{parse_listening, RotatingLog};
 
 const LOG_MAX: u64 = 5 * 1024 * 1024;
@@ -15,6 +17,9 @@ const ERROR_TAIL: usize = 20;
 const DRAIN: Duration = Duration::from_millis(500);
 /// Longest server output line kept; the rest of a longer line is dropped, so memory stays bounded.
 const LINE_MAX: usize = 8 * 1024;
+/// The local server's workspace label, shown in the web app's top bar.
+pub const WORKSPACE_LABEL: &str = "This computer";
+
 /// Variables from the user's environment that the server must not see: they would change how node runs or
 /// configure the desktop server like a LAN deployment (extra host names, secrets, upload limit, mail, billing).
 const SCRUB_VARS: &[&str] = &["NODE_OPTIONS", "JT_HOSTS", "JT_SECRET", "JT_MAX_FILE_MB"];
@@ -59,8 +64,10 @@ pub enum StartError {
 }
 
 impl Server {
-    /// Starts `<app>/runtime/node <app>/server/server.mjs` with the desktop environment.
-    pub fn spawn(app_dir: &Path, data: &Path, port: u16) -> io::Result<Server> {
+    /// Starts `<app>/runtime/node <app>/server/server.mjs` with the desktop environment. `team`: the team server
+    /// this app knows, if any (the Suggestion button forwards to its library service).
+    /// `signin`: the secret that lets this app's window sign the owner in without a password (`/desktop-sign-in`).
+    pub fn spawn(app_dir: &Path, data: &Path, port: u16, team: Option<&Url>, signin: &str) -> io::Result<Server> {
         let node = app_dir.join("runtime").join(if cfg!(windows) { "node.exe" } else { "node" });
         let mut cmd = Command::new(node);
         cmd.arg("--max-old-space-size=768")
@@ -73,7 +80,11 @@ impl Server {
             .env("JT_WEB", app_dir.join("web"))
             .env("JT_EXIT_ON_STDIN_CLOSE", "1")
             .env("JT_BACKUP_BEFORE_MIGRATE", "1")
-            .env("JT_PUBLIC_URL", format!("http://127.0.0.1:{port}"));
+            .env("JT_PUBLIC_URL", format!("http://127.0.0.1:{port}"))
+            // What the web app's badge says (GET /api/status): this is the desktop app's own server.
+            .env("JT_WORKSPACE_LABEL", WORKSPACE_LABEL)
+            .env("JT_DESKTOP_SIGNIN", signin);
+        set_team(&mut cmd, team);
         Server::launch(cmd, data)
     }
 
@@ -219,6 +230,22 @@ impl Server {
     }
 }
 
+/// `JATIFY_TEAM` for the server: the team host (no port; the library service is on its own port), or unset when the
+/// app knows no team server, whatever the app itself inherited.
+fn set_team(cmd: &mut Command, team: Option<&Url>) {
+    match team.and_then(|u| u.host_str()) {
+        Some(host) => cmd.env("JATIFY_TEAM", host),
+        None => cmd.env_remove("JATIFY_TEAM"),
+    };
+}
+
+/// A fresh 256-bit hex secret for `/desktop-sign-in`, made per run from the OS random source.
+pub fn signin_secret() -> String {
+    let mut b = [0u8; 32];
+    getrandom::fill(&mut b).expect("the OS random source");
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// Removes the inherited variables listed in `SCRUB_VARS` and `SCRUB_PREFIXES` from `cmd`.
 fn scrub_env(cmd: &mut Command) {
     for name in SCRUB_VARS {
@@ -318,6 +345,14 @@ fn assign_kill_on_close_job(child: &Child) -> Result<Job, String> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn signin_secret_is_64_hex_and_fresh() {
+        let (a, b) = (signin_secret(), signin_secret());
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
     use super::*;
     use crate::shell::testutil::Scratch;
     use std::process::Command;
@@ -365,6 +400,26 @@ mod tests {
         s.stop(Duration::from_secs(2));
         let log = std::fs::read_to_string(d.path().join("logs/server.log")).unwrap();
         assert!(log.contains("seen::end"), "{log}");
+    }
+
+    #[test]
+    fn server_gets_the_team_host_or_nothing() {
+        let script = "echo \"team:${JATIFY_TEAM-unset}:end\"; echo QUESTLOG_LISTENING 12; exec cat";
+        let run = |team: Option<&Url>, name: &str| {
+            let d = Scratch::new(name);
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(script).env("JATIFY_TEAM", "inherited:8780");
+            set_team(&mut cmd, team);
+            let mut s = Server::launch(cmd, d.path()).unwrap();
+            assert_eq!(s.wait_ready(Duration::from_secs(5)).unwrap(), 12);
+            s.stop(Duration::from_secs(2));
+            std::fs::read_to_string(d.path().join("logs/server.log")).unwrap()
+        };
+        let nas = Url::parse("http://nas.example:8780/").unwrap();
+        assert!(run(Some(&nas), "team-host").contains("team:nas.example:end"));
+        let v6 = Url::parse("http://[fd7a:115c:a1e0::5]:9000/").unwrap();
+        assert!(run(Some(&v6), "team-v6").contains("team:[fd7a:115c:a1e0::5]:end"));
+        assert!(run(None, "team-none").contains("team:unset:end"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ import type { Priority } from '../../../shared/types';
 import { cardCode, slugOf, titleOf } from '../../../shared/cards';
 import { dispatch } from '../api';
 import { settingsOf, store, useStore } from '../store';
-import { navigate } from '../router';
+import { usePageNavigate } from '../views/HomePane';
 import { deckPath, pushRecentDeck } from '../cards';
 import { showToast } from '../toast';
 import { Dialog } from './Dialog';
@@ -36,6 +36,7 @@ export function Toggle({ label, checked, onChange, disabled, title }: {
  * Afterwards it opens the new card, unless "Create another" keeps the form open and empty.
  */
 export function AddCardPanel({ deckId: initialDeck, onClose }: { deckId: string; onClose: () => void }) {
+  const go = usePageNavigate(); // in the pane beside Home, it stays there
   const decks = useStore((s) => s.decks);
   const projects = useStore((s) => s.projects);
   const presets = useStore((s) => s.presets);
@@ -111,7 +112,7 @@ export function AddCardPanel({ deckId: initialDeck, onClose }: { deckId: string;
         showToast(`Added ${taskId({ seq: r.accountSeq, deckId })}`, 'info', 3000);
         area.current?.focus();
       } else {
-        navigate(`${deckPath(deck)}/card/${cardCode(r.accountSeq)}-${slugOf(titleOf(text)) || 'card'}`);
+        go(`${deckPath(deck)}/card/${cardCode(r.accountSeq)}-${slugOf(titleOf(text)) || 'card'}`);
       }
     } catch { /* toast */ } finally {
       setBusy(false);

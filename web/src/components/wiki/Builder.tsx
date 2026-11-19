@@ -1,11 +1,13 @@
 // The Wiki as a builder: home tiles per entity type (entry type), a gallery per entity type, the page that makes a new
 // entry from a template with pickers instead of typing, the places tree, the timeline and the storyboard.
+import { newEntry } from './GuidedStart';
 import { useMemo, useState, type ReactNode } from 'react';
 import type { Card, EntryLink, EntryType, LinkKind, Project } from '../../../../shared/types';
 import { WORKS_ON, fieldsOf, isTypeOrChild } from '../../../../shared/wiki';
 import { dispatch } from '../../api';
 import { canEditContent, canManageProject, store, useStore, type State } from '../../store';
 import { Link, navigate, useLocation } from '../../router';
+import { usePageNavigate } from '../../views/HomePane';
 import { showToast } from '../../toast';
 import {
   campaignLore, campaignTypes, entriesOfTypes, entryByKey, entryExcerpt, usedValues, entryPath, formatProps, formatValue, infoboxFields, kindPath, kindsFrom,
@@ -17,6 +19,7 @@ import { boardOfCard, boardPath, createBoard } from '../../board/boards';
 import { FieldEditor, entryTitle } from './FieldEditor';
 import { useTitleOfKey } from './Infobox';
 import { PropsForm } from './LinksSection';
+import { TypePicture } from './TypePicture';
 
 // ponytail: the world views read the starter pack's keys; a project with its own keys for places or history gets empty
 // views. Make the keys a project setting if that turns out to matter.
@@ -29,12 +32,13 @@ const useLore = (project: Project): Card[] => {
 };
 const typeOf = (types: Map<string, EntryType>, c: Card) => (c.entryTypeId ? types.get(c.entryTypeId) ?? null : null);
 
-/** An entry's picture (its first image field with a value), else its entity type's icon. */
+/** An entry's picture (its first image field with a value), else its entity type's picture; a plain page gets 📄. */
 export function Picture({ card }: { card: Card }) {
   const types = useStore((s) => s.entryTypes);
   const type = typeOf(types, card);
   const id = type && fieldsOf(types, type.id).filter((f) => f.kind === 'image').map((f) => card.fields?.[f.key]).find((v): v is string => typeof v === 'string' && !!v);
-  return id ? <img className="wk-pic" src={fileUrl(id)} alt="" /> : <span className="wk-ico" aria-hidden>{type?.icon ?? '📄'}</span>;
+  if (id) return <img className="wk-pic" src={fileUrl(id)} alt="" />;
+  return type ? <TypePicture type={type} size="tile" className="wk-pic" /> : <span className="wk-ico" aria-hidden>📄</span>;
 }
 
 /** Up to `max` of an entry's table values, as small labels. */
@@ -94,16 +98,15 @@ export function WikiHome({ project }: { project: Project }) {
         <p className="hint">Need recipes, abilities, shops, dungeons or weapon and armour types? <button type="button" className="link-btn"
           onClick={() => void dispatch('wiki', 'addStarterPack', { projectId: project.id }).catch(() => {})}>Add the RPG extras</button></p>
       )}
-      {(has(PLACE) || has(HISTORY) || has(STORYLINE)) && (
-        <section aria-label="Views">
-          <h2 className="wiki-side-title">See the world as</h2>
-          <div className="wk-grid">
-            {has(PLACE) && <Link className="wk-tile" href={wikiViewPath(project.seq, 'places')}><span className="wk-ico" aria-hidden>🧭</span><strong>Places</strong><span className="muted">The world as a tree, with who and what is in each place</span></Link>}
-            {has(HISTORY) && <Link className="wk-tile" href={wikiViewPath(project.seq, 'timeline')}><span className="wk-ico" aria-hidden>⏳</span><strong>Timeline</strong><span className="muted">History in order, by era</span></Link>}
-            {has(STORYLINE) && <Link className="wk-tile" href={kindPath(project.seq, STORYLINE)}><span className="wk-ico" aria-hidden>🎬</span><strong>Storyboards</strong><span className="muted">Questlines and lore as frames in order</span></Link>}
-          </div>
-        </section>
-      )}
+      <section aria-label="Views">
+        <h2 className="wiki-side-title">See the world as</h2>
+        <div className="wk-grid">
+          <Link className="wk-tile" href={wikiViewPath(project.seq, 'graph')}><span className="wk-ico" aria-hidden>🕸</span><strong>Graph</strong><span className="muted">Every entry and how they connect</span></Link>
+          {has(PLACE) && <Link className="wk-tile" href={wikiViewPath(project.seq, 'places')}><span className="wk-ico" aria-hidden>🧭</span><strong>Places</strong><span className="muted">The world as a tree, with who and what is in each place</span></Link>}
+          {has(HISTORY) && <Link className="wk-tile" href={wikiViewPath(project.seq, 'timeline')}><span className="wk-ico" aria-hidden>⏳</span><strong>Timeline</strong><span className="muted">History in order, by era</span></Link>}
+          {has(STORYLINE) && <Link className="wk-tile" href={kindPath(project.seq, STORYLINE)}><span className="wk-ico" aria-hidden>🎬</span><strong>Storyboards</strong><span className="muted">Questlines and lore as frames in order</span></Link>}
+        </div>
+      </section>
     </div>
   );
 }
@@ -171,6 +174,7 @@ export function EntryBuilder({ project, type }: { project: Project; type: EntryT
 }
 
 function BuilderForm({ project, type }: { project: Project; type: EntryType }) {
+  const go = usePageNavigate(); // in the pane beside Home, it stays there
   const s = useStore((x) => x);
   const { query } = useLocation();
   const [seed] = useState(() => seedOf(s, project, type, query));
@@ -192,14 +196,16 @@ function BuilderForm({ project, type }: { project: Project; type: EntryType }) {
     if (!title || busy) return;
     setBusy(true);
     try {
-      const r = await dispatch<{ id: string; key: string }>('wiki', 'createEntry', { projectId: project.id, typeId: type.id, name: title });
+      // A type with a guided start asks its questions first (null: cancelled there).
+      const r = await newEntry({ project, type, name: title });
+      if (!r) return;
       if (Object.keys(filled).length) await dispatch('wiki', 'setEntry', { cardId: r.id, fields: filled });
       for (const l of links) {
         const kind = kinds.find((k) => k.key === l.kindKey);
         if (kind) await dispatch('wiki', 'addLink', { kindKey: l.kindKey, fromCardId: r.id, toCardId: l.to.id, props: visibleProps(kind.props, l.props) });
       }
       showToast(`${title} created`, 'info');
-      if (another) setName(''); else navigate(`${wikiPath(project.seq)}/${r.key}`);
+      if (another) setName(''); else go(`${wikiPath(project.seq)}/${r.key}`);
     } catch { /* toast */ } finally { setBusy(false); }
   };
   const saveTemplate = async () => {
@@ -426,7 +432,7 @@ export function Storyboard({ card, project, editable }: { card: Card; project: P
         {(editable || boardOfCard(s, card.id)) && (
           <button type="button" className="btn btn-sm btn-primary" onClick={() => {
             const b = boardOfCard(s, card.id);
-            void (b ? Promise.resolve(b.accountSeq) : createBoard(card)).then((seq) => navigate(`${boardPath(seq)}?story=1`)).catch(() => {});
+            void (b ? Promise.resolve(b.accountSeq) : createBoard(card)).then((seq) => navigate(`${boardPath(seq)}&story=1`)).catch(() => {});
           }}>Open as a flow</button>
         )}
       </div>

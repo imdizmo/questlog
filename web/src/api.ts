@@ -71,7 +71,7 @@ const MESSAGES: Record<string, string> = {
   hacknplan_auth: 'HacknPlan did not accept that API key.',
   hacknplan_not_found: "HacknPlan has no project with that number for this key.",
   hacknplan_unavailable: "Couldn't reach HacknPlan. Try again later.",
-  plan_limit: "That's over your plan's limit. Upgrade under Workspace settings, Billing.",
+  plan_limit: "That's over your plan's limit. Upgrade in the workspace menu (click the workspace name), under Plan & billing.",
   plan_feature: 'That feature is part of the Pro plan. Existing values stay, but new ones need Pro.',
   already_subscribed: 'This workspace already has a subscription. Change the plan or seats under Manage payment.',
   billing_off: 'This workspace is self-hosted and has no billing.',
@@ -128,7 +128,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
 
 /** Unauthenticated / auth endpoints. Callers show their own errors (inline on forms). */
 export const api = {
-  status: () => request<{ setup: boolean; disabled?: boolean }>('GET', '/api/status'),
+  status: () => request<{ setup: boolean; disabled?: boolean; workspace?: unknown; suggestions?: unknown }>('GET', '/api/status'),
   setup: (b: { workspaceName: string; name: string; email: string; password: string }) => request('POST', '/api/setup', b),
   login: (b: { email: string; password: string }) => request<{ workspaceDisabled?: boolean }>('POST', '/api/login', b),
   /** Danger Zone: why the owner is leaving (server/commands/dangerZone.ts EXIT_OPTIONS). */
@@ -161,6 +161,8 @@ export const api = {
     if (q.filters?.length) p.set('filters', q.filters.join(','));
     return request<{ items: ActivityItem[]; next: string | null }>('GET', `/api/activity?${p}`);
   },
+  /** Home's "Recently worked on": the cards I changed or commented on lately, newest first (server/home.ts). */
+  homeRecent: () => request<{ items: { cardId: string; at: number }[] }>('GET', '/api/me/recent'),
   /** All-time tracked time of a card and its newest 200 segments. */
   cardTime: (cardId: string) => request<{ totalMs: number; segments: TimeSegment[] }>('GET', `/api/cards/${encodeURIComponent(cardId)}/time`),
   history: (cardId: string) => request<CardHistory[]>('GET', `/api/cards/${encodeURIComponent(cardId)}/history`),
@@ -174,6 +176,9 @@ export const api = {
   emailStatus: () => request<EmailStatus>('GET', '/api/email/status'),
   /** My notification email preference. */
   emailPrefs: () => request<{ notifications: NotificationPref }>('GET', '/api/email/prefs'),
+  /** A wiki entry's aliases, replaced as a whole. Errors are shown inline by the aliases editor (no toast). */
+  setAliases: (cardId: string, aliases: string[]) =>
+    request<{ payload: { aliases: string[] } }>('POST', '/dispatch/wiki/setAliases', { cardId, aliases }).then((r) => r.payload),
   /** Discord and Slack settings (admins); secrets only as set / not set. */
   integrations: () => request<IntegrationSettings>('GET', '/api/integrations'),
 };

@@ -65,6 +65,20 @@ still wins over `JATIFY_TEAM`), **Use this computer**, and **Change server…** 
 in `desktop.json` (`~/.local/share/questlog/` on Linux, `%LOCALAPPDATA%\Questlog\` on Windows) and the window
 restarts (the local server stops first); no data is moved or deleted.
 
+**The workspace strip.** A narrow column at the window's left has one button per workspace: **This computer**, each
+team server Questlog knows (`JATIFY_TEAM`, the server you typed, and the one **This computer** replaced) and **+**
+(add or change a server: the chooser). The open one is highlighted; hover a button for its server's address. A click
+switches the same way the Workspace menu does (saved in `desktop.json`, the window restarts). Keyboard: **F6**
+(Workspace › Go to the workspace strip) moves the focus there, ↑/↓ move between buttons, Enter switches, Esc goes back
+to the page. Every page also says it in the top bar, under the workspace name in the workspace switcher: **This
+computer** or **Team: <host>**; and **New project** says where the project goes. The strip belongs to the app, not to the server's page: it is a separate view with its
+own page, and nothing a server's page does can switch servers. So the strip and the window title are what to trust
+about where you are; the switcher's line is the server's own label for itself. The strip remembers at most three team servers
+(`JATIFY_TEAM`, the typed one and the one before it): typing a fourth forgets the oldest typed one.
+
+**Stopping.** SIGTERM, SIGINT and SIGHUP (e.g. `systemctl --user stop` of the Launcher's service) close Questlog
+the normal way: the local server is stopped and the next start does not ask about a crash.
+
 **Crash reports.** If Questlog ends unexpectedly (the app itself crashes, the local server stops on its own, also
 while starting, or the app is killed), the next start asks "Questlog closed unexpectedly. Send the report to the
 team?" with **Send**, **Don't send** and **See what is sent**. After the local server stops, closing the window still
@@ -75,6 +89,19 @@ goes to the team's library service on port 8781 of the team host, only to a priv
 when you choose Send. Errors inside the page that do not end the app, and the team server's own errors (they are in
 the server's logs), are not reported. A `running` file in the data folder says whether the last run ended cleanly:
 it is there while Questlog runs and removed by a clean exit. Deleting it is harmless (the next start just does not ask).
+
+**Suggestions.** When Questlog knows a team server and the team's library service knows you as a member, the top bar
+has a **Suggestion** button: write what to improve, fix or add, add screenshots if you like (PNG or JPEG, up to ten),
+and press **Send**. It goes to the team's library service (port 8781 of the team host) with your name, the version of
+Questlog and the pictures, nothing else. In **This computer** the local server sends it on from your computer, only to
+a private or Tailscale address; a team server's page (with `JATIFY_TEAM_SERVER` set) sends it straight there.
+
+**Assets.** Each project has an **Assets** page (`/assets`): pictures, 3D models, maps and concepts that Questlog
+keeps its own copy of, with a link back to where each came from. **Add** takes pictures (PNG, JPEG, WebP) and
+single-file `.glb` models from your computer, a picture or `.glb` from a URL (the server downloads it from a public
+address and keeps it), and, when Questlog knows a team server whose library service is version 0.7.0 or later, pictures
+from **Asset Shelf** packs and from **Groundwork** maps and props (only the picture and a link back come in, never the
+model or map). Open an asset to see it big, turn a `.glb` in the 3D viewer, tag it, or use its picture on a wiki entry.
 
 **Backups.** Before a new version changes the database, the app saves a copy in `backups/` inside the data folder,
 named `jt-<migration>-<YYYYMMDD-HHMMSS>.db`; the newest three are kept. To back up by hand, close Questlog and copy
@@ -123,13 +150,13 @@ archives.
 1. Open the URL. With an empty database the app goes to **Set up your workspace**: enter a
    workspace name and your own name, email and password. You become the workspace owner.
 2. Create a project from the **Lists** page, then areas and lists inside it.
-3. Invite people from the gear menu in the top bar: **Members → Invite people**. Pick a role
+3. Invite people from the workspace menu (the workspace switcher at the top left › **Workspace settings, people, look…**): **Members → Invite people**. Pick a role
    (admin, member or observer) and, for members and observers, the projects they should see.
    Then **Create link**. The link is copied and shown once. Send it to the person; it works for
    7 days. Admin links work once. Open links are listed under **Members**, where you can
    disable them.
-4. Workspace-wide options (active task slots, week start, feature switches and so on) are under
-   **Workspace settings** in the same menu. Only the owner and admins see that menu.
+4. Workspace-wide options (week start, feature switches and so on) are in the same menu, see
+   [The workspace menu](#the-workspace-menu). Only the owner and admins see those sections.
 
 ## Host names
 
@@ -205,7 +232,7 @@ member can read the member list. Only the owner and admins can see join requests
   must not send an `Origin` header. Anything else gets 403 `cross_origin`, so a web page on the tailnet can't change the
   team.
 - Roles follow the Members page: the same seat limits, and observers only on plans that include them. On top of that:
-  - Ownership never moves here: role `owner` gets 409 `owner_transfer`. It moves in Questlog's settings (Danger zone).
+  - Ownership never moves here: role `owner` gets 409 `owner_transfer`. It moves in Questlog's workspace menu (Disable workspace).
   - The owner can't be changed, removed or relinked here: 409 `last_owner`.
   - Through this API an admin only adds, changes and removes members and observers. Making or unmaking an admin needs
     the owner (403 `forbidden`). This limit is for the API only: on Questlog's own Members page admins manage roles as
@@ -337,7 +364,7 @@ To back up, **stop the server first**, then copy the database file. If `jt.db-wa
 that is half written. To restore, stop the server, put the copied file(s) back and start it
 again.
 
-Attachments and covers are stored in the folder named by `JT_FILES` (default next to the database).
+Attachments, covers and asset copies are stored in the folder named by `JT_FILES` (default next to the database).
 **That folder must belong to one workspace only.** At start the server deletes every file in it that
 its own database doesn't list, so pointing two workspaces, or any other files, at the same folder
 loses data. Back it up together with the database.
@@ -361,8 +388,8 @@ the account menu), "your report is done" emails to players who left an address w
 address in the invite dialog.
 
 By default nothing leaves the machine (`EMAIL_TRANSPORT=log`): emails are kept in the outbox,
-marked "not sent (log mode)". Admins see the outbox (the newest 200 emails) under Workspace
-settings, Email. To send through your mail server:
+marked "not sent (log mode)". Admins see the outbox (the newest 200 emails) in the workspace
+menu under Connections › Email sending. To send through your mail server:
 
 ```sh
 EMAIL_TRANSPORT=smtp SMTP_HOST=mail.example.com SMTP_PORT=587 \
@@ -404,7 +431,7 @@ A project can be shared as public, read-only pages at `<JT_PUBLIC_URL>/open/<url
 
 - **What visitors see:** every list of the project, with its live tasks (archived and deleted tasks never show; lore does). For each task: its title, text, a coarse status, priority, Effort, tags, upvotes, and its owner's display name. Comments show only when "Show comments" is on, and only from comment threads (never blockers or reviews). Visitors never see email addresses, other projects, or the project's own name: they see the display name you pick.
 - **Images:** the banner and the gallery image are uploaded like covers. They are public only while the shared project points at them.
-- **Visitors' accounts:** visitors who want to upvote or get update emails join as *guests*. Guests have no access to the workspace and use no seat. Joining always answers "check your email". No account exists until the emailed link (valid for 24 hours) is used, so nobody can take an address or find out whether it already has an account: an address that has one gets a short notice instead. At most 100 sign-up emails go out per day for the whole workspace, and they hold fixed text only. In log mode nothing is sent: admins see each confirmation link in Workspace settings › Email and can pass it on by hand. Admins can remove guests under Members.
+- **Visitors' accounts:** visitors who want to upvote or get update emails join as *guests*. Guests have no access to the workspace and use no seat. Joining always answers "check your email". No account exists until the emailed link (valid for 24 hours) is used, so nobody can take an address or find out whether it already has an account: an address that has one gets a short notice instead. At most 100 sign-up emails go out per day for the whole workspace, and they hold fixed text only. In log mode nothing is sent: admins see each confirmation link in the workspace menu under Connections › Email sending and can pass it on by hand. Admins can remove guests under Members.
 - **Emails:** followers get a daily or weekly email about new and finished tasks. Admins get a weekly upvote digest on Mondays. Both carry an unsubscribe link.
 - **Gallery:** `/open` lists the shared projects marked "List in the gallery".
 - **Limits:** public reads are limited to 120 a minute per IP address, and sign-ups to 5 an hour. Behind a reverse proxy every visitor shares the proxy's address.
@@ -412,7 +439,7 @@ A project can be shared as public, read-only pages at `<JT_PUBLIC_URL>/open/<url
 
 ## Discord and Slack
 
-Workspace settings › Discord and › Slack (admins). Discord and Slack call this server, so it must be reachable from the
+Workspace menu › Connections › Discord and › Slack (admins). Discord and Slack call this server, so it must be reachable from the
 internet over https under a host name listed in `JT_HOSTS`.
 
 - **Discord** (interactions over HTTP, no bot that stays connected): set the application's interactions endpoint to
@@ -436,9 +463,46 @@ internet over https under a host name listed in `JT_HOSTS`.
   `hooks.slack.com`, `slack.com`). News is posted from a queue every few seconds (at most 20 posts at a time, failed posts are tried again
   up to five times), never while a request waits, and not at all while the workspace is disabled.
 
+## AI assistants (MCP)
+
+Workspace menu › Connections › AI assistants (MCP). AI tools that speak MCP connect to `<server URL>/mcp` (JSON-RPC over
+HTTP) with a personal API token sent as `Authorization: Bearer <token>`. The tools act as the token's owner and never
+exceed the token: a read token only reads, and a token confined to projects sees only those.
+
+- **Writing:** create and change tasks, comments, Hand, lists, milestones and time, and `create_project` (an admin-role
+  write token whose owner may create projects; optional `visibility` and `template`).
+- **Deleting** needs a personal write token created with **May delete** (API tokens › New personal token). It is off by
+  default, and every token made before it existed cannot delete. On top of it the owner's own rights apply as in the
+  app (observers cannot delete, guarded lists only by their guardians). The same holds for the command API, see below.
+  - `delete_cards`: up to 100 tasks per call, all or none. A soft delete: they go to Archive › Deleted tasks and can be
+    restored there.
+  - `delete_deck`: removes the list for good (it cannot be restored); its tasks go to Archive › Deleted tasks. Needs
+    `confirm: true`.
+  - `delete_milestone`: removes the milestone for good; its tasks stay and lose the milestone. Needs `confirm: true`.
+- Every change goes through the same commands as the app, so it shows up live and in the task history.
+- `list_assets` lists the Assets library of the projects the token can see (name, kind, what it is for, source and
+  link back); the picture itself is at `pictureUrl` for a signed-in session.
+
+### "May delete" on the command API
+
+A personal token without **May delete** cannot delete through `/dispatch/...` either; the call is refused with
+`403 {"error":"token_cannot_delete","data":{"command":…,"message":"This token can't delete. Create a token with \"May delete\" ticked."}}`
+and nothing changes. People signed in to the app are not affected, and neither are org (integration) tokens, which
+delete as their role and access allow. Commands that count as deleting:
+
+- `cards/update` and `cards/bulkUpdate` with `visibility: "deleted"` (archiving and other edits stay allowed)
+- `decks/delete`, `projects/delete`, `milestones/delete`, `milestoneZones/delete`, `presets/delete`,
+  `visionBoard/deleteBoard`, `timeTracking/delete`, `cards/removeFile` (an attachment)
+- `wiki/deleteType`, `wiki/deleteFamily`, `wiki/deleteLinkKind`, `wiki/removeLink`, `wiki/pruneValues` (drops hidden fields' values)
+- `journeys/set` with no steps (removes the list's journey)
+- `sprints/archiveConfig` (one way: nothing un-archives a run config, and it makes no more runs)
+
+A token's own rows stay open to it: deleting a saved search (`search/delete`), removing a reaction, a watch, a
+bookmark or a Hand card. Archiving a project (`projects/update isArchived`) is not deleting, since it can be undone.
+
 ## Disabling and deleting a workspace
 
-The owner can disable the workspace under Workspace settings, Danger Zone. Nothing is deleted:
+The owner can disable the workspace in the workspace menu under Disable workspace. Nothing is deleted:
 nobody but the owner can sign in, and the API, MCP, user reports, integrations and public
 lists stop answering until the owner signs in and reactivates it. With a paid plan the
 subscription ends with the current billing period.
@@ -453,6 +517,126 @@ This removes the attachments and covers the database knows about, one by one, th
 (with its `-wal` and `-shm` files). Any other file in the attachment folder is left alone and
 counted; the folder itself goes only if it ends up empty. Use the same `JT_DB` and `JT_FILES` as
 the server. It refuses while the server is running or the workspace is still active.
+
+## The sidebar, the tabs and the workspace switcher
+
+**The sidebar.** At the top a find box: typing filters the tree below as you go and keeps the parents of what matches
+(the match is marked); **Enter** takes the words on to **Ctrl+K**, which also searches tasks; Esc empties it. Then the
+main pages: **Home**, **My tasks**, **Inbox** (with its count), **Overview**, **Milestones**, **Wiki**, **Assets** and
+**Activity**, as a list or as an icon row (the small button at the
+list's bottom right switches). Then your saved filters, and one folding tree per project: its areas (when it has more
+than one), its lists with a ring for how much is done and the number of open tasks, and its **Wiki** with the entries
+grouped by type (at most 50 per type; "N more" opens the type). At the bottom, quick actions: **New task**, **New
+list**, **New wiki entry**, **New milestone** and **Collapse**. Each opens a small box that says where the new thing
+goes: the open list, area or project, else the project or area you clicked last in the tree, else your first project.
+Collapsed, the sidebar is a rail of icons: open and find at the top, the main pages (Inbox keeps its count), one tile
+per project that opens its lists beside the rail, and the quick actions; every icon names itself on hover. The
+sidebar, the folds and the main pages' shape are kept per person, on the server, so they follow you to other devices.
+
+**Tabs.** They sit in the top bar right beside the workspace switcher. Each tab is one page with its own back and
+forward (the browser's buttons go back and forward in the open tab). A plain click opens a page in the current tab;
+the **↗** on a sidebar row, a middle click or Ctrl+click (⌘-click on a Mac) opens it in a new tab behind. Double-click
+a tab to pin it; × or a middle click closes an unpinned one. **Home** is pinned first and stays home: what you open
+from it opens in a tab of its own (or the tab already showing it). At most 12 tabs: opening one more closes the oldest
+unpinned one, and a note says which. **+** opens a New tab page with places to start and the pages you opened
+lately. Only the tab you look at is loaded; the others keep where they were scrolled. **←** and **→** beside the
+tabs go back and forward in the open tab; Back on a tab's first page returns to the tab it was opened from. Each window
+keeps its own tabs (a reload comes back to them); a new window starts from the tabs you had last (per person, on the
+server). On a focused tab: ←/→ move, Enter shows it, Delete closes it, Shift+P pins it. Keys: **Alt+1…8** a tab,
+**Alt+9** the last one (not while typing, and not on a Mac); in the desktop app also **Ctrl+T** (new
+tab), **Ctrl+W** (close) and **Ctrl+Tab** / Ctrl+Shift+Tab (next and previous); a browser keeps those for its own tabs.
+
+**The workspace switcher** (top left) shows the workspace's name and where it is kept (**This computer** or **Team:
+<host>**). Its menu lists this workspace, **Workspace settings, people, look…** (the workspace menu below) and, while
+the vision board feature is on or boards exist, **Vision boards** (the free canvases, still at `/vision`). Other
+workspaces are switched in the desktop app's strip at the window's left; a page never switches them.
+
+**Per-person preferences** are kept by the server (`GET /api/prefs`, `PUT /api/prefs/<key>` with `{ "value": … }`;
+a person's own only, at most 32 keys of 32 KB). While the server cannot be reached the page keeps them in the browser
+and sends them on the next time it loads.
+
+## Home
+
+Home is the vision board of the whole workspace (**Shift+4**). A painted picture fills the page; on it **Welcome back**,
+**Recently worked on** (the tasks and wiki pages you changed or commented on lately, newest first, each opening in a
+tab of its own; the arrow folds it away into a clock icon) and a canvas of your projects, their areas (when a project
+has more than one), their lists with a ring and the open count, and, when you ask for them, the lists' quests with
+their status. Its lines are the links Questlog already has: a project has areas, an area has lists, a list has quests;
+a dashed line is "this locks that" (between two quests, or between their lists while quests are hidden). Hover a node
+to light up its lines and neighbours; click it to open it in its own tab.
+
+- **View** (the bar at the left): **Web** lets the nodes float around their project (drag anywhere to move the
+  picture); **Tree View** lays them out project → areas → lists → quests.
+- **Cards**: Projects, Areas, Lists or Quests (or **All**, or none) open into cards in place, like the old vision
+  board's scene cards: a picture, the title, a line of text and tags. A quest card shows its own words, its number,
+  effort, priority, status and list; a list card its ring and first open quests. In the Web view the pills around a
+  card move to the nearest free spot, so nothing overlaps; in Tree View quest cards sit three across.
+- The **gear** picks the picture (Ember forest, Fog coast, Night ruins, Moss hollow) and puts the links back in place
+  after a drag; the **sliders** choose what to show (Areas, Lists, Quests). The corner counts projects, lists, quests,
+  links and locks.
+- Big workspaces stay quick: the canvas draws at most 12 quests of a list (open ones first) and 400 in all, 24 lists
+  of an area and 200 in all, 96 areas and 24 projects; the rest is one "+N more" pill that opens the list (or the
+  Overview). With **All**, the first 60 of each kind are cards and the rest stay pills. The counts are always the real
+  ones. A change that moves nothing (a task finished, words typed by a teammate) updates the canvas in place.
+- **Keyboard**: Tab reaches the welcome column and the toolbars first; the canvas is one tab stop: the arrow keys move
+  between its nodes (Home, End: the first and last), Enter opens one, and the picture moves to show it.
+- Every choice (picture, view, cards, what to show, Recently worked on folded) is yours alone and follows you to other
+  devices (preference `home`). Recently worked on comes from `GET /api/me/recent`.
+
+The old **Vision boards** (free canvases of notes, tasks, links and pictures) are unchanged and keep their data; Home
+took their place in the sidebar and on Shift+4, and the workspace switcher's menu opens them.
+
+## The workspace menu
+
+Click the workspace switcher at the top left and choose **Workspace settings, people, look…**. A panel opens under it: the sections on the left, the open section on the
+right. Every option has a short label and one line saying what it does. The menu is a modal panel: ↑/↓ (Home/End)
+move between sections, Enter or Tab goes into the section, Esc closes it and puts focus back on the switcher.
+`?menu=<section>` (and `?menu=<section>/<tab>`, e.g. `?menu=connections/discord`) opens it at a section, so a link can
+point there; the old `?show=accountSettings` link opens the Workspace section.
+
+| Section | What is there | Who sees it |
+| --- | --- | --- |
+| Workspace | Name, a short description and a picture | everyone (admins edit) |
+| Guides | The tutorial: progress per part, Pause / Resume (hides its top-bar button on this device) | everyone |
+| Features | Milestones, effort points, sprints, task chains, vision board, due dates, time tracking, dependencies | admins |
+| Tasks | Effort sizes, priority names, when untouched started tasks snooze, archiving done tasks, list tiles, task pictures | admins |
+| Calendar | Working days, first day of the week, timeline zoom | admins |
+| Entry types | Moved into each project's Wiki (**Types**); the section keeps old links working with **Open Types in the Wiki** | everyone |
+| Files | Every file attached to a task you can see, with search and "Pictures only" | everyone |
+| Members | People, roles, invite links, people waiting to join (as the Members page) | admins |
+| Public links | Projects readable without an account, with their links | everyone |
+| Connections | AI assistants (MCP), Discord, Slack, GitHub, GitLab, BitBucket, Steam, player reports (web and Unity), email sending | admins |
+| Look | Dark, light, or match this computer (this device only) | everyone |
+| Import | Spreadsheet (CSV), Trello, HacknPlan, copy projects | admins |
+| Export | Each project's game data file; where backups are | everyone |
+| Plan & billing | Plan, seats, invoices | admins |
+| Preferences | Emails to me, API tokens, sign-in (Tailscale) | everyone |
+| Archive | Archived projects (Unarchive), archived tasks and the newest 100 deleted tasks (Restore) | everyone (restore where you may edit) |
+| Disable workspace | Put the workspace to sleep (owner) | admins |
+
+Changes in Workspace, Features, Tasks and Calendar are collected while you move between those sections: a bar
+at the bottom says there are unsaved changes, with **Discard** and **Save changes** (closing the menu keeps them until
+you save or discard). Everything else saves as before, on its own button or switch. Sections that also exist as a
+page (Members, Preferences, Archive, a project's wiki) have **Open full page**. The menu never scrolls sideways: it
+fits the window down to 360 px wide, where the section list shrinks to icons, and only the right side scrolls.
+
+The gear menu in the top bar (**Account menu**) keeps quick links: Workspace settings (opens this menu), Members,
+API tokens, Email notifications and My account.
+
+## Find or create (Ctrl+K)
+
+**Ctrl+K** (⌘K on a Mac) opens one box that finds tasks, wiki entries, lore, lists and projects, from anywhere,
+also while you are typing in an editor (`/` still goes to the top bar's filter search). Results are grouped, with
+their type, list and project beside them; an empty box shows what you opened last on this device.
+
+- ↑/↓ (Home/End, Page Up/Down) move, the mouse highlights too, **Enter** opens the highlighted row, **Esc** closes
+  and puts you back where you were. A task id (`LH-127`) goes straight to that task.
+- The last row is always **New <type> called "<what you typed>"**: an entry of that type in the current project, or a
+  page, or a task in the current list (else the project's first list). It then opens. The type is guessed: a type
+  whose name, or a word of one of its templates' names, is in what you typed ("Ashen Keep" → Place when Place has a
+  "Keep" template); otherwise the type you made last on this device. **Tab** / Shift+Tab change it.
+- Enter never makes anything by itself: the New row is only highlighted when you move to it (↓, End or the mouse),
+  even when nothing else matches. It is not offered when you can't add to the project.
 
 ## Project boards
 
@@ -470,7 +654,7 @@ A board shows only the project of the task it belongs to.
   move the list. A move the project refuses goes back with a message; undoing a drop moves the task back.
 - **Draw arrows.** Hover or select a task to see its handles, drag from one to another task and choose "It waits for
   it", "It is its subtask" or "Only a line" (waiting and subtasks are saved on the tasks, so they show everywhere).
-  From the keyboard, use the toolbar's **Connect to…**. "It waits for it" needs dependencies on (Settings >
+  From the keyboard, use the toolbar's **Connect to…**. "It waits for it" needs dependencies on (workspace menu >
   Features): while they are off, an admin's first use turns them on for the workspace ("It waits for it (turns on
   dependencies)"); anyone else is told an admin can turn them on in Settings.
 - The project's area and list frames and its header follow the project: their names can't be edited on the board, and
@@ -481,10 +665,59 @@ A board shows only the project of the task it belongs to.
 ## Game wiki and export
 
 Each project has a **Wiki** (sidebar): lore entries with an entry type (Item, Creature, Recipe…), typed fields,
-typed links between entries (drops, sells…) and checks. **Entity types** in the Wiki's header edits types and link
-kinds; an empty project offers a small starter set (Character, Creature, Faction, Place, Item, Quest, History,
-Storyline and six links). The RPG extras (recipes, abilities, shops, dungeons, weapon and armour types…) are added
-from the Wiki's first page or under Entity types.
+typed links between entries (drops, sells…) and checks. A column of icons beside the wiki leads to its parts:
+**Entries**, **Types**, **Link kinds**, **Graph**, **Places**, **Timeline**, **Storyboard**, **Checks**, and
+**Export** at the bottom. An empty project offers a small starter set (Character, Creature, Faction, Place, Item,
+Quest, History, Storyline and six links). The RPG extras (recipes, abilities, shops, dungeons, weapon and armour
+types…) are added from the Wiki's first page or under Types.
+
+### Types and families
+
+**Types** shows the project's entry types in **families** (Characters, Creatures, Items, Places, Story, Systems,
+Production for the starter pack), each one folding, with the kinds of a type under it (Weapon under Item), a small
+picture per row and counts. **Find a type** opens the families that hold a match; **+** makes a type (a name and a
+family). **Families** renames, recolours, reorders, adds and deletes families; deleting one moves its types to
+**No family** and never deletes a type. Projects whose types came before families are offered the starter pack's
+families for those types ("Group them"); nothing changes until you press it.
+
+A type's page shows its picture, where it sits (family › the type it is a kind of), its icon, name and key, and
+counts. **Change picture** picks one of four painted pictures in the family's colour with the type's icon, or
+uploads one (PNG, JPEG, GIF or WebP, 10 MB), or picks one **From Assets**; Assets' **Use as a picture of…** offers
+types too (to people who manage the project). The type keeps its own copy: deleting the asset leaves it. Entries without a picture of their own show their type's. **Template**
+holds the type's page of blocks, **Starting values** (the type's saved templates) and the fields, inherited ones listed by the
+type they come from (see **Templates as pages of blocks** below). **Settings** has the name, icon, family (top-level types only: a kind sits in its type's
+family), what it is a kind of, its colour, the key (read-only, used by exports) and Delete. Project settings' old
+**Entity types** tab opens the Wiki's Types.
+
+### Templates as pages of blocks
+
+A type's **Template** is a page of blocks: **Text** (a section with a grey writing prompt), **Facts** (the fields),
+**Model** (a 3D model from the project's Assets), **Picture** (from Assets, or an upload), **Map** (from Assets, from
+Groundwork), **Lines** (barks, one per line), **Steps** (numbered), **Table** (columns you name, rows per entry),
+**Links** (to entries of a type) and **Pictures in a row**. Each block has a title, ↑ ↓, half or full width and ×;
+**+ Add block** adds one. Changes wait for **Done** (or **Cancel**). **Next to an entry** shows one of the type's
+entries beside the blocks (the newest; a labelled example when there is none), laid out as you edit. A kind of
+another type follows that type's template until you change it; then it has its own, and **Follow <type> again** drops
+it.
+
+Entry pages are laid out by their blocks, half-width ones side by side. The text stays Markdown: a text block is the
+entry's `## Title` section (**Edit text** opens the editor as before), so links, names, exports and MCP see the same
+text. Text before the first heading and sections no block names are shown too. Lines, steps, tables, links and
+pictures are edited in place on the page. Entries made before a type had a template follow the template as it is;
+nothing is migrated.
+
+- **Guided start** (a template switch): making a new entry asks its name, then each Text, Lines and Steps block
+  (Back, Skip), and opens it with the answers in place. **Try a new <type>** walks the same steps without making
+  anything.
+- **Bring entries up to date…** lists the type's entries made from an older version of its template; ticked ones get
+  the blocks they lack, in the template's order and widths. Nothing written is removed: a block the template dropped
+  stays on an entry that holds something in it, and a table keeps a column for every cell.
+- The starter pack's Character, Creature, Item, Quest, Place and Faction are made for a co-op survival game: fields
+  such as Found in, Job, Spawns in, Notices you at, Tier, Weight, Given by, Biome, Safe at night, and pages such as
+  Creature's Facts and Model side by side, then Attacks and Drops tables and Behaviour. Projects that added the pack
+  before are offered **Update the starter types** for the types that came from the pack (a type of your own with the
+  same key is left alone): the new fields are added, and a type with no template of its own gets the page, with a
+  text block for each heading it had. The fields it has stay as they are, shown and exported; nothing is removed.
 
 ### Writing lore
 
@@ -504,12 +737,75 @@ ticking a checkbox change the text, and opening and saving without edits stores 
 Tasks show an id such as `LH-127`: the project's initials and the task's number. Links and `$code` references in
 text keep the short code underneath.
 
+### Writing links
+
+- **Names link by themselves.** In any text of a project (lore, wiki entries, task descriptions), the names of that
+  project's wiki entries and pages are links to their wiki pages, when reading and while writing in the lore editor.
+  Nothing is written into the text: names are recognised when the text is shown, so a new entry or alias links every
+  existing mention at once. Matching is whole words and case-insensitive; the longest name wins; names under 3
+  characters, names shared by two entries (a wiki check), code, links, URLs and an entry's own page are left out.
+- **Aliases.** "Also called" on an entry page adds other names (at least 3 characters, up to 50 per entry), recognised
+  like the title. A name another entry also has is kept but flagged: neither links until one changes.
+- **Not a link here.** When reading any text (tasks too), right-click a linked name, or focus it and press Alt+Enter
+  or the context-menu key, for **Open**, **Open beside** (in the wiki), **Open in new tab**, **Copy link** and **Not a
+  link here**, which stops linking that name in this one text (Undo in the toast; focus goes back to the text). In the
+  lore editor, hover a name or put the caret on it and press Alt+Enter for the same choices; Ctrl-click (⌘-click on a
+  Mac) opens the entry beside the page in the wiki (the editor stays open with your draft), else in a new tab. The names a text
+  doesn't link are listed under it and under its editor ("Not linked here"), with × to link one again. A title line
+  never links (it is the card's own name).
+- **Explicit links.** `[shown text]($code)` links any task or lore with your own words (lore opens its wiki page);
+  a plain `$code` still shows the card's title.
+- **What links here** on an entry lists "Mentioned in": the texts that name it.
+
+### Side-by-side panels
+
+- **Links open beside.** On a wiki entry page, a click on another entry of the wiki (a name in the text, a link under
+  Links or What links here, a field, **Open** in the graph) opens it in a panel to the right instead of leaving the
+  page. A click inside a panel opens the next one to its right and replaces any further right, like a column browser.
+  Ctrl/⌘-click and middle-click still open a new tab; outside the wiki, links work as before.
+- Each panel has its title, a **⋯** menu (Open in new tab, Copy link, Close the panels to its right), **Open full
+  page** (it becomes the main entry, the other panels stay) and **×**. Panels show the text, infobox and links; the
+  graph, history and attachments are on the full page.
+- Every column is shown whole: when they don't all fit, the main entry and then the oldest panels fold to a narrow
+  strip with their title (click it, or a link to that entry, to go back to it, which closes the panels after it). At
+  most three panels show at full size. The main entry stays full while it fits (one panel at 1600 px, two at 1920 px).
+- Text being edited in a panel is kept when the panel is replaced, folded, closed or opened full page: the entry's
+  editor opens again with it (a folded strip shows a dot). It is dropped when saved or cancelled, and lives only in
+  this tab.
+- The panels are in the address (`?panels=key,key`, oldest first), so a reload or a shared link brings them back.
+  Each opened panel is a history step: Back closes it, Forward opens it again. **Esc** closes the rightmost panel
+  (after any open menu, editor or dialog has had its Esc). Focus goes to a new panel's title; Tab reaches its ⋯, Open
+  full page and ×.
+
+### The graph
+
+- **Beside an entry.** Every entry page has a **Graph** tile (under the infobox): the entry in the middle and what it
+  is connected to, one or two steps away (**1 step** / **2 steps**, remembered on this device). Connections are typed
+  links, entry fields that point at another entry, `$code` references and recognised names, from wiki entries and
+  pages of the same project (tasks are not in the graph). Nodes are sized by how many connections they have and
+  coloured by entry type (the type's own colour, else one of the theme's graph colours; pages are grey); the
+  best-connected show their names. Hover or focus a node to light its connections; click it for a small preview
+  under the picture (title, type, first line, how it connects) with **Open**; click the background to clear it. At most 60 nodes: past that, the best-connected
+  neighbours are kept and the tile says how many there are.
+- **The whole campaign.** **Graph** under "See the world as" on the Wiki's first page (or **Whole graph** on the tile)
+  shows every entry of the project (up to 2,000, the best-connected first). Tick types on and off. Over 50 entries,
+  each type becomes one circle with its count; click one to open it, **Group by type again** closes them. Wheel to
+  zoom, drag to move, **Fit** (or `0`) to see everything again.
+- **Keyboard.** The graph is one tab stop. Arrow keys move to the connected entry in that direction, Home to the
+  centre, Space previews, Enter opens (or opens a type's circle), Esc closes the preview and then leaves the graph;
+  in the campaign graph the view follows the focused entry, `+` / `-` zoom on it, `0` fits and Shift+arrows move the
+  view.
+- The layout is computed here, without a library, and is the same every time for the same entries and connections
+  (fixed steps, no randomness), so the picture doesn't jump around when you come back; it is only redone when the
+  connections change, not when a text is edited.
+
 The game gets the data as JSON:
 
 - The Wiki opens on one tile per entity type (entry type). A entity type's page shows what was made from it and starts
   a new one from **Empty**, a **template** (saved starting values and links) or a copy of an existing entry. The
   new-entry page has the values as buttons and sliders, the links as pickers, and a preview.
-- An entity type also holds **page headings**: a new page starts with them, so there is something to fill in.
+- A new page starts with a heading per text block of its type's template (a type with no template yet: its page
+  headings), so there is something to fill in.
 - **Places** nests places by their "located in" link and lists what is found in each. **Timeline** lists everything
   with a Year, by Era. A **Storyline** has a storyboard: frames in order, each an entry of its own. These three read
   the starter pack's keys (`location`, `located_in`, `found_in`, `year`, `era`, `storyline`, `frames`).
@@ -533,9 +829,114 @@ missing, deleted or wrong-type entries (or, without `includePages`, to plain pag
 `checks`, the same checks as the Wiki's badge. At most 1,000 checks are listed (file and `422` body); over that,
 `checksTotal` (the full count) and `checksTruncated: true` follow `checks`, and are absent otherwise. Links to a
 trashed entry are left out without a check. Values of hidden fields are left out without a check: hiding a field retires it on purpose. Entries, types and fields are identified by keys that renaming never
-changes. Task links ("works on") are not part of the game data. The format is documented with the Unity sample in
+changes. Each entry's `blocks` lists its typed blocks that hold something (tables, lines, steps, links by key,
+assets); text blocks are the sections of `text`. Task links ("works on") are not part of the game data. The format is documented with the Unity sample in
 [`integrations/unity/QuestlogData`](integrations/unity/QuestlogData/README.md), whose editor menu
 **Questlog → Pull game data** downloads the file into `Assets/QuestlogData/`. Changing an entry's key by hand (API only) does not rewrite references to the old key: they show up as `broken_ref` checks.
+
+### Balance: tables, rules and the simulator
+
+The wiki can also hold a game's numbers and rules, and run them. Three field kinds do this (add them to an entity
+type under **Entity types**, like any other field):
+
+- **Table**: numbers looked up by one or two keys, entered as a grid. A key's values are words (an enum's options,
+  matched exactly) or numbers going up. Mode **exact** needs an exact key; **step** takes the largest key at or below
+  the number; **linear** goes between the two keys around it.
+- **Rule**: a formula with named parts, such as the damage of one hit.
+- **Scenario**: a fight (or anything that runs over time) for the **simulator**.
+
+A table or rule is named after its entry's key (`kind_vs_material`, `flat`). When a type has two fields of that kind,
+each is named `entry.field`.
+
+**Writing a rule.** A rule has:
+
+- **roles**: names for the entries it reads, with their type, e.g. `attacker` is a Weapon and `target` is a Creature;
+- **parts**: named steps, each of which can use the parts above it;
+- a **result**.
+
+For example:
+
+```
+crit   = chance(attacker.crit_chance)
+base   = 15 * if(crit, 2, 1) + flat(attacker)
+result = base * table(kind_vs_material, attacker.kind, target.material)
+```
+
+The editor helps in three ways:
+
+- **Suggestions** appear as you type: roles, a role's fields with their unit (`armor (hp)`), parts, tables, rules,
+  functions, and an enum's options inside quotes. Use ↑/↓ to move, Enter or Tab to take one, Esc to close, and
+  Ctrl+Space to open the list.
+- **Problems** are underlined and spelled out under the formula, for example "'Creature' has no field 'armr' — did you
+  mean 'armor'?" or "can't add a word to a number".
+- **Live example**: pick an entry for each role and a seed. Each part's value and the result update as you type.
+  **Save as example** keeps that pick. The export runs each saved example into a *golden sample* (every part's value
+  and the result), so the game's code can be checked against the wiki.
+
+The rule saves when you leave a box. Its checks also show in the Wiki's checks badge, including when a field it reads
+is renamed or deleted.
+
+**The language**:
+
+- numbers, `+ - * / ^` (`2^3^2` is 512, `-2^2` is −4);
+- comparisons `== != < <= > >=`, and `and`, `or`, `not`, `true`, `false`;
+- enum values in single quotes (`target.material == 'Wet'`);
+- `role.field`, part names, and in scenarios state names and `time`;
+- other rules, called as `ruleKey(role, …)` (a rule can't call itself, in a loop or otherwise).
+
+| Function | What it gives |
+| --- | --- |
+| `if(condition, then, else)` | `then` when the condition holds, `else` otherwise |
+| `min(a, b, …)`, `max(a, b, …)` | the smallest or largest number |
+| `clamp(x, low, high)` | `x` kept between `low` and `high` |
+| `round(x[, digits])`, `floor(x)`, `ceil(x)`, `abs(x)` | rounding (halves up) and the value without its sign |
+| `rand()` | a random number from 0 up to, but not including, 1 |
+| `randint(a, b)` | a random whole number from `a` to `b`, both included |
+| `chance(p)` | true with probability `p` (0 to 1) |
+| `roll(role.range)` | any number in a range field, `[min, max)`; use `round(roll(…))` for whole numbers |
+| `pick(table)` | one of a one-key table's keys, weighted by its numbers |
+| `table(table, key[, key2])` | the number in a table for the keys |
+
+Limits:
+
+- a formula is at most 4,000 characters and 64 levels deep;
+- a chain is at most 64 terms (split a longer one with brackets or a part);
+- rules call each other at most 16 deep.
+
+Randomness is seeded: the same entries and seed always give the same numbers. The export's `random` block documents
+the generator so another program can reproduce a run.
+
+**Scenarios.** A scenario has:
+
+- **roles**;
+- **state**, each with a start value (`hp` starts at `target.hp`, `hits` at `0`);
+- **clocks**;
+- an **end** condition;
+- a **time cap** in seconds;
+- **measures**: numbers read at the end of each run, such as `hits` or `time`.
+
+A clock first fires at once, or after its **first** delay. It then fires every so many seconds; `every` is a formula
+and is worked out again after each tick. On each tick the clock sets state in order, for example `hp` to `hp - dmg`,
+and then the end condition is checked. Clocks due at the same moment fire in the order they are listed. Times are kept
+to the microsecond. `time` is the seconds since the start.
+
+**The simulator** is the scenario's **Simulator** tab. It runs the saved scenario once its checks pass:
+
+1. Pick an entry for each role, a number of runs (10,000 by default, up to 100,000) and a seed.
+2. Press **Run**.
+
+The runs happen off the page, in a worker. They show progress, can be cancelled, and stop after 10 seconds. A run
+that stopped the batch with a problem is named with its seed.
+
+For each measure the results show:
+
+- a histogram;
+- p1, p5, p50 (the median), p95 and p99;
+- the mean, min and max;
+- for small whole numbers such as hits, the share of each value.
+
+**Outliers** are runs below p1 or above p99, listed with their seeds. **Replay** shows one run tick by tick: the time,
+the clock, and the state after each tick. Any seed can be replayed.
 
 ## Tests
 
@@ -559,7 +960,7 @@ you want the space back.
 
 ## Git commit references
 
-Workspace settings › GitHub, › GitLab and › BitBucket (admins). "Generate webhook URL" makes a URL (and, for GitHub and
+Workspace menu › Connections › GitHub, › GitLab and › BitBucket (admins). "Generate webhook URL" makes a URL (and, for GitHub and
 GitLab, a secret) that is shown once; add it as a push webhook in the repository (self-hosted GitLab and Gitea work too).
 The git host calls this server, so it must be reachable from where the host runs.
 

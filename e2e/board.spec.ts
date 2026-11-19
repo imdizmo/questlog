@@ -18,7 +18,7 @@ test('a list opens as a four-step board; the sidebar lists it; My tasks shows wh
 
   // The sidebar lists it with its open count (4 of 5 are not done), and takes us there.
   await page.goto('/decks');
-  const side = page.getByRole('navigation', { name: /Board project .* lists/ });
+  const side = page.getByRole('navigation', { name: 'Projects', exact: true });
   await side.getByRole('link', { name: `${title}, 4 open` }).click();
   await page.getByRole('group', { name: 'View' }).getByRole('button', { name: 'Board' }).click();
   const col = (name: string) => page.getByTestId('step-board').getByRole('region', { name });
@@ -42,9 +42,16 @@ test('a list opens as a four-step board; the sidebar lists it; My tasks shows wh
   await expect(mine.getByTestId('card-tile')).toHaveCount(1);
   await expect(mine).toContainText('Under way');
 
-  // The sidebar collapses and remembers it.
+  // The sidebar folds to a rail and remembers it (per person, on the server).
+  const saved = page.waitForResponse((r) => r.url().endsWith('/api/prefs/sidebar') && r.request().method() === 'PUT');
   await page.getByRole('button', { name: 'Collapse the sidebar' }).click();
+  await expect(page.getByRole('button', { name: 'Open the sidebar' })).toBeVisible();
+  await saved;
   await page.reload();
-  await expect(page.getByRole('button', { name: 'Widen the sidebar' })).toBeVisible();
-  await page.getByRole('button', { name: 'Widen the sidebar' }).click();
+  await expect(page.getByRole('button', { name: 'Open the sidebar' })).toBeVisible();
+  // Wait until the server has it: later specs (the wiki's panels) measure with the sidebar open.
+  const reopened = page.waitForResponse((r) => r.url().endsWith('/api/prefs/sidebar') && r.request().method() === 'PUT');
+  await page.getByRole('button', { name: 'Open the sidebar' }).click();
+  await reopened;
+  await expect(page.getByLabel('Find in the sidebar')).toBeVisible();
 });

@@ -6,6 +6,15 @@ import { Dialog } from '../components/Dialog';
 
 /** The person's own account (`?show=myAccount`): sign-in by Tailscale, on servers that have it. */
 export function MyAccount({ onClose }: { onClose: () => void }) {
+  return (
+    <Dialog title="My account" onClose={onClose} actions={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
+      <MyAccountPanel />
+    </Dialog>
+  );
+}
+
+/** The My account page's content, also the workspace menu's Preferences › Sign-in tab. Its own form, so Enter links. */
+export function MyAccountPanel() {
   const ts = useTailscale();
   const meId = useStore((s) => s.me?.id);
   const [password, setPassword] = useState('');
@@ -43,8 +52,7 @@ export function MyAccount({ onClose }: { onClose: () => void }) {
 
   const linkedToMe = ts?.linkedUserId != null && ts.linkedUserId === meId;
   return (
-    <Dialog title="My account" onClose={onClose} onSubmit={ts?.enabled && ts.login && !ts.linkedUserId ? link : undefined}
-      actions={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
+    <form className="my-account" onSubmit={(e) => { e.preventDefault(); if (ts?.enabled && ts.login && !ts.linkedUserId) void link(); }}>
       {ts === null ? <p className="muted">Loading…</p> : !ts.enabled ? (
         <p className="muted">Sign-in with Tailscale is not turned on for this server.</p>
       ) : (
@@ -74,6 +82,6 @@ export function MyAccount({ onClose }: { onClose: () => void }) {
           )}
         </section>
       )}
-    </Dialog>
+    </form>
   );
 }

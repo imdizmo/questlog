@@ -20,6 +20,15 @@ const shortDate = (ms: number) => new Date(ms).toLocaleDateString(undefined, { m
 
 /** People in the workspace and the invite links that are still open (`?show=members`, admins only). */
 export function Members({ onClose }: { onClose: () => void }) {
+  return (
+    <Dialog title="Members" wide scroll onClose={onClose} actions={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
+      <MembersPanel />
+    </Dialog>
+  );
+}
+
+/** The Members page's content, also the workspace menu's Members section. */
+export function MembersPanel() {
   const users = useStore((s) => s.users);
   const roles = useStore((s) => s.accountRoles);
   const projects = useStore((s) => s.projects);
@@ -48,7 +57,7 @@ export function Members({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <Dialog title="Members" wide scroll onClose={onClose} actions={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
+      <div className="members-panel">
         <div className="dialog-bar">
           <p className="hint">{people.filter((u) => !u.disabled).length} active {people.length === 1 ? 'person' : 'people'}</p>
           <button type="button" className="btn btn-primary" onClick={() => setInviting(true)}>Invite people</button>
@@ -101,7 +110,7 @@ export function Members({ onClose }: { onClose: () => void }) {
             </table>
           </div>
         )}
-      </Dialog>
+      </div>
       {inviting && <InviteDialog onClose={() => { setInviting(false); void loadInvites(); }} />}
     </>
   );

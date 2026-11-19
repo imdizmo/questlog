@@ -12,9 +12,8 @@ async function seed(page: Page) {
 
 const csv = (text: string) => ({ name: 'cards.csv', mimeType: 'text/csv', buffer: Buffer.from(text) });
 const open = async (page: Page) => {
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'CSV import' }).click();
+  await page.goto('/decks?menu=import/csv');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   return settings;
 };
 

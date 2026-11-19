@@ -1,6 +1,6 @@
 [package]
 name = "questlog"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 publish = false
 
@@ -9,16 +9,26 @@ name = "Questlog"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "~2.7", features = [] }
 
 [dependencies]
+# The desktop sign-in secret (supervise.rs); already in the tree through Tauri.
+getrandom = "0.3"
 serde_json = "1"
-tauri = { version = "2", features = ["webview-data-url"] }
-tauri-plugin-opener = "2"
-tauri-plugin-single-instance = "2"
+# Pinned to 2.12.x: the workspace strip uses the `unstable` multiwebview API (Window::add_child), and on Linux its
+# docking depends on how this Tauri packs child webviews (main.rs `dock`). Re-check the strip before moving on.
+tauri = { version = "~2.12", features = ["webview-data-url", "unstable"] }
+tauri-plugin-opener = "~2.7"
+tauri-plugin-single-instance = "~2.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# SIGTERM/SIGINT/SIGHUP take the normal shutdown (signals.rs); already in the tree through tokio.
+signal-hook-registry = "1.4"
+
+# The strip's docking on Linux (the same gtk as Tauri's).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

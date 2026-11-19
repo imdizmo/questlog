@@ -10,6 +10,10 @@ import { accountRow, userRow } from './rows';
 import { assertFeature, assertSeatFor, takesSeat } from '../billing';
 import { createTailscalePerson, syncTeamFile } from '../teamFile';
 import type { Command } from '../dispatch';
+import { COVER_ARTWORKS } from '../../shared/covers';
+
+/** The workspace description's longest length (the workspace menu's Workspace section). */
+export const DESCRIPTION_MAX = 1000;
 
 const settingsSchema = z.strictObject({
   effortScale: z.string(),
@@ -36,6 +40,8 @@ const settingsSchema = z.strictObject({
   timeTrackingMode: z.string().nullable(),
   mcpEnabled: z.boolean(),
   mcpDailyLimit: z.number().int().min(1).max(1_000_000).nullable(),
+  description: z.string().max(DESCRIPTION_MAX),
+  coverArt: z.number().int().refine((n) => COVER_ARTWORKS.some((a) => a.id === n)).nullable(),
 }).partial();
 
 const roleOf = (ctx: { db: any }, userId: string): string =>

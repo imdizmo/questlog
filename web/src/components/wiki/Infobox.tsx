@@ -51,7 +51,8 @@ export function Infobox({ card, type, projectId, editable }: { card: Card; type:
   const decks = useStore((s) => s.decks);
   const files = useStore((s) => s.files);
   const titleOfKey = useTitleOfKey(projectId);
-  const defs = useMemo(() => infoboxFields(types, type.id), [types, type.id]);
+  // Rules and scenarios have sections of their own below the text (BalanceSections).
+  const defs = useMemo(() => infoboxFields(types, type.id).filter((f) => f.kind !== 'rule' && f.kind !== 'scenario'), [types, type.id]);
   const lore = useMemo(() => campaignLore(cards.values(), projectId, decks), [cards, decks, projectId]);
   const images = useMemo(() => [...files.values()].filter((f) => f.cardId === card.id && IMAGE_MIME.has(f.mime)), [files, card.id]);
   /** Entry candidates per target type, computed once per change of the project's lore. */

@@ -1,0 +1,95 @@
+/* Assets page (web/src/views/assets/): a gallery like ArtStation's, the asset view, the library browsers. */
+.assets-page { max-width: none; padding: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 100%; }
+.ap-head { display: flex; align-items: center; gap: 12px; padding: 20px 24px 8px; flex-wrap: wrap; }
+.ap-head h1 { margin: 0; font-size: 22px; }
+.ap-head .muted { font-size: 13px; }
+.ap-project { font: inherit; color: var(--dim); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 2px 4px; }
+.ap-project:hover, .ap-project:focus-visible { border-color: var(--line); color: var(--text); }
+.ap-sp { flex: 1; }
+.ap-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 4px 24px 12px; border-bottom: 1px solid var(--line); }
+.ap-find { display: flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--mute); }
+.ap-find input { font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 0; outline: none; padding: 7px 0; width: 180px; }
+.ap-find:focus-within { border-color: var(--accent); }
+.ap-kinds { display: flex; flex-wrap: wrap; gap: 2px; }
+.ap-kinds button, .ap-fors button { font: inherit; cursor: pointer; border: 0; background: transparent; color: var(--dim); border-radius: 7px; }
+.ap-kinds button { padding: 6px 11px; font-size: 13px; }
+.ap-kinds button:hover:not(:disabled), .ap-fors button:hover { color: var(--text); background: var(--raised2); }
+.ap-kinds button[aria-pressed='true'] { color: var(--text); font-weight: 600; background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(236, 130, 25, .45); }
+.ap-kinds button:disabled { opacity: .45; cursor: default; }
+.ap-kinds small { font-size: 10px; color: var(--mute); }
+.ap-sep { width: 1px; height: 22px; background: var(--line); }
+.ap-fors { display: flex; gap: 2px; }
+.ap-fors button { width: 32px; height: 30px; display: grid; place-items: center; }
+.ap-fors button[aria-pressed='true'] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px rgba(236, 130, 25, .45); }
+:is(.ap-kinds, .ap-fors) button:focus-visible, .ap-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ap-body { padding: 16px 24px 40px; display: grid; gap: 24px; align-content: start; }
+.ap-note { color: var(--dim); font-size: 14px; }
+.ap-group h2 { margin: 0 0 10px; font-size: 13px; color: var(--dim); font-weight: 600; }
+.ap-group h2 span { color: var(--mute); font-weight: 400; }
+.ap-masonry { columns: 4 220px; column-gap: 12px; }
+.ap-tile { all: unset; box-sizing: border-box; cursor: pointer; display: block; position: relative; margin: 0 0 12px; break-inside: avoid; border-radius: 8px; overflow: hidden; background: var(--raised2); width: 100%; }
+.ap-tile img { display: block; width: 100%; height: auto; transition: transform .25s; }
+.ap-tile:hover img { transform: scale(1.04); }
+.ap-standin { display: grid; place-items: center; aspect-ratio: 4 / 3; color: var(--mute); }
+.ap-standin.big { width: min(60vw, 520px); border-radius: 10px; background: var(--raised2); }
+.ap-info { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 10px 8px; background: linear-gradient(transparent, rgba(0, 0, 0, .75)); color: #fff; display: grid; gap: 1px; opacity: 0; transition: opacity .15s; font-size: 11.5px; }
+.ap-info b { font-size: 13px; }
+.ap-tile:hover .ap-info, .ap-tile:focus-visible .ap-info { opacity: 1; }
+.ap-3d { position: absolute; top: 8px; right: 8px; font: 700 10.5px var(--font); padding: 2px 6px; border-radius: 5px; background: rgba(0, 0, 0, .6); color: #fff; }
+@media (prefers-reduced-motion: reduce) { .ap-tile img, .ap-info { transition: none; } .ap-tile:hover img { transform: none; } }
+
+/* The asset view: stage on the left, facts on the right. Always on a dark stage, as pictures read best there. */
+.ap-view { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: rgba(8, 7, 6, .97); color: var(--text); display: none; }
+.ap-view[open] { display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
+.ap-view::backdrop { background: transparent; }
+.ap-stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 24px; }
+.ap-stage > img { max-width: 100%; max-height: calc(100vh - 48px); object-fit: contain; border-radius: 8px; }
+.ap-3dhost { position: absolute; inset: 0; }
+.ap-3dhost canvas { display: block; cursor: grab; }
+.ap-3dhost canvas:active { cursor: grabbing; }
+.ap-3dload { position: absolute; inset: 0; display: grid; place-items: center; color: #bbb; font-size: 13px; }
+.ap-3dnote { position: absolute; left: 16px; top: 14px; font-size: 12px; color: #a59d8f; }
+.ap-3dbar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; border-radius: 10px; background: rgba(20, 18, 16, .85); border: 1px solid rgba(255, 255, 255, .12); }
+.ap-3dbar button { font: inherit; cursor: pointer; border: 0; background: transparent; padding: 6px 11px; border-radius: 7px; font-size: 12.5px; color: #cfc8bd; }
+.ap-3dbar button[aria-pressed='true'] { background: #ec8219; color: #120e09; font-weight: 600; }
+.ap-3dbar button:focus-visible { outline: 2px solid #ec8219; }
+.ap-3dbar .ap-sep { height: auto; margin: 3px 4px; background: rgba(255, 255, 255, .15); }
+.ap-side { background: var(--raised); border-left: 1px solid var(--line); padding: 20px; display: grid; gap: 12px; align-content: start; position: relative; overflow-y: auto; }
+.ap-x { position: absolute; right: 10px; top: 10px; }
+.ap-kind2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); padding-right: 36px; }
+.ap-title { margin: 0; font: 600 20px var(--font); color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 2px 4px; margin-left: -5px; width: 100%; box-sizing: border-box; }
+input.ap-title:hover { border-color: var(--line); }
+input.ap-title:focus { outline: none; border-color: var(--accent); }
+.ap-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: 13px; }
+.ap-facts dt { color: var(--mute); }
+.ap-facts dd { margin: 0; color: var(--dim); min-width: 0; }
+.ap-link { font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
+.ap-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ap-edit label { display: grid; gap: 4px; font-size: 12px; color: var(--mute); }
+.ap-edit select, .ap-srcfor select { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 6px; }
+.ap-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 1000px) { .ap-view[open] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; } .ap-side { max-height: 45vh; border-left: 0; border-top: 1px solid var(--line); } }
+
+/* "Use as a picture of…" */
+.ap-pick-q { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
+.ap-pick-h { margin: 10px 0 4px; font-size: 12px; color: var(--mute); text-transform: uppercase; letter-spacing: .06em; }
+.ap-pick { display: block; width: 100%; text-align: left; font: inherit; font-size: 14px; color: var(--text); background: transparent; border: 0; border-radius: 7px; padding: 7px 8px; cursor: pointer; }
+.ap-pick:hover:not(:disabled), .ap-pick:focus-visible { background: var(--raised2); outline: none; }
+.ap-pick-note { margin-top: 10px; font-size: 12px; }
+
+/* Asset Shelf and Groundwork browsers */
+.ap-srcbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.ap-srcbar input[type='search'] { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+.ap-srcfor { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--mute); }
+.ap-shelfgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.ap-shelfit { display: grid; gap: 6px; align-content: start; font-size: 13px; padding: 6px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); text-align: left; min-width: 0; }
+.ap-shelfit b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-shelfit .muted { font-size: 12px; }
+.ap-shelfit img, .ap-thumb-empty { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: grid; place-items: center; background: var(--raised2); color: var(--mute); font-size: 12px; }
+.ap-shelfit .btn { justify-self: start; }
+.ap-pack { font: inherit; cursor: pointer; }
+.ap-pack:hover, .ap-pack:focus-visible { border-color: var(--accent); outline: none; }
+
+:root[data-look='light'] .ap-3dnote { color: #8a8274; }
+:root[data-look='light'] .ap-tile .ap-standin { color: var(--mute); }
+.ap-pager { display: flex; align-items: center; gap: 10px; justify-content: center; margin: 4px 0 10px; font-size: 13px; }

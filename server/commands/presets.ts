@@ -45,6 +45,7 @@ export const presetCommands: Record<string, Command> = {
   },
   'presets/delete': {
     schema: z.object({ id: z.string() }),
+    deletes: true,
     run(ctx, { id }) {
       assertMember(ctx);
       if (!presetRow(ctx.db, id)) throw new AppError(404, 'not_found');

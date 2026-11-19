@@ -107,8 +107,9 @@ export function assertProjectSlots(db: Db, adding = 1): void {
 export function uploadRoom(db: Db): { fileBytes: number | null; storageLeft: number | null } {
   const { fileBytes, storageBytes } = accountLimits(db);
   if (storageBytes === null) return { fileBytes, storageLeft: null };
-  // Attachments and covers (Open Deck banners and promo images are covers) share the plan's storage.
-  const { used } = db.prepare('SELECT (SELECT COALESCE(SUM(size), 0) FROM files) + (SELECT COALESCE(SUM(size), 0) FROM covers) used').get() as { used: number };
+  // Attachments, covers (Open Deck banners and promo images are covers) and asset copies share the plan's storage.
+  const { used } = db.prepare('SELECT (SELECT COALESCE(SUM(size), 0) FROM files) + (SELECT COALESCE(SUM(size), 0) FROM covers)'
+    + ' + (SELECT COALESCE(SUM(picture_size + model_size), 0) FROM assets) used').get() as { used: number };
   return { fileBytes, storageLeft: Math.max(0, storageBytes - used) };
 }
 

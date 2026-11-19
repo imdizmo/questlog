@@ -1,7 +1,9 @@
 import { defineConfig } from '@playwright/test';
 
-export const E2E_DB = `${process.env.HOME}/.cache/gametracker/scratch/e2e.db`;
-const PORT = 8781;
+/** E2E_DB picks another database file, so runs from two checkouts on one machine never share one. */
+export const E2E_DB = process.env.E2E_DB ?? `${process.env.HOME}/.cache/gametracker/scratch/e2e.db`;
+/** E2E_PORT picks another port when 8781 is taken on this machine. */
+const PORT = Number(process.env.E2E_PORT ?? 8781);
 export const BASE_URL = `http://localhost:${PORT}`;
 
 export default defineConfig({

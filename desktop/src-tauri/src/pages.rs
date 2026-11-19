@@ -37,7 +37,7 @@ padding:8px 12px;font:14px/1.4 ui-monospace,monospace}\
 /// Where the shell's own pages send their actions; `main.rs` cancels these navigations and acts on them.
 const SHELL: &str = "http://questlog-shell.invalid";
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

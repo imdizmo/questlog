@@ -1,8 +1,11 @@
 // Wiki selectors: the page tree, what links here, open quests, and small display helpers. Pure functions over the store.
 import type { Card, Deck, EntryLink, EntryType, FieldDef, LinkKind } from '../../shared/types';
 import type { State } from './store';
+import type { BalanceResult } from '../../shared/balance';
 import { cardCode, seqFromCode, titleOf } from '../../shared/cards';
 import { parseContent } from '../../shared/content';
+import { cachedNameIndex, findMentions, nameSourceOf, type NameIndex } from '../../shared/autolink';
+import type { GraphData, GraphEdgeIn } from '../../shared/graph';
 import { fieldsOf, isTypeOrChild, runChecks, typeChain, WORKS_ON, type Check, type CheckProblem, type ChecksResult } from '../../shared/wiki';
 
 export type WikiState = Pick<State, 'cards' | 'decks' | 'entryTypes' | 'linkKinds' | 'entryLinks'>;
@@ -103,7 +106,8 @@ const kindOf = (kinds: Map<string, LinkKind>, projectId: string, key: string): L
 
 /**
  * What links to an entry, in groups: each link kind's reverse label (links to it), then "<Type>: <field>" for entry
- * field references to its key, then "Mentions" ($code in other Lore text). Deleted sources are left out.
+ * field references to its key, then "Mentions" ($code in other Lore text), then "Mentioned in" (its names or aliases
+ * recognised in other texts of the project, Lore or tasks, minus those already under Mentions). Deleted sources are left out.
  */
 export function backlinks(s: WikiState, cardId: string): BacklinkGroup[] {
   const card = s.cards.get(cardId);
@@ -142,7 +146,133 @@ export function backlinks(s: WikiState, cardId: string): BacklinkGroup[] {
     .filter((c) => c.isDoc && c.id !== cardId && projectId !== null && projectIdOf(s.decks, c) === projectId)
     .sort(byTitle);
   if (mentions.length) out.push({ group: 'Mentions', items: mentions.map((c) => ({ cardId: c.id })) });
+
+  // Texts of the project that name the entry (or an alias) without a $code: Lore and tasks, each card's ignores kept.
+  if (projectId) {
+    const index = campaignNameIndex(s, projectId);
+    if (index.size) {
+      const coded = new Set(mentions.map((c) => c.id));
+      const named: Card[] = [];
+      for (const c of s.cards.values()) {
+        if (c.id === cardId || coded.has(c.id) || !live(c) || projectIdOf(s.decks, c) !== projectId) continue;
+        if (namedIn(c, index).has(cardId)) named.push(c);
+      }
+      if (named.length) out.push({ group: 'Mentioned in', items: named.sort(byTitle).map((c) => ({ cardId: c.id })) });
+    }
+  }
   return out;
+}
+
+// ---- Names as links (shared/autolink): recognised at display time, never written into the text. ----
+
+type NameState = Pick<State, 'cards' | 'decks'>;
+const nameIndexCache = new WeakMap<Map<string, Card>, Map<string, { decks: NameState['decks']; index: NameIndex }>>();
+/**
+ * The names and aliases of a project's live Lore as one index. cachedNameIndex rebuilds the automaton only when a name
+ * or alias changes; this memo also skips the signature while `cards` and `decks` stay the same maps.
+ */
+export function campaignNameIndex(s: NameState, projectId: string): NameIndex {
+  let byProject = nameIndexCache.get(s.cards);
+  if (!byProject) nameIndexCache.set(s.cards, (byProject = new Map()));
+  const hit = byProject.get(projectId);
+  if (hit && hit.decks === s.decks) return hit.index;
+  const index = cachedNameIndex(campaignLore(s.cards.values(), projectId, s.decks).map(nameSourceOf));
+  byProject.set(projectId, { decks: s.decks, index });
+  return index;
+}
+
+const namedCache = new WeakMap<Card, { index: NameIndex; ids: ReadonlySet<string> }>();
+/**
+ * The entries a card's text links by name, below its title line (its own names and its "Not a link here" names left
+ * out). Cached per card
+ * object and index: a change rescans only the card that changed, a new name or alias every card once.
+ */
+export function namedIn(card: Card, index: NameIndex): ReadonlySet<string> {
+  const hit = namedCache.get(card);
+  if (hit && hit.index === index) return hit.ids;
+  // The title line is the card's own name, shown unlinked everywhere: it never counts as a mention.
+  const nl = card.content.indexOf('\n');
+  const body = nl < 0 ? '' : card.content.slice(nl + 1);
+  const ids = new Set(findMentions(body, index, { ignores: card.linkIgnores ?? [], selfId: card.id }).map((m) => m.cardId));
+  namedCache.set(card, { index, ids });
+  return ids;
+}
+
+/** How a text of a project links names: the index, the text's own card (never linked to itself) and its ignores. */
+export interface NameLinks {
+  index: NameIndex;
+  selfId: string | null;
+  ignores: readonly string[];
+  /** The wiki page of an entry. */
+  href(cardId: string): string | null;
+  title(cardId: string): string | null;
+}
+
+/** NameLinks for a text of `projectId` (the text of `card` when given); null outside a project or without names. */
+export function nameLinks(s: Pick<State, 'cards' | 'decks' | 'projects'>, projectId: string | null, card?: Pick<Card, 'id' | 'linkIgnores'> | null): NameLinks | null {
+  const project = projectId ? s.projects.get(projectId) : undefined;
+  if (!project) return null;
+  const index = campaignNameIndex(s, project.id);
+  if (index.size === 0) return null;
+  return {
+    index,
+    selfId: card?.id ?? null,
+    ignores: card?.linkIgnores ?? [],
+    href: (id) => { const c = s.cards.get(id); return c ? entryPath(project.seq, c) : null; },
+    title: (id) => { const c = s.cards.get(id); return c ? titleOf(c.content) : null; },
+  };
+}
+
+// ---- The graph: a campaign's entries and every relation between them (shared/graph lays it out). ----
+
+export type GraphState = Pick<State, 'cards' | 'decks' | 'entryTypes' | 'linkKinds' | 'entryLinks' | 'visionBoards'>;
+interface GraphMemo { decks: unknown; entryTypes: unknown; linkKinds: unknown; entryLinks: unknown; visionBoards: unknown; data: GraphData }
+const graphCache = new WeakMap<Map<string, Card>, Map<string, GraphMemo>>();
+
+/**
+ * A campaign's Lore (typed entries and pages, minus pages that only host a board) as graph nodes, and as edges: typed
+ * links (kind key + label, works_on left out: it points at tasks), entry field references, `$code` mentions and
+ * recognised names. Built once per change of the store maps it reads; names come from the per-card `namedIn` cache, so
+ * an edit rescans only the card that changed.
+ */
+export function campaignGraphData(s: GraphState, projectId: string): GraphData {
+  let byProject = graphCache.get(s.cards);
+  if (!byProject) graphCache.set(s.cards, (byProject = new Map()));
+  const hit = byProject.get(projectId);
+  if (hit && hit.decks === s.decks && hit.entryTypes === s.entryTypes && hit.linkKinds === s.linkKinds && hit.entryLinks === s.entryLinks && hit.visionBoards === s.visionBoards) return hit.data;
+
+  const hosts = new Set<string>();
+  for (const b of s.visionBoards.values()) hosts.add(b.cardId);
+  const lore = campaignLore(s.cards.values(), projectId, s.decks).filter((c) => !!c.entryTypeId || !hosts.has(c.id));
+  const ids = new Set(lore.map((c) => c.id));
+  const byKey = new Map<string, string>();
+  for (const c of lore) if (c.entryKey) byKey.set(c.entryKey, c.id);
+  const nodes = lore.map((c) => ({ id: c.id, label: titleOf(c.content) || 'Untitled', typeId: c.entryTypeId ?? null }));
+  const edges: GraphEdgeIn[] = [];
+
+  const kinds = new Map<string, LinkKind>();
+  for (const k of s.linkKinds.values()) if (k.projectId === projectId) kinds.set(k.key, k);
+  for (const l of s.entryLinks.values()) {
+    if (l.projectId !== projectId || l.kindKey === WORKS_ON || !ids.has(l.fromCardId) || !ids.has(l.toCardId)) continue;
+    edges.push({ from: l.fromCardId, to: l.toCardId, kind: 'link', key: l.kindKey, label: kinds.get(l.kindKey)?.label ?? l.kindKey });
+  }
+  const prefix = `${projectId}\0`;
+  for (const [k, hits] of refIndex(s)) {
+    if (!k.startsWith(prefix)) continue;
+    const to = byKey.get(k.slice(prefix.length));
+    if (!to) continue;
+    for (const h of hits) if (ids.has(h.cardId)) edges.push({ from: h.cardId, to, kind: 'field', key: h.group, label: h.group });
+  }
+  const coded = mentionIndex(s.cards);
+  for (const c of lore) {
+    for (const from of coded.get(cardCode(c.seq)) ?? []) if (ids.has(from)) edges.push({ from, to: c.id, kind: 'mention', label: 'mentions' });
+  }
+  const index = campaignNameIndex(s, projectId);
+  if (index.size) for (const c of lore) for (const to of namedIn(c, index)) if (ids.has(to)) edges.push({ from: c.id, to, kind: 'mention', label: 'mentions' });
+
+  const data = { nodes, edges };
+  byProject.set(projectId, { decks: s.decks, entryTypes: s.entryTypes, linkKinds: s.linkKinds, entryLinks: s.entryLinks, visionBoards: s.visionBoards, data });
+  return data;
 }
 
 /** Quests of the entry's project that work on it (works_on links) or mention its $code, not done and not deleted, oldest first. */
@@ -203,7 +333,9 @@ export function usedValues(lore: Card[], key: string): string[] {
 export const wikiPath = (projectSeq: number) => `/wiki/${projectSeq}`;
 export const kindPath = (projectSeq: number, typeKey: string) => `/wiki/${projectSeq}/kind/${typeKey}`;
 export const newEntryPath = (projectSeq: number, typeKey: string, from = '') => `/wiki/${projectSeq}/new/${typeKey}${from}`;
-export const wikiViewPath = (projectSeq: number, view: 'places' | 'timeline') => `/wiki/${projectSeq}/view/${view}`;
+export const wikiViewPath = (projectSeq: number, view: 'places' | 'timeline' | 'graph' | 'links') => `/wiki/${projectSeq}/view/${view}`;
+/** The Wiki's Types page, with a type open when its key is given. */
+export const typesPath = (projectSeq: number, typeKey?: string) => (typeKey ? `/wiki/${projectSeq}/types/${typeKey}` : `/wiki/${projectSeq}/view/types`);
 /** The first line of an entry's text under its title, headings skipped; '' when nothing is written yet. */
 export const entryExcerpt = (c: Pick<Card, 'content'>): string =>
   (c.content.split('\n').slice(1).map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '').replace(/[*_`>]/g, '').slice(0, 160);
@@ -248,6 +380,26 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
 /** A type colour fit for a style attribute: only #rrggbb, anything else is no colour. */
 export const safeColor = (c: string | null | undefined): string | null => (typeof c === 'string' && HEX.test(c) ? c : null);
 
+/** Lowest lightness a type's own colour is drawn with, so a dark colour still shows on the dark tiles. */
+export const MIN_LIGHTNESS = 0.5;
+
+/** `#rrggbb` lightened (in HSL) to at least MIN_LIGHTNESS; hue and saturation kept. */
+export function visibleColor(hex: string): string {
+  const v = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(...v), min = Math.min(...v);
+  const l = (max + min) / 2;
+  if (l >= MIN_LIGHTNESS) return hex;
+  const d = max - min;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  const [r, g, b] = v;
+  let h = 0;
+  if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  const c = (1 - Math.abs(2 * MIN_LIGHTNESS - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = MIN_LIGHTNESS - c / 2;
+  const [r1, g1, b1] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return `#${[r1, g1, b1].map((u) => Math.round((u + m) * 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
 /** Types of a project in their order. */
 export const campaignTypes = (types: Map<string, EntryType>, projectId: string): EntryType[] =>
   [...types.values()].filter((t) => t.projectId === projectId).sort((a, b) => a.sortIndex - b.sortIndex || a.name.localeCompare(b.name));
@@ -276,6 +428,19 @@ export function searchEntries(list: Card[], query: string): Card[] {
 
 const withUnit = (n: number | string, unit?: string) => (!unit ? `${n}` : unit === '%' ? `${n}%` : `${n} ${unit}`);
 
+/** A table, rule or scenario in a few words ("3 × 2 table", "rule: 2 roles, 3 parts"), for lists and the infobox. */
+export function balanceSummary(kind: 'table' | 'rule' | 'scenario', v: unknown): string {
+  const o = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>;
+  const n = (x: unknown) => (Array.isArray(x) ? x.length : 0);
+  const count = (x: unknown, one: string) => `${n(x)} ${one}${n(x) === 1 ? '' : 's'}`;
+  if (kind === 'table') {
+    const keys = Array.isArray(o.keys) ? o.keys as { values?: unknown }[] : [];
+    return `${keys.map((k) => n(k?.values)).join(' × ') || '0'} table`;
+  }
+  if (kind === 'rule') return `rule: ${count(o.roles, 'role')}, ${count(o.parts, 'part')}`;
+  return `scenario: ${count(o.roles, 'role')}, ${count(o.clocks, 'clock')}, ${count(o.measures, 'measure')}`;
+}
+
 /** One value as text; entry keys become titles through `titleOfKey` when given. */
 export function formatValue(def: FieldDef, v: unknown, titleOfKey?: (key: string) => string | null): string {
   if (v === undefined || v === null || v === '') return '';
@@ -290,6 +455,7 @@ export function formatValue(def: FieldDef, v: unknown, titleOfKey?: (key: string
     case 'entry': return ref(v);
     case 'entries': case 'multienum': return Array.isArray(v) ? v.map(def.kind === 'entries' ? ref : String).join(', ') : String(v);
     case 'image': return 'image';
+    case 'table': case 'rule': case 'scenario': return balanceSummary(def.kind, v);
     default: return typeof v === 'string' ? v : JSON.stringify(v);
   }
 }
@@ -485,32 +651,44 @@ export function sortFromQuery(q: URLSearchParams): RowSort | null {
 // ---- Checks and type upkeep ----
 
 /** The store collections the checks read; each is replaced (new identity) whenever it changes. */
-type ChecksInput = Pick<State, 'cards' | 'decks' | 'entryTypes' | 'linkKinds' | 'entryLinks' | 'files'>;
+export type ChecksInput = Pick<State, 'cards' | 'decks' | 'entryTypes' | 'linkKinds' | 'entryLinks' | 'files'>;
 const CHECKS_INPUT: (keyof ChecksInput)[] = ['cards', 'decks', 'entryTypes', 'linkKinds', 'entryLinks', 'files'];
 /**
  * One slot: the Wiki header and the checks panel ask for the same project, so the last answer is reused. A second caller
  * with another project on screen at once would make both recompute every time; give it a keyed cache of 2–3 then.
  */
-let lastChecks: { in: ChecksInput; projectId: string; out: ChecksResult } | null = null;
+let lastChecks: { in: ChecksInput; projectId: string; out: ChecksResult; balance: BalanceResult } | null = null;
 
 /**
  * The checks the export lists for the project (its default, includePages off): runChecks over its types, link kinds,
  * live Lore, the links between live entries (the store holds no other) and attachments; works_on links are not game
- * data. Recomputed only when one of the store collections it reads (or the project) changes.
+ * data. Plus the Wiki's own ambiguous_name checks (names shared by two entries are not linked in text). Recomputed only when one of the store collections it reads (or the project) changes.
  */
 export function campaignChecks(s: ChecksInput, projectId: string): ChecksResult {
+  return checked(s, projectId).out;
+}
+
+/** The tables, rules (with golden samples) and scenarios of the project that passed the checks: what the export writes. */
+export function campaignBalanceResult(s: ChecksInput, projectId: string): BalanceResult {
+  return checked(s, projectId).balance;
+}
+
+function checked(s: ChecksInput, projectId: string): NonNullable<typeof lastChecks> {
   const l = lastChecks;
-  if (l && l.projectId === projectId && CHECKS_INPUT.every((k) => l.in[k] === s[k])) return l.out;
+  if (l && l.projectId === projectId && CHECKS_INPUT.every((k) => l.in[k] === s[k])) return l;
+  let balance: BalanceResult = { tables: [], rules: [], scenarios: [] };
   const out = runChecks({
     types: [...s.entryTypes.values()].filter((t) => t.projectId === projectId),
     kinds: [...s.linkKinds.values()].filter((k) => k.projectId === projectId),
     entries: campaignLore(s.cards.values(), projectId, s.decks),
     links: [...s.entryLinks.values()].filter((x) => x.projectId === projectId && x.kindKey !== WORKS_ON),
     includePages: false,
+    names: true,
     isAttached: (fileId, cardId) => s.files.get(fileId)?.cardId === cardId,
+    onBalance: (r) => { balance = r; },
   });
-  lastChecks = { in: { cards: s.cards, decks: s.decks, entryTypes: s.entryTypes, linkKinds: s.linkKinds, entryLinks: s.entryLinks, files: s.files }, projectId, out };
-  return out;
+  lastChecks = { in: { cards: s.cards, decks: s.decks, entryTypes: s.entryTypes, linkKinds: s.linkKinds, entryLinks: s.entryLinks, files: s.files }, projectId, out, balance };
+  return lastChecks;
 }
 
 const count = (n: number) => n.toLocaleString('en-US');
@@ -529,6 +707,8 @@ export const PROBLEM_LABEL: Record<CheckProblem, string> = {
   sum_exceeded: 'Totals over their limit',
   bad_key: 'Invalid keys',
   duplicate_key: 'Duplicate keys',
+  formula_error: 'Formula problems',
+  ambiguous_name: 'Names shared by several entries',
 };
 
 /** Checks grouped by problem, in PROBLEM_LABEL order; empty groups are left out. */

@@ -1,10 +1,15 @@
+// The editors of a wiki type (its template and settings), the link kinds and the starter pack; the Wiki's Types page
+// (web/src/views/wiki/WikiTypesPage.tsx) and its Link kinds part lay them out.
+
 import { useEffect, useMemo, useState } from 'react';
 import type { EntryType, LinkKind, Project } from '../../../../shared/types';
 import { typeChain } from '../../../../shared/wiki';
+import { familyOf } from '../../../../shared/wikiFamilies';
 import { FieldListEditor } from './FieldListEditor';
 import { ApiError, dispatch } from '../../api';
 import { store, useStore } from '../../store';
-import { campaignTypes, typeUsage, unusedValueCount, type TypeUsage } from '../../wiki';
+import { typeUsage, unusedValueCount, type TypeUsage } from '../../wiki';
+import { TemplateEditor } from '../wiki/TemplateEditor';
 
 /** Caps the server enforces (server/commands/wiki.ts WIKI_LIMITS). */
 const FIELDS_CAP = 100;
@@ -12,44 +17,14 @@ const PROPS_CAP = 20;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/**
- * Project settings › Wiki types: the starter pack, the entry types with their fields, and the link kinds with their
- * properties. Keys are set when created and shown read-only after; fields are hidden, never removed.
- */
-export function WikiTypes({ project }: { project: Project }) {
-  const entryTypes = useStore((s) => s.entryTypes);
+/** The project's link kinds (drops, crafts, …) with their editor: the Wiki's Link kinds part. */
+export function LinkKinds({ project, types }: { project: Project; types: EntryType[] }) {
   const linkKinds = useStore((s) => s.linkKinds);
-  const types = useMemo(() => campaignTypes(entryTypes, project.id), [entryTypes, project.id]);
   const kinds = useMemo(() => [...linkKinds.values()].filter((k) => k.projectId === project.id).sort((a, b) => a.label.localeCompare(b.label)), [linkKinds, project.id]);
-  const [typeId, setTypeId] = useState<string | null>(null);
   const [kindId, setKindId] = useState<string | null>(null);
-  const type = typeId ? entryTypes.get(typeId) : undefined;
   const kind = kindId ? linkKinds.get(kindId) : undefined;
-
   return (
-    <div className="wiki-types">
-      <StarterPack project={project} />
-
-      <h3 className="sub">Types</h3>
-      <div className="wiki-types-pick">
-        <ul className="wiki-types-list" aria-label="Lore types">
-          {types.map((t) => (
-            <li key={t.id}>
-              <button type="button" className={t.id === typeId ? 'wiki-type-btn on' : 'wiki-type-btn'} aria-pressed={t.id === typeId}
-                onClick={() => setTypeId(t.id === typeId ? null : t.id)}>
-                <span className="wiki-type-name">{t.icon && <span aria-hidden>{t.icon} </span>}{typeChain(entryTypes, t.id).map((x) => x.name).join(' › ')}</span>
-              </button>
-            </li>
-          ))}
-          {!types.length && <li className="muted">No types yet.</li>}
-        </ul>
-        <NewItem label="New type" button="Add type" onAdd={async (name) => {
-          const r = await dispatch<{ id: string }>('wiki', 'createType', { projectId: project.id, name });
-          setTypeId(r.id);
-        }} />
-      </div>
-      {type && <TypeEditor key={type.id} type={type} types={types} onDeleted={() => setTypeId(null)} />}
-
+    <>
       <h3 className="sub">Link kinds</h3>
       <div className="wiki-types-pick">
         <ul className="wiki-types-list" aria-label="Link kinds">
@@ -66,11 +41,11 @@ export function WikiTypes({ project }: { project: Project }) {
         <NewKind project={project} onAdded={setKindId} />
       </div>
       {kind && <KindEditor key={kind.id} kind={kind} types={types} onDeleted={() => setKindId(null)} />}
-    </div>
+    </>
   );
 }
 
-function StarterPack({ project }: { project: Project }) {
+export function StarterPack({ project }: { project: Project }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const add = async () => {
@@ -88,24 +63,6 @@ function StarterPack({ project }: { project: Project }) {
         {note && <p className="hint" role="status">{note}</p>}
       </div>
       <button type="button" className="btn" disabled={busy} onClick={add}>Add the game starter pack</button>
-    </div>
-  );
-}
-
-/** A one-line "name + Add" form, without a <form> (the settings dialog may already be one). */
-function NewItem({ label, button, onAdd }: { label: string; button: string; onAdd: (name: string) => Promise<void> }) {
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const add = async () => {
-    if (!name.trim() || busy) return;
-    setBusy(true);
-    try { await onAdd(name.trim()); setName(''); } catch { /* toast */ } finally { setBusy(false); }
-  };
-  return (
-    <div className="row wiki-types-new">
-      <input aria-label={label} placeholder={label} value={name} maxLength={200} onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void add(); } }} />
-      <button type="button" className="btn" disabled={busy || !name.trim()} onClick={add}>{button}</button>
     </div>
   );
 }
@@ -156,12 +113,17 @@ function linkCount(kind: LinkKind): number {
   return n;
 }
 
-function TypeEditor({ type, types, onDeleted }: { type: EntryType; types: EntryType[]; onDeleted: () => void }) {
+/** A type's name, key, family, parent, icon and colour, and deleting it (the Settings tab of a type in the Wiki's Types). */
+export function TypeSettings({ type, types, onDeleted }: { type: EntryType; types: EntryType[]; onDeleted: () => void }) {
   const entryTypes = useStore((s) => s.entryTypes);
+  const allFamilies = useStore((s) => s.entryFamilies);
+  const families = useMemo(() => [...allFamilies.values()].filter((f) => f.projectId === type.projectId).sort((a, b) => a.sortIndex - b.sortIndex), [allFamilies, type.projectId]);
+  const [family, setFamily] = useSynced(type.familyId ?? '');
+  const [parent, setParent] = useSynced(type.parentTypeId ?? '');
+  const rootFamily = useStore((s) => (parent ? familyOf(s.entryTypes, s.entryFamilies, parent) : null));
   const [name, setName] = useSynced(type.name);
   const [icon, setIcon] = useSynced(type.icon ?? '');
   const [color, setColor] = useSynced(type.color ?? '');
-  const [parent, setParent] = useSynced(type.parentTypeId ?? '');
   const [busy, setBusy] = useState(false);
   /** The delete confirm is open; it shows what the store says still uses the type. */
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -169,14 +131,18 @@ function TypeEditor({ type, types, onDeleted }: { type: EntryType; types: EntryT
   const [inUse, setInUse] = useState<string | null>(null);
   // Not itself, nor a type under it (that would be a loop).
   const parents = types.filter((t) => t.id !== type.id && !typeChain(entryTypes, t.id).some((x) => x.id === type.id));
-  const inherited = type.parentTypeId ? typeChain(entryTypes, type.parentTypeId).flatMap((t) => t.fields.map((f) => f.key)) : [];
-  const dirty = name.trim() !== type.name || icon !== (type.icon ?? '') || color !== (type.color ?? '') || parent !== (type.parentTypeId ?? '');
+  // A kind sits in its root's family: the family is set on root types only.
+  const familyDirty = !parent && family !== (type.familyId ?? '');
+  const dirty = name.trim() !== type.name || icon !== (type.icon ?? '') || color !== (type.color ?? '') || parent !== (type.parentTypeId ?? '') || familyDirty;
   const colorOk = color === '' || HEX.test(color);
 
   const save = async () => {
     setBusy(true);
     try {
-      await dispatch('wiki', 'updateType', { id: type.id, name: name.trim(), icon: icon.trim() || null, color: color || null, parentTypeId: parent || null });
+      await dispatch('wiki', 'updateType', {
+        id: type.id, name: name.trim(), icon: icon.trim() || null, color: color || null, parentTypeId: parent || null,
+        ...(parent ? {} : { familyId: family || null }),
+      });
     } catch { /* toast */ } finally { setBusy(false); }
   };
   const remove = async () => {
@@ -191,16 +157,35 @@ function TypeEditor({ type, types, onDeleted }: { type: EntryType; types: EntryT
   };
 
   return (
-    <section className="wiki-type-editor" aria-label={`Type ${type.name}`}>
+    <>
       <div className="wiki-types-grid">
         <label className="field"><span>Name</span><input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} /></label>
-        <label className="field"><span>Key</span><input value={type.key} readOnly aria-readonly /></label>
-        <label className="field"><span>Parent type</span>
-          <select value={parent} onChange={(e) => setParent(e.target.value)}>
-            <option value="">None</option>
+        <div className="field">
+          <label htmlFor={`fam-${type.id}`}>Family</label>
+          {parent ? (
+            // A kind shows the family it sits in (its root's), read-only.
+            <select id={`fam-${type.id}`} value="" disabled><option value="">{rootFamily?.name ?? 'No family'}</option></select>
+          ) : (
+            <select id={`fam-${type.id}`} value={family} onChange={(e) => setFamily(e.target.value)}>
+              <option value="">No family</option>
+              {families.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          )}
+          {parent && <span className="hint">A kind of another type sits in that type's family.</span>}
+        </div>
+        <div className="field">
+          <label htmlFor={`parent-${type.id}`}>Kind of</label>
+          <select id={`parent-${type.id}`} value={parent} onChange={(e) => setParent(e.target.value)}>
+            <option value="">None (a type of its own)</option>
             {parents.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
-        </label>
+          <span className="hint">A kind gets every field of the type it is a kind of.</span>
+        </div>
+        <div className="field">
+          <label htmlFor={`key-${type.id}`}>Key</label>
+          <input id={`key-${type.id}`} value={type.key} readOnly aria-readonly aria-describedby={`key-hint-${type.id}`} />
+          <span className="hint" id={`key-hint-${type.id}`}>Set when made, used by exports.</span>
+        </div>
         <label className="field"><span>Icon</span><input value={icon} maxLength={64} placeholder="an emoji" onChange={(e) => setIcon(e.target.value)} /></label>
         <label className="field"><span>Colour</span>
           <input value={color} maxLength={7} placeholder="#rrggbb" aria-invalid={!colorOk} onChange={(e) => setColor(e.target.value.trim())} />
@@ -222,12 +207,21 @@ function TypeEditor({ type, types, onDeleted }: { type: EntryType; types: EntryT
           </div>
         </div>
       )}
+    </>
+  );
+}
 
-      <h4 className="sub">Page headings</h4>
-      <p className="hint">A new {type.name} page starts with these headings, one per line.</p>
-      <SectionsEditor type={type} />
+/** What a new entry of the type starts with: page headings, starting values and fields (the type's Template tab). */
+export function TypeTemplate({ project, type, types }: { project: Project; type: EntryType; types: EntryType[] }) {
+  const entryTypes = useStore((s) => s.entryTypes);
+  const ancestors = type.parentTypeId ? typeChain(entryTypes, type.parentTypeId) : [];
+  const inherited = ancestors.flatMap((t) => t.fields.map((f) => f.key));
+  return (
+    <>
+      <TemplateEditor project={project} type={type} />
 
-      <h4 className="sub">Templates</h4>
+      <h4 className="sub">Starting values</h4>
+      <p className="hint">Named sets of values and links a new {type.name} can start from (under its template).</p>
       {type.templates.length ? (
         <ul className="wiki-types-list" aria-label="Templates">
           {type.templates.map((t, i) => (
@@ -241,30 +235,23 @@ function TypeEditor({ type, types, onDeleted }: { type: EntryType; types: EntryT
       ) : <p className="hint">None yet. Make a {type.name} in the Wiki and choose "Save these values as a template".</p>}
 
       <h4 className="sub">Fields</h4>
-      {inherited.length > 0 && <p className="hint">Also inherits: {inherited.join(', ')}.</p>}
+      {ancestors.map((a) => {
+        const shown = a.fields.filter((f) => !f.hidden);
+        return shown.length > 0 && (
+          <div key={a.id} className="wiki-inherited" role="group" aria-label={`Fields from ${a.name}`}>
+            <span className="hint">From {a.name}:</span>
+            <ul>{shown.map((f) => <li key={f.key} className="badge">{f.label}</li>)}</ul>
+          </div>
+        );
+      })}
       <FieldListEditor label="Fields" fields={type.fields} types={types} cap={FIELDS_CAP} taken={inherited}
         onSave={(fields) => dispatch('wiki', 'updateType', { id: type.id, fields })} />
       <PruneValues type={type} />
-    </section>
+    </>
   );
 }
 
 /** "Remove unused values": drops the values of hidden or removed fields from the type's entries, after a confirm. */
-function SectionsEditor({ type }: { type: EntryType }) {
-  const stored = type.sections.join('\n');
-  const [text, setText] = useSynced(stored);
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  return (
-    <div className="field">
-      <textarea aria-label="Page headings" rows={4} value={text} onChange={(e) => setText(e.target.value)} />
-      <div className="row">
-        <button type="button" className="btn btn-sm btn-primary" disabled={lines.join('\n') === stored || lines.length > 12}
-          onClick={() => void dispatch('wiki', 'updateType', { id: type.id, sections: lines }).catch(() => {})}>Save headings</button>
-      </div>
-    </div>
-  );
-}
-
 function PruneValues({ type }: { type: EntryType }) {
   const [count, setCount] = useState(0);
   const [confirm, setConfirm] = useState(false);

@@ -5,7 +5,10 @@ import { KEY_RE, keyFromName } from '../../../../shared/wiki';
 const KINDS: [FieldKind, string][] = [
   ['text', 'Text'], ['longtext', 'Long text'], ['number', 'Number'], ['integer', 'Integer'], ['boolean', 'Yes/no'], ['enum', 'Choice'],
   ['multienum', 'Choices'], ['entry', 'Lore reference'], ['entries', 'Lore references'], ['image', 'Image'], ['color', 'Colour'], ['range', 'Range'],
+  ['table', 'Table'], ['rule', 'Rule'], ['scenario', 'Scenario'],
 ];
+/** Entry fields only: a link property can't hold a table, rule or scenario. */
+const ENTRY_ONLY = new Set<FieldKind>(['table', 'rule', 'scenario']);
 const NUMERIC = new Set<FieldKind>(['number', 'integer', 'range']);
 const WITH_OPTIONS = new Set<FieldKind>(['enum', 'multienum']);
 const WITH_TARGET = new Set<FieldKind>(['entry', 'entries']);
@@ -98,7 +101,7 @@ export function FieldListEditor({ label, fields, types, cap, forProps, taken = [
               </label>
               <label className="wiki-prop"><span>Kind</span>
                 <select value={r.kind} onChange={(e) => edit(i, { kind: e.target.value as FieldKind })}>
-                  {KINDS.map(([k, text]) => <option key={k} value={k}>{text}</option>)}
+                  {KINDS.filter(([k]) => !forProps || !ENTRY_ONLY.has(k)).map(([k, text]) => <option key={k} value={k}>{text}</option>)}
                 </select>
               </label>
               {NUMERIC.has(r.kind) && <>
@@ -119,6 +122,13 @@ export function FieldListEditor({ label, fields, types, cap, forProps, taken = [
                     {r.target && !types.some((t) => t.key === r.target) && <option value={r.target}>{r.target} (missing)</option>}
                   </select>
                 </label>
+              )}
+              {(r.kind === 'table' || r.kind === 'rule') && (
+                <p className="hint wiki-prop-help">
+                  {r.kind === 'table'
+                    ? <>Formulas name the table by its entry's key: <code>table(key, …)</code>. When the type has two or more table fields, each is named <code>key.field</code> instead, so adding a second table field renames the first. A key's "from field" is a hint for people and is not checked.</>
+                    : <>Formulas call the rule by its entry's key: <code>key(role, …)</code>. When the type has two or more rule fields, each is called <code>key.field(role, …)</code> instead, so adding a second rule field renames the first.</>}
+                </p>
               )}
               <label className="wiki-check"><input type="checkbox" checked={!!r.required} onChange={(e) => edit(i, { required: e.target.checked })} /> Required</label>
               {!forProps && <>

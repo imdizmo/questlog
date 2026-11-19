@@ -242,6 +242,8 @@ export const sprintCommands: Record<string, Command> = {
   },
   'sprints/archiveConfig': {
     schema: z.object({ id: z.string() }),
+    // One way: nothing un-archives a config, every view hides it and it makes no more runs.
+    deletes: true,
     run(ctx, { id }) {
       loadManaged(ctx, id);
       ctx.db.prepare('UPDATE sprint_configs SET is_archived=1 WHERE id=?').run(id);

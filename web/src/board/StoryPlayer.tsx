@@ -97,7 +97,7 @@ export function StoryPlayer({ doc, host, onClose }: { doc: Y.Doc; host: Card; on
         <div className="story-play" data-testid="story-play">
           <span className="wk-frame-pic"><Picture card={card} /></span>
           <h3>{title(card)}</h3>
-          <MarkdownView content={fillText(written(card.content), at!.vars)} />
+          <MarkdownView content={fillText(written(card.content), at!.vars)} card={card} />
           {/* The person presses play: nothing sounds by itself. */}
           {sounds.map((f) => <label key={f.id} className="story-sound"><span className="muted">{f.name}</span><audio controls preload="none" src={fileUrl(f.id)} /></label>)}
           <div className="story-choices">

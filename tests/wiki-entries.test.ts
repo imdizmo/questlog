@@ -4,6 +4,9 @@ import { openDb, newId, type Db } from '../server/db';
 import { buildApp } from '../server/app';
 import { _resetLimiter } from '../server/auth';
 import { cardRow, deckRow } from '../server/commands/rows';
+import { dispatch } from '../server/dispatch';
+import { buildSnapshot } from '../server/snapshot';
+import { runChecks } from '../shared/wiki';
 
 const HOST = 'localhost:8780';
 const SPACES = JSON.stringify([{ id: 1, name: null, icon: null, defaultDeckType: 'mixed' }]);
@@ -377,7 +380,115 @@ describe('fix round 1', () => {
     const { id } = await entry('Fire Sword');
     await fail('wiki/setEntry', { cardId: id, fields: { 'Bad Key': 1 } }, 400, 'invalid_payload');
     const item = (await ok('wiki/createType', { projectId, name: 'Item' })).id;
-    const confined = { bearer: await mkToken({ role: 'producer', projectIds: [mkProject('Q')] }) };
+    const confined = { bearer: await mkToken({ role: 'producer', projectIds: [mkProject('Q')], mayDelete: true }) };
     await fail('wiki/pruneValues', { typeId: item }, 403, 'forbidden', confined);
+  });
+});
+
+// Made-up campaign "Emberfall".
+describe('aliases and link ignores', () => {
+  const me = () => ({ id: owner, email: '', name: 'o', timezone: null, disabled: false, createdAt: 0 });
+
+  it('wiki/setAliases trims, drops empty ones and the own name, dedupes case-insensitively; history and live event', async () => {
+    const { id } = await entry('Iron Keep');
+    const r = dispatch(db, me(), 'wiki/setAliases', { cardId: id, aliases: ['  the   Keep ', 'THE KEEP', '', 'iron keep', 'Old Fort\n'] });
+    expect(r.payload).toEqual({ aliases: ['the Keep', 'Old Fort'] });
+    expect(card(id).aliases).toEqual(['the Keep', 'Old Fort']);
+    expect(r.events).toEqual(expect.arrayContaining([{ model: 'card', op: 'upsert', row: expect.objectContaining({ id, aliases: ['the Keep', 'Old Fort'] }) }]));
+    expect((await history(id))[0].changes).toEqual([{ kind: 'aliases', from: [], to: ['the Keep', 'Old Fort'] }]);
+    // Same list again: no history row.
+    const v = card(id).version;
+    await ok('wiki/setAliases', { cardId: id, aliases: ['the Keep', 'Old Fort'] });
+    expect(card(id).version).toBe(v);
+    // In the snapshot.
+    expect(buildSnapshot(db, me() as any).cards.find((c: any) => c.id === id)).toMatchObject({ aliases: ['the Keep', 'Old Fort'], linkIgnores: [] });
+  });
+
+  it('wiki/setAliases: ≤ 80 characters each (400), ≤ 50 (409 limit), lore only, editors only', async () => {
+    const { id } = await entry('Iron Keep');
+    await fail('wiki/setAliases', { cardId: id, aliases: ['x'.repeat(81)] }, 400, 'invalid_payload');
+    const short = await fail('wiki/setAliases', { cardId: id, aliases: ['Keep', ' Ox '] }, 400, 'invalid_payload');
+    expect(JSON.stringify(short)).toContain('An alias needs at least 3 characters: \\"Ox\\" is too short');
+    await ok('wiki/setAliases', { cardId: id, aliases: ['é'.repeat(80)] });
+    await fail('wiki/setAliases', { cardId: id, aliases: Array.from({ length: 51 }, (_, i) => `Alias ${i}`) }, 409, 'limit');
+    await ok('wiki/setAliases', { cardId: id, aliases: [...Array.from({ length: 50 }, (_, i) => `Alias ${i}`), 'alias 3'] });
+    expect(card(id).aliases).toHaveLength(50);
+    const quests = mkDeck(projectId, 'task');
+    const quest = (await ok('cards/create', { deckId: quests, content: 'Find the keep' })).id;
+    await fail('wiki/setAliases', { cardId: quest, aliases: ['Keep'] }, 409, 'not_lore');
+    const observer = mkUser('observer', [{ projectId }]);
+    await fail('wiki/setAliases', { cardId: id, aliases: [] }, 403, 'forbidden', cookieFor(observer));
+  });
+
+  it('cards/addLinkIgnore / removeLinkIgnore: any card, case-insensitive, idempotent, ≤ 200', async () => {
+    const quests = mkDeck(projectId, 'task');
+    const quest = (await ok('cards/create', { deckId: quests, content: 'Ride to Emberfall' })).id;
+    expect(await ok('cards/addLinkIgnore', { cardId: quest, name: ' Emberfall ' })).toEqual({ linkIgnores: ['Emberfall'] });
+    const v = card(quest).version;
+    expect(await ok('cards/addLinkIgnore', { cardId: quest, name: 'EMBERFALL' })).toEqual({ linkIgnores: ['Emberfall'] });
+    expect(card(quest).version).toBe(v);
+    expect((await history(quest))[0].changes).toEqual([{ kind: 'linkIgnores', from: [], to: ['Emberfall'] }]);
+    const r = dispatch(db, me(), 'cards/removeLinkIgnore', { cardId: quest, name: 'emberfall' });
+    expect(r.payload).toEqual({ linkIgnores: [] });
+    expect(r.events).toEqual(expect.arrayContaining([{ model: 'card', op: 'upsert', row: expect.objectContaining({ id: quest, linkIgnores: [] }) }]));
+    expect(await ok('cards/removeLinkIgnore', { cardId: quest, name: 'emberfall' })).toEqual({ linkIgnores: [] });
+    await fail('cards/addLinkIgnore', { cardId: quest, name: '   ' }, 400, 'invalid_payload');
+    await fail('cards/addLinkIgnore', { cardId: quest, name: 'x'.repeat(201) }, 400, 'invalid_payload');
+    db.prepare('UPDATE cards SET link_ignores_json=? WHERE id=?').run(JSON.stringify(Array.from({ length: 200 }, (_, i) => `N${i}`)), quest);
+    await fail('cards/addLinkIgnore', { cardId: quest, name: 'One more' }, 409, 'limit');
+    await ok('cards/addLinkIgnore', { cardId: quest, name: 'n7' });
+    const observer = mkUser('observer', [{ projectId }]);
+    await fail('cards/addLinkIgnore', { cardId: quest, name: 'Mara' }, 403, 'forbidden', cookieFor(observer));
+  });
+
+  it('a Lore page with a 200 000-character title: setAliases works and the checks do not break', async () => {
+    const { id } = await entry('Iron Keep');
+    db.prepare('UPDATE cards SET content=? WHERE id=?').run(`# ${'Ember '.repeat(40_000)}`, id);
+    await ok('wiki/setAliases', { cardId: id, aliases: ['the Keep'] });
+    expect(card(id).aliases).toEqual(['the Keep']);
+    expect(runChecks({ types: [], kinds: [], entries: [card(id) as any, card(id) as any], links: [], includePages: true, names: true }).total).toBe(0);
+  });
+
+  it('"Not a link here" leaves a snoozed card snoozed (history still written)', async () => {
+    const quests = mkDeck(projectId, 'task');
+    const quest = (await ok('cards/create', { deckId: quests, content: 'Ride to Emberfall' })).id;
+    db.prepare('UPDATE cards SET snoozed_at=123 WHERE id=?').run(quest);
+    await ok('cards/addLinkIgnore', { cardId: quest, name: 'Emberfall' });
+    await ok('cards/removeLinkIgnore', { cardId: quest, name: 'Emberfall' });
+    expect(card(quest).snoozedAt).toBe(123);
+    const kinds = (await history(quest)).flatMap((h) => h.changes).map((c) => c.kind);
+    expect(kinds.filter((k) => k === 'linkIgnores')).toHaveLength(2);
+    expect(kinds).not.toContain('unsnoozed');
+    // Any other edit still wakes it.
+    await ok('cards/update', { id: quest, priority: 'a' });
+    expect(card(quest).snoozedAt).toBeNull();
+  });
+
+  it('the export carries aliases', async () => {
+    const { id } = await entry('Iron Keep');
+    await ok('wiki/setAliases', { cardId: id, aliases: ['the Keep'] });
+    const r = await app.inject({ method: 'GET', url: `/api/wiki/${projectId}/export?includePages=1`, headers: { host: HOST, cookie: ownerCookie } });
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json().entries).toEqual([expect.objectContaining({ key: 'iron_keep', name: 'Iron Keep', aliases: ['the Keep'] })]);
+  });
+
+  // Review Focus 2: two entries with the same name or alias are listed as a check (the Wiki's, not the export's).
+  it('runChecks lists ambiguous names when asked, for each entry holding them', async () => {
+    const a = await entry('Ashen Gate');
+    const b = await entry('Gatehouse');
+    await entry('Emberfall');
+    await ok('wiki/setAliases', { cardId: a.id, aliases: ['the Gate'] });
+    await ok('wiki/setAliases', { cardId: b.id, aliases: ['THE GATE'] });
+    const entries = [a.id, b.id].map((id) => card(id) as any);
+    const base = { types: [], kinds: [], entries, links: [], includePages: true };
+    expect(runChecks(base).checks).toEqual([]);
+    expect(runChecks({ ...base, names: true }).checks).toEqual([
+      { entry: 'ashen_gate', problem: 'ambiguous_name', detail: '"the Gate" is also a name of gatehouse: not linked in text' },
+      { entry: 'gatehouse', problem: 'ambiguous_name', detail: '"the Gate" is also a name of ashen_gate: not linked in text' },
+    ]);
+    // A deleted entry no longer makes it ambiguous; strict export is not blocked by names.
+    expect(runChecks({ ...base, names: true, entries: [entries[0], { ...entries[1], visibility: 'deleted' }] }).checks).toEqual([]);
+    const strict = await app.inject({ method: 'GET', url: `/api/wiki/${projectId}/export?includePages=1&strict=1`, headers: { host: HOST, cookie: ownerCookie } });
+    expect(strict.statusCode, strict.body).toBe(200);
   });
 });

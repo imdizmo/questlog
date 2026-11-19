@@ -242,7 +242,7 @@ export function login(
 }
 
 /** A session made without a password (`via` says how). Returns its token; the caller has checked the user may sign in. */
-export function createSession(db: Db, userId: string, via: 'tailscale'): string {
+export function createSession(db: Db, userId: string, via: 'tailscale' | 'desktop'): string {
   const token = newToken();
   db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,via) VALUES (?,?,?,?)').run(sha(token), userId, clock() + SESSION_MS, via);
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(clock());

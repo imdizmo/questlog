@@ -134,7 +134,10 @@ export class LiveHub {
         }
         return { to: 'project', projectId: row.projectId };
       }
-      case 'entryType': case 'linkKind':
+      case 'asset':
+        // Assets (server/assets.ts), removes included, carry their projectId.
+        return { to: 'project', projectId: row.projectId };
+      case 'entryType': case 'linkKind': case 'entryFamily':
         // Wiki rows, removes included, carry their projectId.
         return { to: 'project', projectId: row.projectId };
       case 'visionBoard': case 'visionQuery': {

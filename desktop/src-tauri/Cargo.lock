@@ -2735,10 +2735,13 @@ dependencies = [
 
 [[package]]
 name = "questlog"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "gtk",
  "libc",
  "serde_json",
+ "signal-hook-registry",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

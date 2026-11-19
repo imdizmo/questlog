@@ -59,15 +59,16 @@ export function unlinkCovers(db: Db, ids: string[]): void {
 export const projectCoverIds = (db: Db, projectId: string): string[] =>
   (db.prepare('SELECT id FROM covers WHERE project_id=?').all(projectId) as { id: string }[]).map((r) => r.id);
 
-/** Removes a cover file row and its bytes once no deck, project or Open Deck (banner, promo image) points at it any more. */
+/** Removes a cover file row and its bytes once no deck, project, Open Deck (banner, promo image) or wiki type picture points at it any more. */
 export function releaseCover(ctx: Ctx, old: Cover): void {
   if (old?.kind !== 'file') return;
   const { db } = ctx;
   const id = old.fileId;
   const used = db.prepare(
     "SELECT 1 FROM decks WHERE json_extract(cover_json,'$.fileId')=? UNION ALL SELECT 1 FROM projects WHERE json_extract(cover_json,'$.fileId')=?"
-    + ' UNION ALL SELECT 1 FROM open_decks WHERE banner_file_id=? OR promo_file_id=?',
-  ).get(id, id, id, id);
+    + ' UNION ALL SELECT 1 FROM open_decks WHERE banner_file_id=? OR promo_file_id=?'
+    + " UNION ALL SELECT 1 FROM entry_types WHERE json_extract(picture_json,'$.fileId')=?",
+  ).get(id, id, id, id, id);
   if (used) return;
   db.prepare('DELETE FROM covers WHERE id=?').run(id);
   ctx.afterCommit(() => unlinkCovers(db, [id]));

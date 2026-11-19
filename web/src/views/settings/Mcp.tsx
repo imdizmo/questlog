@@ -40,13 +40,14 @@ export function Mcp({ toolCallsToday, connections }: { toolCallsToday?: number; 
       <section className="settings-group" aria-labelledby="mcp-how">
         <h3 className="sub" id="mcp-how">How to connect</h3>
         <ol className="steps">
-          <li>Create a personal token under API tokens (Account menu, or the API tokens tab of Workspace settings for admins).</li>
+          <li>Create a personal token under API tokens: the workspace menu (top left) → Preferences → API tokens, or the gear's Account menu.</li>
           <li>Add this address to your MCP client as a remote HTTP server:</li>
         </ol>
         <CopyField label="MCP endpoint" value={endpoint} />
         <ol className="steps" start={3}>
           <li>Send the token as a Bearer token: <code>Authorization: Bearer &lt;your token&gt;</code>.</li>
           <li>The tools act with the token's permission, so a read token cannot change anything.</li>
+          <li>Deleting tasks, lists and milestones also needs a token created with <strong>May delete</strong> (the same holds for the API).</li>
         </ol>
       </section>
 

@@ -34,6 +34,14 @@ describe('columnsOf', () => {
     expect(r.headers).toEqual(['Title', 'Status']);
     expect(r.rows).toEqual([['A', 'done'], ['B', ''], ['C', '']]);
   });
+  it('a column with a header but no values is dropped', () => {
+    const r = columnsOf([['Title', 'Unused', 'Status'], ['A', '', 'done'], ['B', ' ', '']]);
+    expect(r.headers).toEqual(['Title', 'Status']);
+    expect(r.rows).toEqual([['A', 'done'], ['B', '']]);
+  });
+  it('a header row alone keeps every column', () => {
+    expect(columnsOf([['Title', 'Unused']]).headers).toEqual(['Title', 'Unused']);
+  });
 });
 
 describe('autoMap', () => {

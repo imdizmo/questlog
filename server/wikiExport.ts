@@ -1,7 +1,21 @@
 /**
  * The game-data export of a campaign's wiki (`GET /api/wiki/:projectId/export`, spec "JSON export"):
- * `{format, version, campaign, exportedAt, types, linkKinds, entries, links, checks}`, in that key order, then
- * `checksTotal` and `checksTruncated: true` when the checks list was cut at CHECKS_LIMIT.
+ * `{format, version, campaign, exportedAt, types, families, linkKinds, entries, links, random, tables, rules, scenarios, checks}`, in
+ * that key order, then `checksTotal` and `checksTruncated: true` when the checks list was cut at CHECKS_LIMIT.
+ *
+ * Each entry's `blocks` (added after version 1 shipped: an extra key) are its typed blocks that hold data, in its
+ * layout's order: `{title, kind}` plus `items` (lines, steps), `columns` and `rows` (table), `entries` (links, by
+ * exported key), `asset` or `assets` (`{id, title}`; model, picture, map, pictures in a row). Text blocks are the
+ * `## sections` of `text`; Facts are `fields`.
+ *
+ * Tables, rules and scenarios (field kinds `table`, `rule`, `scenario`) are not in their entry's `fields`: they are listed
+ * in `tables`, `rules` and `scenarios`, each with the `name` formulas use (the entry's key, or `key.field` when its type
+ * has several fields of that kind), its `entry` and `field`. Every formula is `{text, tree}`: the text as written and its
+ * expression tree in formula language `language` (FORMULA_LANGUAGE_VERSION). A rule's `samples` are its saved examples
+ * run by Questlog (golden samples: role entries, seed, each part's value and the result); `random` documents the one
+ * seeded generator so another program can reproduce them. Only sound ones are exported: a table, rule or scenario with
+ * a formula error, a call to a missing, broken or looping rule, or an unknown role type is left out and listed in
+ * `checks` (formula_error), and so is an example that fails (its sample alone is left out).
  *
  * What the game can rely on: every value, reference and link present is valid. Values that fail validateValue, image
  * values that are not an attachment of their owner, links to missing, wrong-type or (without includePages) plain
@@ -14,13 +28,20 @@
  * Memory: EXPORT_LIMITS caps rows and bytes before anything is parsed. One light pass holds the keys, types and field
  * values of the exported entries (no text) plus the links, for the checks; the links are then released. Entries are
  * written per type, their text read row by row, and links source by source, row by row. Nothing is held
- * as a whole document: `out` gets the JSON in pieces.
+ * as a whole document: `out` gets the JSON in pieces. Tables, rules and scenarios that passed keep their stored values
+ * (within the bytes cap) and samples until written; expression trees are held only for the rules while checking (capped by
+ * BALANCE_LIMITS.ruleChars) and rebuilt per item when written.
  */
 import type { Db } from './db';
 import { AppError } from './errors';
 import { fieldsOf, isTypeOrChild, refContext, runChecks, validateValue, WORKS_ON, type ChecksResult, type RefContext, type WikiData } from '../shared/wiki';
+import { BALANCE_KINDS, type BalanceResult } from '../shared/balance';
+import { FORMULA_LANGUAGE_VERSION, parseFormula, RANDOM_INFO } from '../shared/formula';
+import type { NamedFormula } from '../shared/types';
 import { titleOf } from '../shared/cards';
-import type { EntryLink, EntryType, FieldDef, LinkKind } from '../shared/types';
+import type { EntryFamily, EntryLayout, EntryLink, EntryType, FieldDef, LinkKind } from '../shared/types';
+import { hasData } from '../shared/blocks';
+import { familyOf } from '../shared/wikiFamilies';
 import { toCamel } from './db';
 
 /** Caps of one export (413 too_large over them). Mutable for tests only. */
@@ -67,7 +88,7 @@ export function writeWikiExport(db: Db, projectId: string, opts: ExportOptions, 
   // and the exported text). An entry whose type is gone counts as a plain page.
   const typedSql = 'c.entry_type_id IN (SELECT id FROM entry_types WHERE project_id=?)';
   const size = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(CASE WHEN ${typedSql} THEN length(CAST(c.fields_json AS BLOB)) END), 0)
-      + COALESCE(SUM(length(CAST(c.content AS BLOB))), 0) bytes ${LORE}${opts.includePages ? '' : ` AND ${typedSql}`}`)
+      + COALESCE(SUM(length(CAST(c.content AS BLOB)) + length(CAST(c.aliases_json AS BLOB)) + COALESCE(length(CAST(c.layout_json AS BLOB)), 0)), 0) bytes ${LORE}${opts.includePages ? '' : ` AND ${typedSql}`}`)
     .get(...(opts.includePages ? [projectId, projectId] : [projectId, projectId, projectId])) as { n: number; bytes: number };
   const links0 = db.prepare('SELECT COUNT(*) n, COALESCE(SUM(length(CAST(props_json AS BLOB))), 0) bytes FROM entry_links WHERE project_id=? AND kind_key!=?')
     .get(projectId, WORKS_ON) as { n: number; bytes: number };
@@ -94,7 +115,11 @@ export function writeWikiExport(db: Db, projectId: string, opts: ExportOptions, 
   let links: EntryLink[] | null = (db.prepare(`SELECT l.* FROM entry_links l JOIN cards a ON a.id=l.from_card_id JOIN cards b ON b.id=l.to_card_id
     WHERE l.project_id=? AND l.kind_key!=? AND a.visibility!='deleted' AND b.visibility!='deleted'`).all(projectId, WORKS_ON) as Record<string, unknown>[])
     .map((r) => toCamel<EntryLink>(r));
-  const result = runChecks({ types, kinds, entries: lore, links, includePages: opts.includePages, isAttached: (file, card) => !!fileOf.get(file, card) });
+  const held: { balance: BalanceResult | null } = { balance: null };
+  const result = runChecks({
+    types, kinds, entries: lore, links, includePages: opts.includePages, isAttached: (file, card) => !!fileOf.get(file, card),
+    onBalance: (r) => { held.balance = r; },
+  });
   links = null;
   if (opts.strict && result.total > 0) return result;
 
@@ -123,6 +148,7 @@ export function writeWikiExport(db: Db, projectId: string, opts: ExportOptions, 
   const valuesOut = (defs: FieldDef[], values: Record<string, unknown> | undefined, cardId: string) => {
     const o: Record<string, unknown> = {};
     for (const def of defs) {
+      if (BALANCE_KINDS.has(def.kind)) continue; // in `tables`, `rules` and `scenarios`
       const v = valueOut(def, values?.[def.key], cardId);
       if (v !== undefined) o[def.key] = v;
     }
@@ -131,9 +157,18 @@ export function writeWikiExport(db: Db, projectId: string, opts: ExportOptions, 
 
   // ---- Header, types, link kinds ----
   out(`{"format":"questlog-gamedata","version":1,"campaign":${JSON.stringify({ id: project.id, name: project.name })},"exportedAt":${JSON.stringify(new Date().toISOString())}`);
+  // Families: display grouping only (a type's `family` is its root's). Added after version 1 shipped: extra keys only.
+  const families = (db.prepare('SELECT * FROM entry_families WHERE project_id=? ORDER BY sort_index, created_at, id').all(projectId) as Record<string, unknown>[])
+    .map((r) => toCamel<EntryFamily>(r));
+  const familyById = new Map(families.map((f) => [f.id, f]));
   out(`,"types":${JSON.stringify(types.map((t) => ({
     key: t.key, name: t.name, parent: t.parentTypeId ? typeById.get(t.parentTypeId)?.key ?? null : null,
     fields: t.fields.filter((f) => !f.hidden).map(fieldOut),
+    family: familyOf(typeById, familyById, t.id)?.name ?? null,
+    picture: t.picture?.kind === 'file' ? 'file' : t.picture?.style ?? 'dusk',
+  })))}`);
+  out(`,"families":${JSON.stringify(families.map((f) => ({
+    name: f.name, color: f.color, types: types.filter((t) => t.familyId === f.id && !t.parentTypeId).map((t) => t.key),
   })))}`);
   out(`,"linkKinds":${JSON.stringify(kinds.map((k) => ({
     key: k.key, label: k.label, reverseLabel: k.reverseLabel, from: k.fromTypes, to: k.toTypes, props: k.props.filter((p) => !p.hidden).map(fieldOut),
@@ -142,14 +177,36 @@ export function writeWikiExport(db: Db, projectId: string, opts: ExportOptions, 
   // ---- Entries, per type (then plain pages), text read row by row ----
   out(',"entries":[');
   let first = true;
+  const assetOf = db.prepare('SELECT id, title FROM assets WHERE id=? AND project_id=?');
+  const asset = (id: string) => assetOf.get(id, projectId) as { id: string; title: string } | undefined;
+  /** The typed blocks that hold data; links to entries not in the file and assets that are gone are left out. */
+  const blocksOut = (json: string | null) => {
+    if (!json) return [];
+    const layout = JSON.parse(json) as EntryLayout;
+    const out: Record<string, unknown>[] = [];
+    for (const b of layout.blocks) {
+      const d = layout.data[b.id];
+      if (!hasData(b.kind, d)) continue;
+      const o: Record<string, unknown> = { title: b.title, kind: b.kind };
+      if (b.kind === 'lines' || b.kind === 'steps') o.items = d.items;
+      else if (b.kind === 'table') { o.columns = b.cols ?? []; o.rows = d.rows; }
+      else if (b.kind === 'links') o.entries = d.cardIds!.flatMap((c) => (index.has(c) ? [index.get(c)!.key] : []));
+      else if (b.kind === 'gallery') o.assets = d.assetIds!.flatMap((a) => asset(a) ?? []);
+      else { const a = asset(d.assetId!); if (!a) continue; o.asset = a; }
+      if (Array.isArray(o.entries) && !o.entries.length) continue;
+      if (Array.isArray(o.assets) && !o.assets.length) continue;
+      out.push(o);
+    }
+    return out;
+  };
   const writeEntries = (sql: string, args: unknown[], type: EntryType | null) => {
     const defs = type ? fieldsOf(typeById, type.id).filter((f) => !f.hidden) : [];
-    const rows = db.prepare(`SELECT c.id, c.entry_key k, c.content, c.tags_json tags, c.wiki_parent_id p ${LORE} AND ${sql} ORDER BY c.entry_key, c.seq`)
-      .iterate(projectId, ...(args as string[])) as Iterable<{ id: string; k: string | null; content: string; tags: string; p: string | null }>;
+    const rows = db.prepare(`SELECT c.id, c.entry_key k, c.content, c.tags_json tags, c.aliases_json aliases, c.wiki_parent_id p, c.layout_json lay ${LORE} AND ${sql} ORDER BY c.entry_key, c.seq`)
+      .iterate(projectId, ...(args as string[])) as Iterable<{ id: string; k: string | null; content: string; tags: string; aliases: string; p: string | null; lay: string | null }>;
     for (const r of rows) {
       const e = {
-        id: r.id, key: r.k, type: type?.key ?? null, name: titleOf(r.content), parent: r.p ? index.get(r.p)?.key ?? null : null,
-        tags: JSON.parse(r.tags) as string[], fields: type ? valuesOut(defs, valuesOf.get(r.id), r.id) : {}, text: textOf(r.content),
+        id: r.id, key: r.k, type: type?.key ?? null, name: titleOf(r.content), aliases: JSON.parse(r.aliases) as string[], parent: r.p ? index.get(r.p)?.key ?? null : null,
+        tags: JSON.parse(r.tags) as string[], fields: type ? valuesOut(defs, valuesOf.get(r.id), r.id) : {}, text: textOf(r.content), blocks: blocksOut(r.lay),
       };
       valuesOf.delete(r.id);
       out(`${first ? '' : ','}\n${JSON.stringify(e)}`);
@@ -184,6 +241,49 @@ export function writeWikiExport(db: Db, projectId: string, opts: ExportOptions, 
       first = false;
     }
   }
-  out(`],"checks":${JSON.stringify(result.checks)}${checksTail(result)}}\n`);
+  out(']');
+  writeBalance(held.balance!, out);
+  held.balance = null;
+  out(`,"checks":${JSON.stringify(result.checks)}${checksTail(result)}}\n`);
   return result;
+}
+
+/** A formula as exported: its text and its tree (it parsed when checked; the checks ran on this same text). */
+function formulaOut(text: string) {
+  const p = parseFormula(text);
+  if ('error' in p) throw new Error('a checked formula no longer parses');
+  return { text, tree: p.tree };
+}
+const namedOut = (n: NamedFormula) => ({ name: n.name, formula: formulaOut(n.formula) });
+
+/**
+ * `random`, `tables`, `rules` and `scenarios`, sorted by name, one item per write: the trees are built for the item
+ * being written and dropped with it (the checks kept none).
+ */
+function writeBalance(b: BalanceResult, out: (chunk: string) => void): void {
+  const byName = <T extends { name: string }>(list: T[]) => list.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+  out(`,"random":${JSON.stringify(RANDOM_INFO)}`);
+  const list = <T>(key: string, items: T[], one: (t: T) => unknown) => {
+    out(`,"${key}":[`);
+    items.forEach((t, i) => out(`${i ? ',' : ''}\n${JSON.stringify(one(t))}`));
+    out(']');
+  };
+  list('tables', byName(b.tables), (t) => ({
+    name: t.name, entry: t.entry, field: t.field, unit: t.unit ?? null,
+    keys: t.value.keys.map((k) => ({ field: k.field ?? null, values: k.values })), mode: t.value.mode, cells: t.value.cells,
+  }));
+  list('rules', byName(b.rules), (r) => ({
+    name: r.name, entry: r.entry, field: r.field, language: FORMULA_LANGUAGE_VERSION,
+    roles: r.value.roles.map((x) => ({ name: x.name, type: x.type })),
+    parts: r.value.parts.map(namedOut), result: formulaOut(r.value.result), samples: r.samples,
+  }));
+  list('scenarios', byName(b.scenarios), (s) => ({
+    name: s.name, entry: s.entry, field: s.field, language: FORMULA_LANGUAGE_VERSION,
+    roles: s.value.roles.map((x) => ({ name: x.name, type: x.type })),
+    state: s.value.state.map((x) => ({ name: x.name, start: formulaOut(x.start) })),
+    clocks: s.value.clocks.map((c) => ({
+      name: c.name, every: formulaOut(c.every), ...(c.first !== undefined ? { first: formulaOut(c.first) } : {}), do: c.do.map(namedOut),
+    })),
+    end: formulaOut(s.value.end), cap: s.value.cap, measures: s.value.measures.map(namedOut),
+  }));
 }

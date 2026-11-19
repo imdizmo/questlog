@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useState, type KeyboardEvent } from 'react';
 import type { OrgRole, Project, ProjectVisibility, User } from '../../../shared/types';
 import { dispatch } from '../api';
 import { canManageProject, useStore } from '../store';
@@ -7,7 +7,8 @@ import { CoverPicker, coverFields, type CoverChoice } from '../components/CoverP
 import { VisibilityField } from '../components/VisibilityField';
 import { ProjectTagsDialog } from '../components/ProjectTagsDialog';
 import { tagMark } from '../components/TagToggles';
-import { WikiTypes } from './settings/WikiTypes';
+import { navigate } from '../router';
+import { typesPath } from '../wiki';
 
 // Public pages are not offered: the tab that switched them on is gone, so the dormant pages cannot be reached.
 const ALL_TABS = [['general', 'General'], ['wikiTypes', 'Entity types']] as const;
@@ -76,7 +77,7 @@ export function ProjectSettings({ project, onClose, initialTab = 'general' }: { 
           ))}
         </div>
         <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-tab-${tab}`} className="settings-panel">
-        {tab === 'wikiTypes' ? <WikiTypes project={project} /> : (<>
+        {tab === 'wikiTypes' ? <OpenWikiTypes project={project} onClose={onClose} redirect={initialTab === 'wikiTypes'} /> : (<>
         <label className="field">
           <span>Project name</span>
           <input required value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
@@ -189,5 +190,21 @@ function AccessRow({ user, role, project, row, busy, run }: {
         ) : <span className="muted">—</span>}
       </td>
     </tr>
+  );
+}
+
+/**
+ * Entity types moved into the Wiki's Types. A dialog opened straight on this tab (an old link) goes there at once;
+ * picked inside the dialog, the tab offers a button, so edits on General are never dropped by a tab switch.
+ */
+function OpenWikiTypes({ project, onClose, redirect }: { project: Project; onClose: () => void; redirect: boolean }) {
+  const open = () => { onClose(); navigate(typesPath(project.seq)); };
+  useEffect(() => { if (redirect) open(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (redirect) return <p className="hint">Entity types now live in the Wiki, under Types. Opening them…</p>;
+  return (
+    <div className="stack">
+      <p className="hint">Entity types now live in the Wiki, under Types, with their families and pictures. Save changes on General first: this closes the settings.</p>
+      <p><button type="button" className="btn btn-primary" onClick={open}>Open Types in the Wiki</button></p>
+    </div>
   );
 }

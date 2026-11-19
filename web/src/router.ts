@@ -19,6 +19,9 @@ export type Route =
   | { name: 'vision' }
   | { name: 'visionBoard'; seq: number }
   | { name: 'card'; code: string; cardSlug: string }
+  // The redesign's shell: Home (the vision board in the next phase), a new tab's page.
+  | { name: 'home' }
+  | { name: 'newTab' }
   // Wiki of a project (by its seq, as /decks/activity?project= does); an entry by its key, or `$code` for keyless Lore.
   | { name: 'wiki' }
   | { name: 'wikiProject'; projectSeq: number }
@@ -27,6 +30,11 @@ export type Route =
   | { name: 'wikiKind'; projectSeq: number; typeKey: string }
   | { name: 'wikiNew'; projectSeq: number; typeKey: string }
   | { name: 'wikiView'; projectSeq: number; view: string }
+  // The Wiki's Types page (/view/types), with a type open (/types/<key>).
+  | { name: 'wikiTypes'; projectSeq: number; typeKey: string | null }
+  // Assets of a project (web/src/views/assets/), by the project's seq like the Wiki.
+  | { name: 'assets' }
+  | { name: 'assetsProject'; projectSeq: number }
   // Open Decks: public pages, no session needed (web/src/views/open/)
   | { name: 'openGallery' }
   | { name: 'openConfirm'; token: string }
@@ -64,6 +72,8 @@ export function parse(path: string): Route {
   if (a === 'login' && parts.length === 1) return { name: 'login' };
   if (a === 'join' && b && parts.length === 2) return { name: 'join', token: b };
   if (a === 'inbox' && parts.length === 1) return { name: 'inbox' };
+  if (a === 'home' && parts.length === 1) return { name: 'home' };
+  if (a === 'new' && parts.length === 1) return { name: 'newTab' };
   if (a === 'milestones' && parts.length === 1) return { name: 'milestones' };
   if (a === 'milestones' && b === 'run' && c && /^\d+$/.test(c) && d === 'activity' && parts.length === 4) return { name: 'runActivity', seq: Number(c) };
   if (a === 'milestones' && b && /^\d+$/.test(b) && c === 'activity' && parts.length === 3) return { name: 'milestoneActivity', seq: Number(b) };
@@ -97,10 +107,14 @@ export function parse(path: string): Route {
       if (c === 'type' && d && parts.length === 4) return { name: 'wikiType', projectSeq: Number(b), typeKey: d };
       if (c === 'kind' && d && parts.length === 4) return { name: 'wikiKind', projectSeq: Number(b), typeKey: d };
       if (c === 'new' && d && parts.length === 4) return { name: 'wikiNew', projectSeq: Number(b), typeKey: d };
+      if (c === 'view' && d === 'types' && parts.length === 4) return { name: 'wikiTypes', projectSeq: Number(b), typeKey: null };
+      if (c === 'types' && d && parts.length === 4) return { name: 'wikiTypes', projectSeq: Number(b), typeKey: d };
       if (c === 'view' && d && parts.length === 4) return { name: 'wikiView', projectSeq: Number(b), view: d };
       if (c && parts.length === 3) return { name: 'wikiEntry', projectSeq: Number(b), entry: c };
     }
   }
+  if (a === 'assets' && parts.length === 1) return { name: 'assets' };
+  if (a === 'assets' && b && /^\d+$/.test(b) && Number(b) > 0 && parts.length === 2) return { name: 'assetsProject', projectSeq: Number(b) };
   if (a === 'card' && b && parts.length === 2) {
     const cs = codeSlug(b);
     if (cs) return { name: 'card', code: cs[0], cardSlug: cs[1] };
@@ -120,13 +134,88 @@ function update() {
   current = read();
   for (const fn of [...listeners]) fn();
 }
-if (hasWindow) window.addEventListener('popstate', update);
+
+/**
+ * The tabs (web/src/tabRuntime.ts) keep each tab's own back and forward. While they run, every navigate() goes to the
+ * active tab (which may answer with another tab's page: the Home tab stays home), and the browser's back and forward
+ * step through the active tab's pages. Each history entry carries a serial that only grows, so a popstate tells back
+ * from forward; the address bar always shows the active tab's page.
+ */
+export interface HistoryKeeper {
+  /** A navigation in the active tab; returns the page to show. */
+  go(url: string, replace: boolean): string;
+  /** The browser's back (-1) or forward (1); returns the page to show, or null when the tab had nowhere to go. */
+  pop(dir: -1 | 1): string | null;
+}
+let keeper: HistoryKeeper | null = null;
+let serial = 0;
+/** The next popstate is our own undo of a step the active tab could not take. */
+let undoing = false;
+const nextSerial = () => (serial = Math.max(Date.now(), serial + 1));
+const here = () => location.pathname + location.search + location.hash;
+
+export function setHistoryKeeper(k: HistoryKeeper | null): void {
+  keeper = k;
+  if (k && hasWindow) {
+    const s = (history.state as { qlSerial?: unknown } | null)?.qlSerial;
+    if (typeof s === 'number') serial = Math.max(serial, s);
+    else history.replaceState({ qlSerial: nextSerial() }, '', here());
+  }
+}
+
+/** Shows `url` without a history step (a tab switch, a tab's back or forward). */
+export function showUrl(url: string): void {
+  if (url !== here()) history.replaceState({ qlSerial: serial }, '', url);
+  update();
+}
+
+if (hasWindow) window.addEventListener('popstate', (e) => {
+  if (keeper) {
+    const s = (e.state as { qlSerial?: unknown } | null)?.qlSerial;
+    if (undoing) {
+      undoing = false;
+      if (typeof s === 'number') serial = s;
+      return;
+    }
+    if (typeof s !== 'number') {
+      // An entry the app did not make (a #fragment link, a script's pushState): a visit in the active tab.
+      const show = keeper.go(here(), false);
+      history.replaceState({ qlSerial: nextSerial() }, '', show);
+    } else {
+      const dir = s > serial ? 1 : -1;
+      const show = keeper.pop(dir);
+      if (show === null) {
+        // Back on a tab's first page (no tab it came from): step the browser back where it was, so the browser's own
+        // history is not used up by steps that do nothing.
+        undoing = true;
+        history.go(-dir);
+        return;
+      }
+      serial = s;
+      history.replaceState({ qlSerial: serial }, '', show);
+    }
+  }
+  update();
+});
+
+/**
+ * Home's split pane (web/src/views/HomePane.tsx) takes in some navigations while it shows a page: given one, it answers
+ * the address to show instead (Home's, with the page in the pane), or null to let it be.
+ */
+let detour: ((url: URL, replace: boolean) => string | null) | null = null;
+export function setDetour(fn: typeof detour): void { detour = fn; }
 
 export function navigate(to: string, opts: { replace?: boolean } = {}): void {
-  const url = new URL(to, location.origin);
+  let url = new URL(to, location.origin);
+  const instead = detour?.(url, !!opts.replace);
+  if (instead) url = new URL(instead, location.origin);
+  if (url.origin !== location.origin) return; // never another site (history would refuse it anyway)
   if (url.pathname + url.search === location.pathname + location.search) return;
-  if (opts.replace) history.replaceState(null, '', url.pathname + url.search + url.hash);
-  else history.pushState(null, '', url.pathname + url.search + url.hash);
+  let show = url.pathname + url.search + url.hash;
+  if (keeper) show = keeper.go(show, !!opts.replace);
+  if (show === here()) { update(); return; }
+  if (opts.replace) history.replaceState({ qlSerial: serial }, '', show);
+  else history.pushState({ qlSerial: nextSerial() }, '', show);
   update();
 }
 
@@ -142,13 +231,35 @@ export function setQuery(key: string, value: string | null): void {
 export const useLocation = (): Location =>
   useSyncExternalStore((fn) => { listeners.add(fn); return () => { listeners.delete(fn); }; }, () => current);
 
-/** In-app link: a real <a href> (middle-click, copy link work) that routes without reloading. */
+/** Opens a page in a new tab in the background (set by the tabs while they run). */
+let tabOpener: ((href: string) => void) | null = null;
+export function setTabOpener(fn: ((href: string) => void) | null): void { tabOpener = fn; }
+export function openInTab(href: string): boolean {
+  if (!tabOpener) return false;
+  tabOpener(href);
+  return true;
+}
+/** Ctrl/⌘+click or a middle click: a new tab (in the app while the tabs run, else the browser's). */
+export const isNewTabClick = (e: { button: number; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean }) =>
+  (e.button === 0 && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) || e.button === 1;
+
+/**
+ * In-app link: a real <a href> (copy link works) that routes without reloading. Ctrl/⌘+click and a middle click open
+ * the page in a new tab beside the others.
+ */
 export function Link(props: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) {
   const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
     props.onClick?.(e);
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || props.target) return;
+    if (e.defaultPrevented || props.target) return;
+    if (isNewTabClick(e) && openInTab(props.href)) { e.preventDefault(); return; }
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     navigate(props.href);
   };
-  return createElement('a', { ...props, onClick });
+  const onAuxClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    props.onAuxClick?.(e);
+    if (e.defaultPrevented || props.target || e.button !== 1) return;
+    if (openInTab(props.href)) e.preventDefault();
+  };
+  return createElement('a', { ...props, onClick, onAuxClick });
 }

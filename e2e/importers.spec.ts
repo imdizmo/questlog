@@ -8,9 +8,8 @@ test('import a Trello board export from the settings page', async ({ page }) => 
   await ensureWorkspace(page);
   const name = unique('Trello proj');
   const project = await run<{ id: string }>(page, 'projects', 'create', { name });
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'Trello import' }).click();
+  await page.goto('/decks?menu=import/trello');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
 
   await settings.getByLabel('Trello export (JSON)').setInputFiles({ name: 'board.json', mimeType: 'application/json', buffer: FIXTURE });
   await expect(settings.getByText('2 lists, 3 cards (2 archived, skipped), 3 labels.')).toBeVisible();
@@ -36,9 +35,8 @@ test('import a Trello board export from the settings page', async ({ page }) => 
 
 test('a file that is not a Trello export is refused in the page', async ({ page }) => {
   await ensureWorkspace(page);
-  await page.goto('/decks?show=accountSettings');
-  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
-  await settings.getByRole('tab', { name: 'Trello import' }).click();
+  await page.goto('/decks?menu=import/trello');
+  const settings = page.getByRole('dialog', { name: 'Workspace menu' });
   await settings.getByLabel('Trello export (JSON)').setInputFiles({ name: 'x.json', mimeType: 'application/json', buffer: Buffer.from('{"hello":1}') });
   await expect(settings.getByRole('alert')).toHaveText("That doesn't look like a Trello board export (no lists or tasks).");
   await expect(settings.getByRole('button', { name: /^Import/ })).toHaveCount(0);

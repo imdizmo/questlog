@@ -2,9 +2,11 @@ import MarkdownIt from 'markdown-it';
 import type StateInline from 'markdown-it/lib/rules_inline/state_inline.mjs';
 import type StateCore from 'markdown-it/lib/rules_core/state_core.mjs';
 import type Token from 'markdown-it/lib/token.mjs';
-import type { Card, User } from '../../shared/types';
+import type { Card, Deck, Project, User } from '../../shared/types';
 import { cardCode, seqFromCode, slugOf, titleOf } from '../../shared/cards';
 import { CHECKBOX, mentionHandle, TOKEN_BODY, tokenBoundary } from '../../shared/content';
+import { findMentions } from '../../shared/autolink';
+import { entryPath, type NameLinks } from './wiki';
 
 /** Looks up what a token in the text refers to; null when it refers to nothing we know. */
 export interface RenderContext {
@@ -12,6 +14,10 @@ export interface RenderContext {
   cardTitle(code: string): string | null;
   /** Display name of the user with this @handle (see mentionHandle). */
   userName(handle: string): string | null;
+  /** Where `[shown text]($code)` goes; default `/card/<code>`. */
+  cardHref?(code: string): string | null;
+  /** Wiki entry names recognised in the text become links to their pages (web/src/wiki.ts nameLinks). */
+  names?: NameLinks | null;
 }
 
 export interface RenderOptions {
@@ -107,11 +113,93 @@ function taskRule(state: StateCore): void {
   }
 }
 
+/**
+ * Names of wiki entries in plain text → `jt_name_open` / `jt_name_close` around the name (shared/autolink findMentions),
+ * never inside a link, code, an image's alt text or a `$code` token. Matched over runs of `text` and `softbreak`, so a
+ * name hard-wrapped onto the next line links too (inline formatting inside a name, `**Ashen** Keep`, still breaks it).
+ */
+function namesRule(state: StateCore): void {
+  const names = (state.env as Env).ctx.names;
+  if (!names || names.index.size === 0) return;
+  const opts = { ignores: names.ignores, selfId: names.selfId };
+  for (const tok of state.tokens) {
+    if (tok.type !== 'inline' || !tok.children) continue;
+    const kids = tok.children;
+    const out: Token[] = [];
+    let changed = false;
+    let depth = 0;
+    for (let i = 0; i < kids.length; ) {
+      const c = kids[i];
+      if (depth > 0 || (c.type !== 'text' && c.type !== 'softbreak')) {
+        if (c.type === 'link_open') depth++;
+        else if (c.type === 'link_close') depth--;
+        out.push(c);
+        i++;
+        continue;
+      }
+      // One run of text and soft line breaks; a break counts as "\n" (findMentions reads one as a space).
+      let j = i;
+      let joined = '';
+      const starts: number[] = [];
+      while (j < kids.length && (kids[j].type === 'text' || kids[j].type === 'softbreak')) {
+        starts.push(joined.length);
+        joined += kids[j].type === 'softbreak' ? '\n' : kids[j].content;
+        j++;
+      }
+      const events: { at: number; open?: { href: string; title: string | null; name: string } }[] = [];
+      for (const m of findMentions(joined, names.index, opts)) {
+        const href = names.href(m.cardId);
+        if (!href) continue;
+        events.push({ at: m.from, open: { href, title: names.title(m.cardId), name: m.name } }, { at: m.to });
+      }
+      if (!events.length) {
+        for (let k = i; k < j; k++) out.push(kids[k]);
+        i = j;
+        continue;
+      }
+      changed = true;
+      let e = 0;
+      const emit = () => {
+        const ev = events[e++];
+        const t = new state.Token(ev.open ? 'jt_name_open' : 'jt_name_close', 'a', ev.open ? 1 : -1);
+        if (ev.open) t.meta = ev.open;
+        out.push(t);
+      };
+      for (let k = i; k < j; k++) {
+        const from = starts[k - i];
+        const to = from + (kids[k].type === 'softbreak' ? 1 : kids[k].content.length);
+        while (e < events.length && events[e].at <= from) emit();
+        if (kids[k].type === 'softbreak') { out.push(kids[k]); continue; }
+        let cur = from;
+        while (e < events.length && events[e].at < to) {
+          if (events[e].at > cur) out.push(textToken(state, joined.slice(cur, events[e].at)));
+          cur = events[e].at;
+          emit();
+        }
+        if (cur === from) out.push(kids[k]);
+        else if (cur < to) out.push(textToken(state, joined.slice(cur, to)));
+      }
+      while (e < events.length) emit();
+      i = j;
+    }
+    if (changed) tok.children = out;
+  }
+}
+const textToken = (state: StateCore, content: string) => {
+  const t = new state.Token('text', '', 0);
+  t.content = content;
+  return t;
+};
+
+/** `[shown text]($code)`: a card link with its own text. */
+const CODE_HREF = /^\$([0-9a-z]+)$/i;
+
 function build(): MarkdownIt {
   const md = new MarkdownIt({ html: false, linkify: true });
   const esc = md.utils.escapeHtml;
   md.inline.ruler.before('linkify', 'jt_ref', refRule);
   md.core.ruler.push('jt_tasks', taskRule);
+  md.core.ruler.push('jt_names', namesRule);
 
   md.renderer.rules.jt_ref = (tokens, idx, _o, env: Env) => {
     const { kind, name } = tokens[idx].meta as { kind: RefKind; name: string };
@@ -128,6 +216,12 @@ function build(): MarkdownIt {
       ? `<a class="card-ref missing" href="/card/${esc(name)}">$${esc(name)}</a>`
       : `<a class="card-ref" href="/card/${esc(name)}-${esc(slugOf(title) || 'card')}" title="$${esc(name)}">${esc(title)}</a>`;
   };
+
+  md.renderer.rules.jt_name_open = (tokens, idx) => {
+    const { href, title, name } = tokens[idx].meta as { href: string; title: string | null; name: string };
+    return `<a class="entry-link" href="${esc(href)}"${title ? ` title="${esc(title)}"` : ''} data-name="${esc(name)}">`;
+  };
+  md.renderer.rules.jt_name_close = () => '</a>';
 
   md.renderer.rules.jt_check = (tokens, idx, _o, env: Env) => {
     const { checked, line, label } = tokens[idx].meta as { checked: boolean; line: number; label: string };
@@ -147,7 +241,14 @@ function build(): MarkdownIt {
   // Every link opens in a new tab and sends no referrer or opener. markdown-it's own validateLink
   // has already dropped javascript:, vbscript:, file: and non-image data: URLs.
   const defaultLinkOpen = md.renderer.rules.link_open ?? ((t, i, o, _e, self) => self.renderToken(t, i, o));
-  md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  md.renderer.rules.link_open = (tokens, idx, options, env: Env, self) => {
+    const code = CODE_HREF.exec(tokens[idx].attrGet('href') ?? '')?.[1].toLowerCase();
+    if (code && seqFromCode(code) !== null) {
+      // An in-app link: same tab (MarkdownView navigates), to the wiki page of Lore or else the card.
+      tokens[idx].attrSet('href', env.ctx.cardHref?.(code) ?? `/card/${code}`);
+      tokens[idx].attrSet('class', 'card-link');
+      return self.renderToken(tokens, idx, options);
+    }
     tokens[idx].attrSet('target', '_blank');
     tokens[idx].attrSet('rel', 'noopener noreferrer');
     return defaultLinkOpen(tokens, idx, options, env, self);
@@ -195,15 +296,32 @@ export function setCheckLine(content: string, line: number, checked: boolean, ex
   return lines.join('\n');
 }
 
-/** Lookups for the renderer over what this person can see. */
-export function renderContext(cards: Map<string, Card>, users: Map<string, User>): RenderContext {
+/**
+ * Lookups for the renderer over what this person can see. With `decks` and `projects`, `[text]($code)` of Lore (a wiki
+ * entry or page) goes to its wiki page, as its recognised name does; with `names`, entry names in the text become links.
+ */
+export function renderContext(cards: Map<string, Card>, users: Map<string, User>, more: {
+  decks?: Map<string, Pick<Deck, 'projectId'>>; projects?: Map<string, Pick<Project, 'seq'>>; names?: NameLinks | null;
+} = {}): RenderContext {
   let byCode: Map<string, Card> | null = null;
   let byHandle: Map<string, User> | null = null;
+  const card = (code: string) => {
+    byCode ??= new Map([...cards.values()].map((c) => [cardCode(c.seq), c]));
+    return byCode.get(code);
+  };
   return {
+    names: more.names ?? null,
     cardTitle(code) {
-      byCode ??= new Map([...cards.values()].map((c) => [cardCode(c.seq), c]));
-      const c = byCode.get(code);
+      const c = card(code);
       return c ? titleOf(c.content) : null;
+    },
+    cardHref(code) {
+      const c = card(code);
+      if (!c) return null;
+      const projectId = c.deckId ? more.decks?.get(c.deckId)?.projectId : undefined;
+      const project = projectId ? more.projects?.get(projectId) : undefined;
+      if (c.isDoc && c.visibility !== 'deleted' && project) return entryPath(project.seq, c);
+      return `/card/${code}-${slugOf(titleOf(c.content)) || 'card'}`;
     },
     userName(handle) {
       byHandle ??= new Map([...users.values()].filter((u) => !u.disabled).map((u) => [mentionHandle(u.name), u]));
