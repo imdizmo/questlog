@@ -37,11 +37,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ steps.node.outputs.version }}
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
       - run: cargo install tauri-cli --locked --version '^2'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
@@ -54,6 +50,7 @@ jobs:
           name: linux-x64
           path: dist/*
           if-no-files-found: error
+          retention-days: 3
 
   windows:
     runs-on: windows-latest
@@ -74,11 +71,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ steps.node.outputs.version }}
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
       - name: zip and unzip for the packaging script
         shell: pwsh
         run: choco install zip unzip -y --no-progress
@@ -99,6 +92,7 @@ jobs:
           name: win-x64
           path: dist/*
           if-no-files-found: error
+          retention-days: 3
 
   release:
     needs: [linux, windows]
