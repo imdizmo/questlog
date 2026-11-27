@@ -7,6 +7,8 @@ import { parseContent } from '../../shared/content';
 import { cachedNameIndex, findMentions, nameSourceOf, type NameIndex } from '../../shared/autolink';
 import type { GraphData, GraphEdgeIn } from '../../shared/graph';
 import { fieldsOf, isTypeOrChild, runChecks, typeChain, WORKS_ON, type Check, type CheckProblem, type ChecksResult } from '../../shared/wiki';
+import { readLangNow, titleNow } from './translate';
+import { store } from './store';
 
 export type WikiState = Pick<State, 'cards' | 'decks' | 'entryTypes' | 'linkKinds' | 'entryLinks'>;
 export interface WikiNode { id: string; card: Card; children: WikiNode[] }
@@ -219,14 +221,14 @@ export function nameLinks(s: Pick<State, 'cards' | 'decks' | 'projects'>, projec
     selfId: card?.id ?? null,
     ignores: card?.linkIgnores ?? [],
     href: (id) => { const c = s.cards.get(id); return c ? entryPath(project.seq, c) : null; },
-    title: (id) => { const c = s.cards.get(id); return c ? titleOf(c.content) : null; },
+    title: (id) => { const c = s.cards.get(id); return c ? titleNow(c) : null; },
   };
 }
 
 // ---- The graph: a campaign's entries and every relation between them (shared/graph lays it out). ----
 
 export type GraphState = Pick<State, 'cards' | 'decks' | 'entryTypes' | 'linkKinds' | 'entryLinks' | 'visionBoards'>;
-interface GraphMemo { decks: unknown; entryTypes: unknown; linkKinds: unknown; entryLinks: unknown; visionBoards: unknown; data: GraphData }
+interface GraphMemo { decks: unknown; entryTypes: unknown; linkKinds: unknown; entryLinks: unknown; visionBoards: unknown; tr: unknown; lang: string; data: GraphData }
 const graphCache = new WeakMap<Map<string, Card>, Map<string, GraphMemo>>();
 
 /**
@@ -239,7 +241,10 @@ export function campaignGraphData(s: GraphState, projectId: string): GraphData {
   let byProject = graphCache.get(s.cards);
   if (!byProject) graphCache.set(s.cards, (byProject = new Map()));
   const hit = byProject.get(projectId);
-  if (hit && hit.decks === s.decks && hit.entryTypes === s.entryTypes && hit.linkKinds === s.linkKinds && hit.entryLinks === s.entryLinks && hit.visionBoards === s.visionBoards) return hit.data;
+  // Node labels are the reader's titles: new translations or another reading language rebuild it too.
+  const tr = store.get().translations, lang = readLangNow();
+  if (hit && hit.decks === s.decks && hit.entryTypes === s.entryTypes && hit.linkKinds === s.linkKinds && hit.entryLinks === s.entryLinks && hit.visionBoards === s.visionBoards
+    && hit.tr === tr && hit.lang === lang) return hit.data;
 
   const hosts = new Set<string>();
   for (const b of s.visionBoards.values()) hosts.add(b.cardId);
@@ -247,7 +252,7 @@ export function campaignGraphData(s: GraphState, projectId: string): GraphData {
   const ids = new Set(lore.map((c) => c.id));
   const byKey = new Map<string, string>();
   for (const c of lore) if (c.entryKey) byKey.set(c.entryKey, c.id);
-  const nodes = lore.map((c) => ({ id: c.id, label: titleOf(c.content) || 'Untitled', typeId: c.entryTypeId ?? null }));
+  const nodes = lore.map((c) => ({ id: c.id, label: titleNow(c) || 'Untitled', typeId: c.entryTypeId ?? null }));
   const edges: GraphEdgeIn[] = [];
 
   const kinds = new Map<string, LinkKind>();
@@ -271,7 +276,7 @@ export function campaignGraphData(s: GraphState, projectId: string): GraphData {
   if (index.size) for (const c of lore) for (const to of namedIn(c, index)) if (ids.has(to)) edges.push({ from: c.id, to, kind: 'mention', label: 'mentions' });
 
   const data = { nodes, edges };
-  byProject.set(projectId, { decks: s.decks, entryTypes: s.entryTypes, linkKinds: s.linkKinds, entryLinks: s.entryLinks, visionBoards: s.visionBoards, data });
+  byProject.set(projectId, { decks: s.decks, entryTypes: s.entryTypes, linkKinds: s.linkKinds, entryLinks: s.entryLinks, visionBoards: s.visionBoards, tr, lang, data });
   return data;
 }
 
@@ -423,7 +428,7 @@ export const entriesOfTypes = (types: Map<string, EntryType>, list: Card[], allo
 export function searchEntries(list: Card[], query: string): Card[] {
   const q = query.trim().toLowerCase();
   if (!q) return list;
-  return list.filter((c) => titleOf(c.content).toLowerCase().includes(q) || (c.entryKey ?? '').includes(q));
+  return list.filter((c) => titleOf(c.content).toLowerCase().includes(q) || titleNow(c).toLowerCase().includes(q) || (c.entryKey ?? '').includes(q));
 }
 
 const withUnit = (n: number | string, unit?: string) => (!unit ? `${n}` : unit === '%' ? `${n}%` : `${n} ${unit}`);

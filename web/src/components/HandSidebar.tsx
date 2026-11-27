@@ -10,6 +10,7 @@ import { localToday as planToday } from '../planning';
 import { Link } from '../router';
 import { inboxRows, settingsOf, useStore } from '../store';
 import { useOpenDecks } from '../openDecks';
+import { useShownTitle } from '../translate';
 
 const DAY = 86_400_000;
 const DONE_DAYS = 14;
@@ -17,13 +18,14 @@ const CAP = 50;
 
 function CardLinks({ cards, empty }: { cards: Card[]; empty: string }) {
   const decks = useStore((s) => s.decks);
+  const shownTitle = useShownTitle();
   if (!cards.length) return <p className="muted widget-empty">{empty}</p>;
   return (
     <ul className="widget-list">
       {cards.slice(0, CAP).map((c) => (
         <li key={c.id}>
           <Link href={cardHref(c, c.deckId ? decks.get(c.deckId) : undefined)}>
-            <span className="code-chip">{taskId(c)}</span> {titleOf(c.content) || 'Untitled'}
+            <span className="code-chip">{taskId(c)}</span> {shownTitle(c) || 'Untitled'}
           </Link>
           {c.dueDate && <span className="muted"> {c.dueDate}</span>}
         </li>

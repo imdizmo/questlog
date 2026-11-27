@@ -16,6 +16,7 @@ import { KEY_RE, WORKS_ON, fieldsOf, hasCycle, isTypeOrChild, keyFromName, refCo
 import type { EntryFamily, EntryLink, EntryType, FieldDef, FieldKind, LinkKind, TypePicture } from '../../shared/types';
 import { CORE_FIELDS, STARTER_FAMILIES, STARTER_KINDS, STARTER_PAGES, STARTER_TYPES, isPreviousCore, keysUnder } from '../../shared/templates/gameStarterPack';
 import { coverRow, releaseCover } from '../covers';
+import { touchTranslation } from '../translate/queue';
 import { BLOCK_KINDS, BLOCK_LIMITS, DEFAULT_PROMPT, hasData, GAME_PROMPTS, bodyOf, bringUpToDate, headingKey, isOutdated, newEntryContent, pageOf } from '../../shared/blocks';
 import type { Block, BlockData, EntryLayout, TypePage } from '../../shared/types';
 
@@ -788,6 +789,7 @@ export const wikiCommands: Record<string, Command> = {
       db.prepare('UPDATE cards SET entry_type_id=?, entry_key=?, wiki_parent_id=?, layout_json=? WHERE id=?')
         .run(input.typeId, key, input.parentId ?? null, layout && JSON.stringify(layout), id);
       emitCard(ctx, id);
+      if (input.typeId !== null) touchTranslation(ctx, 'fields', id);
       return { id, key };
     },
   },
@@ -829,6 +831,7 @@ export const wikiCommands: Record<string, Command> = {
       db.prepare('UPDATE cards SET entry_type_id=?, entry_key=?, fields_json=?, layout_json=? WHERE id=?').run(typeId, key, json, layout && JSON.stringify(layout), card.id);
       recordHistory(db, card.id, ctx.actor.id, changes);
       emitCard(ctx, card.id);
+      touchTranslation(ctx, 'fields', card.id);
     },
   },
   /**
@@ -892,6 +895,7 @@ export const wikiCommands: Record<string, Command> = {
       db.prepare('UPDATE cards SET layout_json=? WHERE id=?').run(json, card.id);
       if (!sameValue(prior, next)) recordHistory(db, card.id, ctx.actor.id, [{ kind: 'block', title: block.title, from: prior, to: next }]);
       emitCard(ctx, card.id);
+      touchTranslation(ctx, 'fields', card.id);
     },
   },
   /**

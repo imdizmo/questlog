@@ -350,6 +350,32 @@ as the owner. `JT_LOOPBACK_TRUST=0` means a loopback caller is never trusted, be
 a forwarded remote caller: `JATIFY_ADMIN_TOKEN` then never acts as the owner on `/team/*`, and setup ignores the body
 `tailscaleLogin`. The token is still required for the first setup, and the Tailscale link at setup still works.
 
+## Translation (English ↔ Italian)
+
+Questlog can translate task text, comments and Lore pages between English and Italian on your own server, so each
+person reads in their own language. It is off by default and needs the **language pack**, a separate download
+(about 55 MB, the same file for every platform): `questlog-translate-models-vX.Y.Z.tar.gz` with a `.sha256`, from the
+release page. Nothing is fetched from the internet and no text leaves the server. Desktop builds do not include it.
+
+- **Server archive:** check the download (`sha256sum -c questlog-translate-models-vX.Y.Z.tar.gz.sha256`), then unpack it
+  in the folder that holds `server/`: `tar xzf questlog-translate-models-vX.Y.Z.tar.gz`. That makes `models/translate/`
+  beside `server/`. Restart the server. `JT_TRANSLATE_PACK` points at a different `models/translate` folder.
+- **Docker:** the image has no models. Fill a volume once and mount it at `/app/models`:
+
+  ```sh
+  docker volume create questlog-models
+  docker run --rm -v questlog-models:/m -v "$PWD":/in:ro alpine \
+    tar xzf /in/questlog-translate-models-vX.Y.Z.tar.gz -C /m --strip-components=1
+  docker run -d ... -v questlog-models:/app/models:ro questlog-server
+  ```
+
+  With Compose, add `questlog-models:/app/models:ro` to the service's volumes and declare the volume.
+- Then switch **Translation** on in the workspace menu → Features (owner or admin). Without the pack the switch says what to install and
+  everything else works as before.
+
+The engine loads on first use, one direction at a time (about 400 MB of memory while it runs) and is released after 5
+idle minutes. A paragraph takes well under a second on a small server. Licences: [NOTICE.md](NOTICE.md).
+
 ## Data and backups
 
 Everything lives in one SQLite database, `data/jt.db` by default. Set `JT_DB` to put it
@@ -482,6 +508,14 @@ exceed the token: a read token only reads, and a token confined to projects sees
 - Every change goes through the same commands as the app, so it shows up live and in the task history.
 - `list_assets` lists the Assets library of the projects the token can see (name, kind, what it is for, source and
   link back); the picture itself is at `pictureUrl` for a signed-in session.
+- **Vision boards:** `get_vision_board` lists a task's board: its nodes (tasks with their titles, notes, frames, ...)
+  with position, size and frame, and its lines. `edit_vision_board` changes it like a person would, up to 200
+  operations per call, all or none: `add_task` (at `x`,`y`, else beside the last placed node), `move` (position and
+  optionally size; a node dropped fully inside a frame goes into it), `remove` (takes a node and its lines off the
+  board; the task itself stays), `add_line` and `remove_line`. It needs a write token, works only where its owner may
+  edit the board (not on locked boards, nor read-only ones they didn't make), and makes the board if the task has none.
+  People with the board open see the change at once. Don't write a board's stored document directly: while anyone
+  has it open, the server keeps its own copy and overwrites the change.
 
 ### "May delete" on the command API
 

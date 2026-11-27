@@ -124,8 +124,8 @@ export interface OptionHome { old: string; section: SectionId; tab?: string; lab
  */
 export const STORED_BUT_UNUSED = ['questLevel', 'defaultInboxDeckId'] as const;
 
-/** Settings keys the menu edits through its shared form, by key. */
-export type FormKey = Exclude<keyof AccountSettings, 'mcpEnabled' | 'mcpDailyLimit' | 'maxHandSlots' | (typeof STORED_BUT_UNUSED)[number]>;
+/** Settings keys the menu edits through its shared form, by key (translationEnabled has its own switch with the pack's state). */
+export type FormKey = Exclude<keyof AccountSettings, 'mcpEnabled' | 'mcpDailyLimit' | 'maxHandSlots' | 'translationEnabled' | (typeof STORED_BUT_UNUSED)[number]>;
 
 export const SETTING_TEXT: Record<FormKey | 'name', OptionHome> = {
   name: { old: 'General › Workspace name', section: 'workspace', label: 'Name', help: 'Shown at the top left and in emails.' },

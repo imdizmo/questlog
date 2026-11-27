@@ -10,6 +10,7 @@ import type { Card, DerivedStatus, VisionQuery } from '../../../shared/types';
 import { settingsOf, useStore } from '../store';
 import { localToday, openByCard } from '../cards';
 import { useSearchCtx, type SearchContexts } from '../search';
+import { useShownTitle } from '../translate';
 
 /** Table rows drawn per node; the rest are summarised, so a huge query keeps the board light. */
 const TABLE_ROWS = 50;
@@ -49,17 +50,22 @@ export function smartToStored(v: SmartValue): Record<string, unknown> {
   };
 }
 
-/** Cards the viewer can see that match the chips; the store only holds those. Deleted cards never match. */
-export function useMatchingCards(tokens: SearchToken[], forceOr: boolean, hideArchived = false): { cards: Card[]; ctx: SearchContexts } {
+/**
+ * Cards the viewer can see that match the chips; the store only holds those. Deleted cards never match. With a
+ * `projectId` (a Smart Node on Home, kept for a project) only that project's tasks.
+ */
+export function useMatchingCards(tokens: SearchToken[], forceOr: boolean, hideArchived = false, projectId: string | null = null): { cards: Card[]; ctx: SearchContexts } {
   const all = useStore((s) => s.cards);
+  const decks = useStore((s) => s.decks);
   const ctx = useSearchCtx();
   const cards = useMemo(() => {
     const test = compileSearch(tokens, forceOr, ctx.search);
     return [...all.values()]
       .filter((c) => c.visibility !== 'deleted' && !(hideArchived && c.visibility === 'archived'))
+      .filter((c) => !projectId || (!!c.deckId && decks.get(c.deckId)?.projectId === projectId))
       .filter(test)
       .sort((a, b) => a.seq - b.seq);
-  }, [all, tokens, forceOr, hideArchived, ctx]);
+  }, [all, decks, tokens, forceOr, hideArchived, projectId, ctx]);
   return { cards, ctx };
 }
 
@@ -76,7 +82,7 @@ const STATUSES = Object.keys(STATUS_LABEL) as DerivedStatus[];
 export function SmartBody({ value, labelSlot, onSetup }: { value: Record<string, unknown>; labelSlot?: (name: string) => ReactNode; onSetup?: () => void }) {
   const v = smartValue(value);
   const query = useStore((s) => (v.queryId ? s.visionQueries.get(v.queryId) : undefined));
-  const { cards, ctx } = useMatchingCards(query?.query.tokens ?? EMPTY, query?.query.forceOr ?? false, v.mode === 'table' && v.hideArchived);
+  const { cards, ctx } = useMatchingCards(query?.query.tokens ?? EMPTY, query?.query.forceOr ?? false, v.mode === 'table' && v.hideArchived, query?.projectId ?? null);
   if (!v.queryId) {
     return (
       <div className="bnode-placeholder bsmart-empty">
@@ -142,6 +148,7 @@ function SmartChart({ cards, v, ctx }: { cards: Card[]; v: SmartValue; ctx: Sear
 }
 
 function SmartTable({ cards, v, ctx }: { cards: Card[]; v: SmartValue; ctx: SearchContexts }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const settings = settingsOf(s);
   const open = useMemo(() => openByCard(s.resolvables.values()), [s.resolvables]);
@@ -189,7 +196,7 @@ function SmartTable({ cards, v, ctx }: { cards: Card[]; v: SmartValue; ctx: Sear
         <tbody>
           {shown.map((c) => (
             <tr key={c.id}>
-              <th scope="row" className="bsmart-title">{titleOf(c.content)}</th>
+              <th scope="row" className="bsmart-title">{shownTitle(c)}</th>
               {v.columns.map((col) => <td key={col}>{cell(c, col)}</td>)}
             </tr>
           ))}

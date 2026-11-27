@@ -88,6 +88,7 @@ stage_common() {
   cp "$root/LICENSE" "$root/NOTICE.md" "$app/"
   cp "$work/server/server.mjs" "$work/server/server.mjs.LEGAL.txt" "$app/server/"
   cp -r "$work/server/migrations" "$app/server/"
+  cp -r "$work/server/translate" "$app/server/"
   cp -r "$root/dist/web/." "$app/web/"
 }
 

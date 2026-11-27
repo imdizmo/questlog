@@ -56,13 +56,22 @@ function removeProject(ctx: Ctx, id: string) {
   db.prepare('DELETE FROM project_prefs WHERE project_id=?').run(id);
   // Trashed cards of deleted decks have no deck any more but may still hold one of the project's entry types.
   db.prepare('UPDATE cards SET entry_type_id=NULL WHERE entry_type_id IN (SELECT id FROM entry_types WHERE project_id=?)').run(id);
+  // Home's Smart Node queries for the project go with it (ON DELETE CASCADE, as its pictures do): tell Home's viewers.
+  const queries = db.prepare('SELECT id FROM vision_queries WHERE project_id=?').all(id) as { id: string }[];
   db.prepare('DELETE FROM projects WHERE id=?').run(id);
+  for (const q of queries) ctx.emit('visionQuery', 'remove', { id: q.id, projectId: id });
   for (const m of lostMilestones) { db.prepare('DELETE FROM milestones WHERE id=?').run(m.id); ctx.emit('milestone', 'remove', m); }
   for (const c of lostConfigs) { db.prepare('DELETE FROM sprint_configs WHERE id=?').run(c.id); ctx.emit('sprintConfig', 'remove', c); }
   for (const a of access) ctx.emit('projectAccess', 'remove', { projectId: id, userId: a.u });
   ctx.emit('project', 'remove', { id });
   ctx.afterCommit(() => { unlinkFiles(db, fileIds); unlinkCovers(db, coverIds); unlinkAssetBlobs(db, assetBlobs); });
 }
+
+/** The project's glossary (names the translator keeps or renders as given): at most 200 distinct terms. */
+const target = z.string().trim().max(80);
+const glossarySchema = z.array(z.strictObject({ term: z.string().trim().min(1).max(80), en: target.optional(), it: target.optional() }))
+  .max(200)
+  .refine((g) => new Set(g.map((e) => e.term.toLowerCase())).size === g.length, 'duplicate term');
 
 export const projectCommands: Record<string, Command> = {
   'projects/create': {
@@ -100,12 +109,13 @@ export const projectCommands: Record<string, Command> = {
       tags: tagsSchema.optional(),
       cover: coverSchema.optional(),
       coverUrl: z.string().optional(),
+      glossary: glossarySchema.optional(),
     }),
     run(ctx, input) {
       const { db } = ctx;
       const needsManage = input.name !== undefined || input.visibility !== undefined || input.isArchived !== undefined || input.cover !== undefined || input.coverUrl !== undefined;
-      if (needsManage || (input.spaces === undefined && input.tags === undefined)) assertCan(db, ctx.actor, 'project.manage', input.id);
-      if (input.spaces !== undefined || input.tags !== undefined) assertCan(db, ctx.actor, 'content.edit', input.id);
+      if (needsManage || (input.spaces === undefined && input.tags === undefined && input.glossary === undefined)) assertCan(db, ctx.actor, 'project.manage', input.id);
+      if (input.spaces !== undefined || input.tags !== undefined || input.glossary !== undefined) assertCan(db, ctx.actor, 'content.edit', input.id);
       const p = projectRow(db, input.id);
       if (!p) throw new AppError(404, 'not_found');
       if (input.coverUrl !== undefined) throw new AppError(400, 'invalid_input');
@@ -142,13 +152,14 @@ export const projectCommands: Record<string, Command> = {
           }
         }
       }
-      db.prepare('UPDATE projects SET name=?, visibility=?, is_archived=?, spaces_json=?, tags_json=?, cover_json=? WHERE id=?').run(
+      db.prepare('UPDATE projects SET name=?, visibility=?, is_archived=?, spaces_json=?, tags_json=?, cover_json=?, keep_names_json=? WHERE id=?').run(
         input.name ?? p.name,
         input.visibility ?? p.visibility,
         (input.isArchived ?? p.isArchived) ? 1 : 0,
         JSON.stringify(input.spaces ?? p.spaces),
         JSON.stringify(input.tags ?? p.tags),
         input.cover === undefined ? (p.cover ? JSON.stringify(p.cover) : null) : input.cover && JSON.stringify(input.cover),
+        JSON.stringify(input.glossary ?? p.glossary),
         input.id,
       );
       if (input.cover !== undefined) releaseCover(ctx, p.cover as Cover);

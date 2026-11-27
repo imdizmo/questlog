@@ -11,12 +11,13 @@ import { dispatch } from '../api';
 import { AddTimeForm } from './AddTimeForm';
 import { useCardTime } from '../timeTracking';
 import { trackingOn } from '../timeTracking';
+import { titleNow } from '../translate';
 
 interface Names {
   users: Map<string, User>;
   decks: Map<string, Deck>;
   /** For naming related cards (hero, sub cards, dependencies). */
-  cards?: Map<string, Pick<Card, 'id' | 'content'>>;
+  cards?: Map<string, Pick<Card, 'id' | 'content' | 'contentVersion'>>;
   priorityLabels?: AccountSettings['priorityLabels'];
 }
 
@@ -29,7 +30,7 @@ export function describeChange(c: HistoryChange, n: Names): { label: string; det
   const prio = (p: unknown) => (typeof p === 'string' ? (n.priorityLabels ?? DEFAULT_SETTINGS.priorityLabels)[p as Priority] ?? p : 'none');
   const card = (id: unknown) => {
     const c = typeof id === 'string' ? n.cards?.get(id) : undefined;
-    return c ? titleOf(c.content) || 'Untitled' : 'a task';
+    return c ? titleNow(c) || 'Untitled' : 'a task';
   };
   /** "+Key −Map" for a whole-array change of card ids. */
   const cardDiff = (from: unknown, to: unknown) => {

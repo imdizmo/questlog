@@ -53,6 +53,7 @@ const MESSAGES: Record<string, string> = {
   dependency_cycle: 'That would make the tasks lock each other.',
   invalid_dependency: 'Only live tasks of the same project can lock each other.',
   feature_disabled: 'That feature is switched off in the workspace settings.',
+  translation_pack_missing: 'Translation needs the language pack.',
   bad_cover_url: "Couldn't load an image from that link. Check it points straight at a PNG, JPEG, GIF or WebP.",
   too_large: 'That image is too large.',
   bad_type: 'Covers must be a PNG, JPEG, GIF or WebP image.',
@@ -217,9 +218,18 @@ export async function dispatch<T = unknown>(ns: string, action: string, payload:
  * The change events arrive over the live socket. Errors are shown as a toast and rethrown.
  */
 export async function uploadFile(cardId: string, file: File): Promise<{ id: string }> {
+  return upload(`/api/cards/${encodeURIComponent(cardId)}/files?name=${encodeURIComponent(file.name)}`, file);
+}
+
+/** A picture for Home, kept for the project picked for it (no card's attachment). Same errors as uploadFile. */
+export function uploadHomeFile(projectId: string, file: File): Promise<{ id: string }> {
+  return upload(`/api/home/files?projectId=${encodeURIComponent(projectId)}&name=${encodeURIComponent(file.name)}`, file);
+}
+
+async function upload(url: string, file: File): Promise<{ id: string }> {
   let res: Response;
   try {
-    res = await fetch(`/api/cards/${encodeURIComponent(cardId)}/files?name=${encodeURIComponent(file.name)}`, {
+    res = await fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': file.type || 'application/octet-stream' },

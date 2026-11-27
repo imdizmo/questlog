@@ -13,6 +13,7 @@ import { fileRow, filePath, INLINE_MIMES, refreshCover } from './files';
 import { storeCoverUpload, coverRow, coversDirOf, coverPath, releaseCover } from './covers';
 import { entryTypeRow } from './commands/wiki';
 import { can, sessionActor } from './permissions';
+import { homeAccess, homeProjectAllowed } from './boards';
 import { uploadRoom } from './billing';
 import { COVER_MAX_BYTES, COVER_MIMES } from '../shared/covers';
 import type { LiveHub } from './live';
@@ -80,9 +81,11 @@ export interface StoreFileInput {
   db: Db;
   dir: string;
   maxBytes: number;
-  /** Actor (must be able to edit the card) and the events of the write. */
+  /** Actor (must be able to edit the card, or Home for `projectId`) and the events of the write. */
   ctx: Ctx;
-  cardId: string;
+  /** The card the file is attached to; null for one of Home's pictures, kept for `projectId`. */
+  cardId: string | null;
+  projectId?: string;
   stream: NodeJS.ReadableStream;
   name: string;
   mime: string;
@@ -130,16 +133,23 @@ export async function storeCardFile(o: StoreFileInput): Promise<string> {
     const mime = o.checkImage && INLINE_MIMES.has(o.mime) && !looksLike(o.mime, counter.head) ? 'application/octet-stream' : o.mime;
     try {
       tx(db, () => {
-        // The card may have been deleted (or removed with its project) while the bytes streamed in.
-        const now = cardRow(db, cardId);
-        if (!now || now.visibility === 'deleted') throw new AppError(404, 'not_found');
-        assertCardAccess(ctx, now);
+        if (cardId === null) {
+          // A picture on Home: the project may have been archived, limited or deleted while the bytes streamed in.
+          if (!o.projectId || homeAccess(db, ctx.actor) !== 'edit' || !homeProjectAllowed(db, ctx.actor, o.projectId)) throw new AppError(404, 'not_found');
+        } else {
+          // The card may have been deleted (or removed with its project) while the bytes streamed in.
+          const now = cardRow(db, cardId);
+          if (!now || now.visibility === 'deleted') throw new AppError(404, 'not_found');
+          assertCardAccess(ctx, now);
+        }
         // Other uploads may have used the storage while this one streamed in.
         const { storageLeft } = uploadRoom(db);
         if (storageLeft !== null && counter.size > storageLeft) throw new AppError(413, 'plan_limit', { limit: 'storage' });
-        db.prepare('INSERT INTO files (id,card_id,uploader_id,name,mime,size,created_at,asset_id) VALUES (?,?,?,?,?,?,?,?)')
-          .run(id, cardId, ctx.actor.id, o.name, mime, counter.size, Date.now(), o.assetId ?? null);
+        db.prepare('INSERT INTO files (id,card_id,project_id,uploader_id,name,mime,size,created_at,asset_id) VALUES (?,?,?,?,?,?,?,?,?)')
+          .run(id, cardId, cardId === null ? o.projectId! : null, ctx.actor.id, o.name, mime, counter.size, Date.now(), o.assetId ?? null);
         renameSync(tmp, final);
+        // Home's pictures are no card's attachments: nothing to send, record or make a cover of.
+        if (cardId === null) return;
         ctx.emit('file', 'upsert', fileRow(db, id));
         recordHistory(db, cardId, ctx.actor.id, [{ kind: 'file', from: null, to: o.name }]);
         if (!refreshCover(ctx, cardId)) emitCard(ctx, cardId);
@@ -192,6 +202,37 @@ export function registerFileRoutes(app: FastifyInstance, d: FileRouteDeps): void
         console.error('live publish failed', e); // the write is already committed
       }
       return { id };
+    });
+
+    /**
+     * A picture for Home, kept for the project picked for it (`?projectId=`): Home editors only, and only a project
+     * every member sees that is not archived (Home's doc goes to the whole workspace). Only images are taken.
+     */
+    inst.post('/api/home/files', { bodyLimit: Number.MAX_SAFE_INTEGER }, async (req, reply) => {
+      const user = d.needUser(req);
+      const actor = sessionActor(user);
+      const { projectId = '', name } = req.query as { projectId?: string; name?: string };
+      const refuse = (e: unknown) => {
+        reply.header('connection', 'close');
+        reply.raw.once('finish', () => req.raw.destroy());
+        return e;
+      };
+      const level = homeAccess(db, actor);
+      if (level === 'none' || (level === 'edit' && !homeProjectAllowed(db, actor, projectId))) throw refuse(new AppError(404, 'not_found'));
+      if (level !== 'edit') throw refuse(new AppError(403, 'forbidden'));
+      const mime = cleanMime(req.headers['content-type']);
+      if (!INLINE_MIMES.has(mime)) throw refuse(new AppError(415, 'bad_type'));
+      const declared = Number(req.headers['content-length']);
+      const cap = uploadCap(db, maxBytes);
+      if (Number.isFinite(declared) && declared > cap.max) throw refuse(cap.tooLarge());
+      const stream = req.body as NodeJS.ReadableStream | undefined;
+      if (!stream || typeof (stream as any).pipe !== 'function') throw new AppError(400, 'invalid_input');
+      const ctx: Ctx = { db, actor, events: [], emit: () => {}, afterCommit: () => {} };
+      try {
+        return { id: await storeCardFile({ db, dir, maxBytes, ctx, cardId: null, projectId, stream, name: cleanName(name), mime, checkImage: true }) };
+      } catch (e) {
+        throw refuse(e);
+      }
     });
 
     inst.post('/api/covers', { bodyLimit: Number.MAX_SAFE_INTEGER }, async (req, reply) => {
@@ -279,7 +320,9 @@ export function registerFileRoutes(app: FastifyInstance, d: FileRouteDeps): void
     const user = d.needUser(req);
     const f = fileRow(db, (req.params as { id: string }).id);
     if (!f) throw new AppError(404, 'not_found');
-    d.visibleCard(user, 'id=?', f.cardId);
+    // One of Home's pictures: for everyone who sees Home, as Home's doc is.
+    if (f.cardId === null) { if (homeAccess(db, sessionActor(user)) === 'none') throw new AppError(404, 'not_found'); }
+    else d.visibleCard(user, 'id=?', f.cardId);
     const path = filePath(dir, f.id);
     const st = await stat(path).catch(() => null);
     if (!st) throw new AppError(404, 'not_found');

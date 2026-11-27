@@ -1,9 +1,10 @@
-import { useId, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { DEFAULT_SETTINGS, type AccountSettings as Settings } from '../../../../shared/types';
 import { COVER_ARTWORKS } from '../../../../shared/covers';
 import { featureAllowed, type PlanFeature } from '../../../../shared/plans';
 import { QUESTS, toRoman } from '../../../../shared/quests';
-import { useStore } from '../../store';
+import { settingsOf, useStore } from '../../store';
+import { dispatch } from '../../api';
 import { questProgress } from '../../onboarding';
 import { setTutorialPaused, useTutorialPaused } from '../../guides';
 import { ArtworkSvg } from '../../components/CoverArt';
@@ -196,6 +197,40 @@ export function FeaturesForm({ f }: { f: Form }) {
             help={pro ? `${t.help} Part of the Pro plan: what's there stays visible, adding new needs Pro.` : t.help} />
         );
       })}
+      <TranslationSetting editable={f.editable} />
+    </div>
+  );
+}
+
+/** GET /translate/status: whether the language pack is installed, and how much text waits to be translated. */
+interface TranslateStatus { pack: boolean; version: string | null; enabled: boolean; queued: number }
+
+/**
+ * Translation (English ↔ Italian on this server): saved at once, not with the form, because switching it on needs the
+ * language pack (the server answers translation_pack_missing without it).
+ */
+export function TranslationSetting({ editable }: { editable: boolean }) {
+  const enabled = useStore((s) => settingsOf(s).translationEnabled);
+  const [status, setStatus] = useState<TranslateStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch('/translate/status', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null)).then((v) => { if (live) setStatus(v); }, () => {});
+    return () => { live = false; };
+  }, [enabled]);
+  const missing = status !== null && !status.pack;
+  const help = 'Task text, comments and Lore pages are translated between English and Italian on this server, so each person reads in their own language (Preferences › Sign-in › Reading language). Nothing leaves the server.';
+  return (
+    <div>
+      <SwitchSetting label="Translation" checked={enabled} disabled={!editable || (missing && !enabled)}
+        help={enabled && status?.queued ? `${help} ${status.queued} waiting to be translated.` : help}
+        onChange={(v) => void dispatch('accounts', 'update', { settings: { translationEnabled: v } }).catch(() => {})} />
+      {missing && (
+        <p className="wsm-note" role="note">
+          Translation needs the language pack. Unpack <code>questlog-translate-models-&lt;version&gt;.tar.gz</code> beside the
+          server's <code>server/</code> folder (it makes <code>models/translate/</code>), then restart the server.
+        </p>
+      )}
     </div>
   );
 }

@@ -45,6 +45,8 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --locked
       - run: bash scripts/package-desktop.sh "$TAG" dist linux
+      # The English <-> Italian language pack (README "Translation"): one archive for every platform, downloads pinned by sha256.
+      - run: bash scripts/package-translate-pack.sh "$TAG" dist
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x64
@@ -118,4 +120,4 @@ jobs:
           awk -v v="${TAG#v}" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md > notes.md
           grep -q . notes.md || { echo "CHANGELOG.md has no section for ${TAG#v}"; exit 1; }
           # Only the archives and their checksums: the download step also leaves a web/ folder in dist.
-          gh release create "$TAG" dist/Questlog-v* --verify-tag --title "Questlog ${TAG#v}" --notes-file notes.md
+          gh release create "$TAG" dist/Questlog-v* dist/questlog-translate-models-v* --verify-tag --title "Questlog ${TAG#v}" --notes-file notes.md

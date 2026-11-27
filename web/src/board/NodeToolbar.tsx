@@ -26,6 +26,8 @@ export interface NodeToolbarProps {
     onSetup: () => void;
     /** Absent while the node has no query. */
     onOpenSearch?: () => void;
+    /** Shows the Smart Node guide again (editors only). */
+    onGuide?: () => void;
   };
   onColor: (c: BoardColor | undefined) => void;
   onFocus: () => void;
@@ -109,6 +111,7 @@ export function NodeToolbar({ node, edge, targets = [], onConnect, canEdit, onEd
       )}
       {smart && canEdit && <button type="button" className="btn btn-sm btn-ghost" onClick={smart.onSetup}><Icon name="gear" size={14} /> Set up filter</button>}
       {smart && <button type="button" className="btn btn-sm btn-ghost" disabled={!smart.onOpenSearch} onClick={smart.onOpenSearch}><Icon name="link" size={14} /> Open as search</button>}
+      {smart && canEdit && smart.onGuide && <button type="button" className="btn btn-sm btn-ghost" onClick={smart.onGuide}>Show guide</button>}
       {edit && <button type="button" className="btn btn-sm btn-ghost" onClick={onEdit}><Icon name="edit" size={14} /> {edge || t === 'filter' ? 'Edit label' : 'Edit'}</button>}
       {open && <button type="button" className="btn btn-sm btn-ghost" onClick={onOpen}><Icon name="card" size={14} /> Open task</button>}
       {canEdit && (

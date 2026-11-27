@@ -11,9 +11,11 @@ import { usePendingList } from '../pending';
 import { childrenOf, heroCandidates, subCandidates } from '../relations';
 import { CardPicker } from './CardPicker';
 import { Icon } from './icons';
+import { useShownTitle } from '../translate';
 
 /** The "Sub cards" side tab: this card's hero, and its own sub cards (new or existing ones). */
 export function SubCardsTab({ card, editable }: { card: Card; editable: boolean }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
@@ -30,7 +32,7 @@ export function SubCardsTab({ card, editable }: { card: Card; editable: boolean 
   const kids = usePendingList(stored, (childCards) => dispatch('cards', 'update', { id: card.id, childCards }));
   const children = kids.value.map((id) => s.cards.get(id)).filter((c): c is Card => !!c);
   const q = query.trim().toLowerCase();
-  const shown = q ? children.filter((c) => titleOf(c.content).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q)) : children;
+  const shown = q ? children.filter((c) => titleOf(c.content).toLowerCase().includes(q) || shownTitle(c).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q)) : children;
 
   if (card.isDoc) return <p className="muted">Lore can't have a main task or subtasks. Turn it into a task first.</p>;
   if (!deck) return <p className="muted">Put this task in a list to give it a main task or subtasks.</p>;
@@ -62,10 +64,10 @@ export function SubCardsTab({ card, editable }: { card: Card; editable: boolean 
           <ul className="rel-list" aria-label="Main task">
             <li className="rel-item">
               <Icon name="hero" size={16} />
-              <Link href={cardHref(parent, parentDeck)} className="rel-title">{titleOf(parent.content) ? <InlineTitle text={titleOf(parent.content)} /> : 'Untitled'}</Link>
+              <Link href={cardHref(parent, parentDeck)} className="rel-title">{shownTitle(parent) ? <InlineTitle text={shownTitle(parent)} /> : 'Untitled'}</Link>
               <span className="code muted">{taskId(parent)}</span>
               {!off && (
-                <button type="button" className="chip-x" aria-label={`Remove main task ${titleOf(parent.content)}`} title="Remove main task"
+                <button type="button" className="chip-x" aria-label={`Remove main task ${shownTitle(parent)}`} title="Remove main task"
                   onClick={() => void dispatch('cards', 'update', { id: card.id, parentCardId: null }).catch(() => {})}>
                   <Icon name="close" size={12} />
                 </button>
@@ -104,11 +106,11 @@ export function SubCardsTab({ card, editable }: { card: Card; editable: boolean 
           <ul className="rel-list" aria-label="Subtasks">
             {shown.map((c) => {
               const st = derivedStatus(c, open.get(c.id) ?? new Set());
-              const t = titleOf(c.content) || 'Untitled';
+              const t = shownTitle(c) || 'Untitled';
               return (
                 <li key={c.id} className="rel-item">
                   {st && <span className={`status-badge status-${st}`} title={STATUS_LABEL[st]}><span className="sr-only">{STATUS_LABEL[st]}</span></span>}
-                  <Link href={cardHref(c, c.deckId ? s.decks.get(c.deckId) : undefined)} className="rel-title">{titleOf(c.content) ? <InlineTitle text={t} /> : t}</Link>
+                  <Link href={cardHref(c, c.deckId ? s.decks.get(c.deckId) : undefined)} className="rel-title">{shownTitle(c) ? <InlineTitle text={t} /> : t}</Link>
                   <span className="code muted">{taskId(c)}</span>
                   {!off && (
                     <button type="button" className="chip-x" aria-label={`Remove subtask ${t}`} title="Detach from this main task"

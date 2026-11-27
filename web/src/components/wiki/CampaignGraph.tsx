@@ -5,6 +5,7 @@ import { useStore } from '../../store';
 import { campaignGraphData, campaignTypes } from '../../wiki';
 import { GraphCanvas } from './GraphCanvas';
 import { describeNode, GraphPreview, openEntry, useGraphLayout, useNodeColors, useTypeColors } from './EntryGraph';
+import { useReadLang } from '../../translate';
 
 const PAGE = '';
 const count = (n: number) => n.toLocaleString('en-US');
@@ -15,6 +16,7 @@ const count = (n: number) => n.toLocaleString('en-US');
  */
 export function CampaignGraph({ project }: { project: Project }) {
   const s = useStore((x) => x);
+  useReadLang(); // node labels are the reader's titles: another reading language redraws them
   const data = campaignGraphData(s, project.id);
   const types = useMemo(() => campaignTypes(s.entryTypes, project.id), [s.entryTypes, project.id]);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());

@@ -1,6 +1,6 @@
 import { useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
 import { imageSize, parseYouTube } from '../../../shared/board';
-import { uploadFile } from '../api';
+import { uploadFile, uploadHomeFile } from '../api';
 import { Dialog } from '../components/Dialog';
 import { Icon } from '../components/icons';
 
@@ -23,9 +23,12 @@ function naturalSize(file: File): Promise<{ width: number; height: number }> {
 
 /**
  * "Upload image": drop, paste or choose a file. It uploads to the host card (the image becomes one of its
- * attachments) and reports the node value; nothing is added to the board before the upload is done.
+ * attachments), or on Home for the project picked for it, and reports the node value; nothing is added to the board
+ * before the upload is done.
  */
-export function ImageDialog({ hostCardId, onDone, onClose }: { hostCardId: string; onDone: (value: ImageValue) => void; onClose: () => void }) {
+export function ImageDialog({ owner, onDone, onClose }: {
+  owner: { cardId: string } | { projectId: string }; onDone: (value: ImageValue) => void; onClose: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [over, setOver] = useState(false);
   const [error, setError] = useState('');
@@ -38,7 +41,7 @@ export function ImageDialog({ hostCardId, onDone, onClose }: { hostCardId: strin
     setError('');
     try {
       const size = await naturalSize(file);
-      const { id } = await uploadFile(hostCardId, file);
+      const { id } = await ('cardId' in owner ? uploadFile(owner.cardId, file) : uploadHomeFile(owner.projectId, file));
       // The value keeps the size capped at 400; newNodeAt sizes the node's box from it.
       const { w, h } = imageSize(size.width, size.height);
       onDone({ url: imageUrl(id), width: w, height: h });

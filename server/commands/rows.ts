@@ -12,7 +12,9 @@ export const accountRow = (db: Db) => {
   const { stripeCustomerId, stripeSubscriptionId, disabledReason: _reason, ...acc } = r;
   return { ...acc, hasCustomer: !!stripeCustomerId, hasSubscription: !!stripeSubscriptionId };
 };
-export const projectRow = (db: Db, id: string) => one(db, 'SELECT * FROM projects WHERE id=?', id);
+/** A project as clients see it: its stored glossary (keep_names_json) is the `glossary` field. */
+export const projectOut = (r: Record<string, any>) => { const { keepNames, ...p } = r; return { ...p, glossary: keepNames ?? [] }; };
+export const projectRow = (db: Db, id: string) => { const r = one(db, 'SELECT * FROM projects WHERE id=?', id); return r && projectOut(r); };
 export const deckRow = (db: Db, id: string) => one(db, 'SELECT * FROM decks WHERE id=?', id);
 /** Derived dependency flags: deleted locking/locked cards never count. Shared by cardRow, the snapshot and the card API. */
 export const CARD_SELECT = `cards.*,

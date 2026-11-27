@@ -11,6 +11,7 @@ import { subCountLabel } from '../relations';
 import { tagMark } from './TagToggles';
 import { SelectBox } from './BulkBar';
 import { useEffortOn } from '../store';
+import { useShownTitle } from '../translate';
 
 /** Tag chips shown on a tile before the rest collapse into "+N" (observed). */
 const MAX_TAGS = 3;
@@ -40,7 +41,7 @@ interface Props {
 
 /** A card in a deck list. The link's name says in words what the badges show. */
 export function CardTile({ href, card, deck, open, owner, selected, settings, projectTags, parentTitle, personalTags = [], hero, compact, selectOrder }: Props) {
-  const title = titleOf(card.content);
+  const title = useShownTitle()(card);
   const code = cardCode(card.seq);
   const status = derivedStatus(card, open);
   const words = card.isDoc ? wordCount(card.content) : 0;
@@ -69,7 +70,7 @@ export function CardTile({ href, card, deck, open, owner, selected, settings, pr
   return (
     <article className={`card-tile st-${status ?? 'doc'}${card.isDoc ? ' is-doc' : ''}${selected ? ' selected' : ''}${card.visibility === 'archived' ? ' is-archived' : ''}${compact ? ' compact' : ''}${selectOrder ? ' selectable' : ''}`}
       data-testid="card-tile">
-      {selectOrder && <SelectBox id={card.id} order={selectOrder} title={titleOf(card.content)} />}
+      {selectOrder && <SelectBox id={card.id} order={selectOrder} title={title} />}
       <Link href={href ?? keepSearch(cardHref(card, deck))} className="card-link" aria-label={spoken} aria-current={selected ? 'page' : undefined}>
         {card.coverFileId && !compact && (
           <img className="card-cover-banner" src={`/api/files/${encodeURIComponent(card.coverFileId)}`} alt="" loading="lazy" data-testid="cover" />

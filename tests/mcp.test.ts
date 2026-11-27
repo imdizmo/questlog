@@ -5,6 +5,7 @@ import { buildApp } from '../server/app';
 import { setClock, _resetLimiter } from '../server/auth';
 import pkg from '../package.json' with { type: 'json' };
 import { MCP_TOOL_NAMES } from '../server/mcp';
+import * as Y from 'yjs';
 
 const HOST = 'localhost:8780';
 let db: Db;
@@ -118,6 +119,7 @@ describe('MCP server', () => {
       'create_card', 'create_cards', 'update_card', 'update_cards', 'add_comment', 'update_comment', 'set_thread_resolved',
       'set_thread_participation', 'add_to_hand', 'remove_from_hand', 'move_in_hand', 'create_deck', 'create_milestone',
       'update_milestone', 'track_time', 'log_time', 'create_project', 'delete_cards', 'delete_deck', 'delete_milestone',
+      'get_vision_board', 'edit_vision_board',
     ];
     expect(tools.map((t) => t.name).sort()).toEqual([...expected].sort());
     expect([...MCP_TOOL_NAMES].sort()).toEqual([...expected].sort());
@@ -316,6 +318,76 @@ describe('MCP server', () => {
     expect((await call(token, 'list_runs', {})).json.items).toEqual([]);
     const history = db.prepare('SELECT changer_id FROM card_history WHERE card_id=?').all(a.id) as { changer_id: string }[];
     expect(history.every((h) => h.changer_id === owner)).toBe(true);
+  });
+
+  describe('vision boards', () => {
+    it('places tasks, moves them into a frame, joins them with a line and reads it all back', async () => {
+      const owner = mkUser('owner');
+      const deck = mkDeck(mkProject());
+      const host = mkCard(deck, owner, 'Zone 0');
+      const a = mkCard(deck, owner, 'Beach');
+      const b = mkCard(deck, owner, 'First boss');
+      const token = await mkToken(owner);
+      expect((await call(token, 'get_vision_board', { cardId: host })).json).toEqual({ board: null });
+      // No board yet: the first edit makes one.
+      const put = await call(token, 'edit_vision_board', { cardId: host, ops: [{ op: 'add_task', taskId: a, x: 0, y: 0 }, { op: 'add_task', taskId: b }] });
+      expect(put.isError, put.text).toBe(false);
+      const [na, nb] = put.json.added as string[];
+      // A frame drawn by a person (through the board's room, which the first edit loaded).
+      const boardId = put.json.boardId as string;
+      (app as any).rooms.edit(boardId, (doc: Y.Doc) => {
+        const frame = new Y.Map<unknown>();
+        frame.set('type', 'container'); frame.set('value', { label: 'Act 1' }); frame.set('pos', { x: 1000, y: 0, w: 600, h: 400, parent: null });
+        doc.getMap('nodes').set('frame', frame);
+      });
+      const edit = await call(token, 'edit_vision_board', { cardId: host, ops: [
+        { op: 'move', nodeId: nb, x: 1041, y: 59 }, { op: 'add_line', from: na, to: nb, label: 'then' },
+      ] });
+      expect(edit.isError, edit.text).toBe(false);
+      const got = (await call(token, 'get_vision_board', { cardId: host })).json;
+      expect(got.board).toMatchObject({ id: boardId, canEdit: true });
+      const byId = new Map(got.items.map((n: any) => [n.id, n]));
+      expect(byId.get(na)).toMatchObject({ type: 'card', x: 0, y: 0, w: 120, h: 160, parent: null, task: { id: a, title: 'Beach' } });
+      expect(byId.get(nb)).toMatchObject({ x: 1040, y: 60, parent: 'frame', task: { id: b, title: 'First boss' } });
+      expect(byId.get('frame')).toMatchObject({ type: 'container', text: 'Act 1' });
+      expect(got.edges).toEqual([{ id: edit.json.lines[0], from: na, to: nb, fromSide: 'right', toSide: 'left', label: 'then' }]);
+      // Moving the frame takes what is in it along.
+      expect((await call(token, 'edit_vision_board', { cardId: host, ops: [{ op: 'move', nodeId: 'frame', x: 2000, y: 100 }] })).isError).toBe(false);
+      const shifted = new Map((await call(token, 'get_vision_board', { cardId: host })).json.items.map((n: any) => [n.id, n]));
+      expect(shifted.get(nb)).toMatchObject({ x: 2040, y: 160, parent: 'frame' });
+      // Removing a node takes its lines along; the task itself stays.
+      expect((await call(token, 'edit_vision_board', { cardId: host, ops: [{ op: 'remove', nodeId: na }] })).isError).toBe(false);
+      const after = (await call(token, 'get_vision_board', { cardId: host })).json;
+      expect(after.items.map((n: any) => n.id).sort()).toEqual([nb, 'frame'].sort());
+      expect(after.edges).toEqual([]);
+      expect(db.prepare('SELECT visibility FROM cards WHERE id=?').get(a)).toEqual({ visibility: 'default' });
+    });
+
+    it('all or nothing, write tokens only, and only on boards the user may edit', async () => {
+      const owner = mkUser('owner');
+      const deck = mkDeck(mkProject());
+      const host = mkCard(deck, owner, 'Zone 0');
+      const a = mkCard(deck, owner, 'Beach');
+      const token = await mkToken(owner);
+      const put = await call(token, 'edit_vision_board', { cardId: host, ops: [{ op: 'add_task', taskId: a }] });
+      const bad = await call(token, 'edit_vision_board', { cardId: host, ops: [{ op: 'add_task', taskId: a }, { op: 'move', nodeId: 'nope', x: 0, y: 0 }] });
+      expect(bad.isError).toBe(true);
+      expect(bad.text).toMatch(/unknown_node/);
+      expect((await call(token, 'get_vision_board', { cardId: host })).json.items).toHaveLength(1);
+      // A failed first edit makes no board either.
+      const other = mkCard(deck, owner, 'Zone 1');
+      expect((await call(token, 'edit_vision_board', { cardId: other, ops: [{ op: 'remove', nodeId: 'nope' }] })).isError).toBe(true);
+      expect((await call(token, 'get_vision_board', { cardId: other })).json).toEqual({ board: null });
+      const read = await call(await mkToken(owner, { access: 'read' }), 'edit_vision_board', { cardId: host, ops: [{ op: 'remove', nodeId: put.json.added[0] }] });
+      expect(read.text).toMatch(/missing_scope/);
+      // Locked: people (and their tokens) only look.
+      db.prepare("UPDATE vision_boards SET state='locked' WHERE id=?").run(put.json.boardId);
+      const locked = await call(token, 'edit_vision_board', { cardId: host, ops: [{ op: 'remove', nodeId: put.json.added[0] }] });
+      expect(locked.text).toMatch(/read_only/);
+      expect((await call(token, 'get_vision_board', { cardId: host })).json.board.canEdit).toBe(false);
+      setSettings({ visionBoardEnabled: false });
+      expect((await call(token, 'get_vision_board', { cardId: host })).text).toMatch(/feature_disabled/);
+    });
   });
 
   it('a read token cannot write', async () => {

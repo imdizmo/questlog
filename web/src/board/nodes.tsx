@@ -14,6 +14,7 @@ import { entryExcerpt } from '../wiki';
 import { WORKS_ON } from '../../../shared/wiki';
 import { tasksLeft } from './macro';
 import { WorkBody, WorkContext, workLabel } from './WorkNode';
+import { useShownTitle } from '../translate';
 
 /** What the tool rail calls each type, and how a node is announced. */
 export const TYPE_LABEL: Record<NodeType, string> = {
@@ -140,6 +141,7 @@ function NodeBody({ node, editing, onCommit, onEndEdit, onSetup }: Pick<NodeView
 
 /** A mini card: live title, effort, priority and status colour. A card the viewer can't see (or a deleted one) is not shown. */
 function CardBody({ cardId }: { cardId: string }) {
+  const shownTitle = useShownTitle();
   const card = useStore((s) => s.cards.get(cardId));
   const settings = useStore(settingsOf);
   const hostsBoard = useStore((s) => !!card && !!boardOfCard(s, card.id));
@@ -150,7 +152,7 @@ function CardBody({ cardId }: { cardId: string }) {
   const prio = card.priority ? priorityLabel(card.priority, settings) : null;
   return (
     <div className={`bcard${status ? ` status-${status}` : ' is-doc'}`}>
-      <div className="bcard-title">{titleOf(card.content)}</div>
+      <div className="bcard-title">{shownTitle(card)}</div>
       <div className="bcard-meta">
         <span className="bcard-code">{taskId(card)}</span>
         {hostsBoard && <span title="Has a board"><Icon name="frame" size={13} /><span className="sr-only">Has a board</span></span>}
@@ -167,6 +169,7 @@ function CardBody({ cardId }: { cardId: string }) {
  * its storyline starts with.
  */
 function SceneBody({ cardId }: { cardId: string }) {
+  const shownTitle = useShownTitle();
   const card = useStore((s) => s.cards.get(cardId));
   const links = useStore((s) => s.entryLinks);
   const cards = useStore((s) => s.cards);
@@ -185,7 +188,7 @@ function SceneBody({ cardId }: { cardId: string }) {
       <div className="bcard bscene bjump is-doc">
         <span className="wk-frame-pic"><Picture card={card} /></span>
         <div className="bcard-meta">Continues in</div>
-        <div className="bcard-title">{titleOf(card.content)}</div>
+        <div className="bcard-title">{shownTitle(card)}</div>
         <div className="bscene-text">{entryExcerpt(card)}</div>
       </div>
     );
@@ -193,9 +196,9 @@ function SceneBody({ cardId }: { cardId: string }) {
   return (
     <div className="bcard bscene is-doc">
       <span className="wk-frame-pic"><Picture card={card} />{start && <span className="wk-frame-n" title="The story starts here">★<span className="sr-only">Start</span></span>}</span>
-      <div className="bcard-title">{titleOf(card.content)}</div>
+      <div className="bcard-title">{shownTitle(card)}</div>
       <div className="bscene-text">{entryExcerpt(card) || 'Nothing written yet.'}</div>
-      {cast.length > 0 && <span className="wk-facts">{cast.map((c) => <span key={c.id} className="badge">{(c.entryTypeId && types.get(c.entryTypeId)?.icon) || ''} {titleOf(c.content)}</span>)}</span>}
+      {cast.length > 0 && <span className="wk-facts">{cast.map((c) => <span key={c.id} className="badge">{(c.entryTypeId && types.get(c.entryTypeId)?.icon) || ''} {shownTitle(c)}</span>)}</span>}
     </div>
   );
 }

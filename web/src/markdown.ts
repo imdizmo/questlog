@@ -7,6 +7,7 @@ import { cardCode, seqFromCode, slugOf, titleOf } from '../../shared/cards';
 import { CHECKBOX, mentionHandle, TOKEN_BODY, tokenBoundary } from '../../shared/content';
 import { findMentions } from '../../shared/autolink';
 import { entryPath, type NameLinks } from './wiki';
+import { titleNow } from './translate';
 
 /** Looks up what a token in the text refers to; null when it refers to nothing we know. */
 export interface RenderContext {
@@ -313,7 +314,7 @@ export function renderContext(cards: Map<string, Card>, users: Map<string, User>
     names: more.names ?? null,
     cardTitle(code) {
       const c = card(code);
-      return c ? titleOf(c.content) : null;
+      return c ? titleNow(c) : null;
     },
     cardHref(code) {
       const c = card(code);

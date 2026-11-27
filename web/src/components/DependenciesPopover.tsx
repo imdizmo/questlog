@@ -10,6 +10,7 @@ import { usePendingList } from '../pending';
 import { depCandidates, liveCardIds, lockedByCard, lockersOf } from '../relations';
 import { CardPicker } from './CardPicker';
 import { Icon } from './icons';
+import { useShownTitle } from '../translate';
 
 /** Only cards we still hold and that are not deleted (read at send time): the server refuses a deleted locker. */
 const liveIds = (ids: string[]) => liveCardIds(store.get().cards, ids);
@@ -19,6 +20,7 @@ const liveIds = (ids: string[]) => liveCardIds(store.get().cards, ids);
  * this one (stored on this card as inDeps) and the cards this one locks (stored on each of them).
  */
 export function DependencyBadge({ card, editable }: { card: Card; editable: boolean }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -60,7 +62,7 @@ export function DependencyBadge({ card, editable }: { card: Card; editable: bool
   const blocking = locking.filter((c) => c.status !== 'done').length;
   const deckOf = (c: Card) => (c.deckId ? s.decks.get(c.deckId) : undefined);
   const row = (c: Card, remove: () => void, what: string) => {
-    const t = titleOf(c.content) || 'Untitled';
+    const t = shownTitle(c) || 'Untitled';
     return (
       <li key={c.id} className={`rel-item${c.status === 'done' ? ' is-done' : ''}`}>
         <Icon name={c.status === 'done' ? 'check' : 'lock'} size={14} />

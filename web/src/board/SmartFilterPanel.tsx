@@ -2,12 +2,12 @@ import { taskId } from '../taskId';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { cardCode, titleOf } from '../../../shared/cards';
 import { MAX_CHIPS, savedSearchName, suggest, type SearchToken } from '../../../shared/search';
-import type { Card } from '../../../shared/types';
 import { dispatch } from '../api';
 import { store, useStore } from '../store';
 import { Icon } from '../components/icons';
 import { chipLabel, type SearchContexts } from '../search';
 import { useMatchingCards } from './SmartNode';
+import { useShownTitle } from '../translate';
 
 /** Matching cards drawn in the panel; the rest are counted. */
 const LIST_LIMIT = 50;
@@ -117,7 +117,8 @@ function ChipInput({ tokens, forceOr, ctx, disabled, onTokens, onForceOr }: {
 }
 
 export interface SmartFilterPanelProps {
-  host: Card;
+  /** Who keeps the query: a card board's host task, or on Home the project picked for the node (its tasks only). */
+  owner: { cardId: string } | { projectId: string };
   /** The Smart Node's current query, if it has one. */
   queryId: string | null;
   canEdit: boolean;
@@ -128,13 +129,16 @@ export interface SmartFilterPanelProps {
 }
 
 /** Side panel for "Set up filter": a draft chip filter, the cards it matches, and Save. Nothing is written until Save. */
-export function SmartFilterPanel({ host, queryId, canEdit, onSaved, onAdd, onClose }: SmartFilterPanelProps) {
+export function SmartFilterPanel({ owner, queryId, canEdit, onSaved, onAdd, onClose }: SmartFilterPanelProps) {
+  const shownTitle = useShownTitle();
   const saved = useStore((s) => (queryId ? s.visionQueries.get(queryId) : undefined));
   const [tokens, setTokens] = useState<SearchToken[]>(saved?.query.tokens ?? []);
   const [forceOr, setForceOr] = useState(saved?.query.forceOr ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const { cards, ctx } = useMatchingCards(tokens, forceOr);
+  const projectId = 'projectId' in owner ? owner.projectId : null;
+  const projectName = useStore((s) => (projectId ? s.projects.get(projectId)?.name : undefined));
+  const { cards, ctx } = useMatchingCards(tokens, forceOr, false, projectId);
 
   useEffect(() => { document.querySelector<HTMLInputElement>('.board-filter-panel .sbox-input')?.focus(); }, []);
 
@@ -147,7 +151,7 @@ export function SmartFilterPanel({ host, queryId, canEdit, onSaved, onAdd, onClo
     setError('');
     try {
       const { id } = await dispatch<{ id: string }>('visionBoard', 'createQuery', {
-        cardId: host.id, query: { type: 'filter', tokens, forceOr: orFlag },
+        ...owner, query: { type: 'filter', tokens, forceOr: orFlag },
       }); // no prevQueryId: the server keeps unused queries for an hour (undo can bring one back), then collects them
       await queryArrived(id);
       onSaved(id, savedSearchName(tokens, ctx.suggest, orFlag));
@@ -166,6 +170,7 @@ export function SmartFilterPanel({ host, queryId, canEdit, onSaved, onAdd, onClo
       <div className="stack">
         <h2 className="bfilter-title">Set up filter</h2>
         {!canEdit && <p className="hint">This board is read-only for you.</p>}
+        {projectId && <p className="hint">Tasks of {projectName ?? 'its project'}</p>}
         <ChipInput tokens={tokens} forceOr={forceOr} ctx={ctx} disabled={!canEdit} onTokens={setTokens} onForceOr={setForceOr} />
         <div className="bpick-actions">
           <button type="button" className="btn btn-primary" disabled={!canEdit || busy || !dirty} onClick={() => void save()}>Save filter</button>
@@ -176,11 +181,11 @@ export function SmartFilterPanel({ host, queryId, canEdit, onSaved, onAdd, onClo
           {shown.map((c) => (
             <li key={c.id} className="bfilter-item">
               <div className="bfilter-card">
-                <span className="bfilter-card-title">{titleOf(c.content)}</span>
+                <span className="bfilter-card-title">{shownTitle(c)}</span>
                 <span className="picker-sub">{taskId(c)}</span>
               </div>
               {canEdit && (
-                <button type="button" className="btn btn-sm" onClick={() => onAdd(c.id)}>+ Add to board<span className="sr-only">: {titleOf(c.content)}</span></button>
+                <button type="button" className="btn btn-sm" onClick={() => onAdd(c.id)}>+ Add to board<span className="sr-only">: {shownTitle(c)}</span></button>
               )}
             </li>
           ))}

@@ -60,6 +60,7 @@ import { Home } from './views/Home';
 import { paneNavigate } from './views/HomePane';
 import { sideOf } from './homeSplit';
 import { SuggestionDialog } from './components/SuggestionDialog';
+import { ReadLangPrompt } from './components/ReadLangPrompt';
 import { checkSuggestions, useSuggestionTarget } from './suggestions';
 import { loadPrefs, prefs, resetPrefs, usePrefsReady } from './prefs';
 
@@ -351,6 +352,7 @@ function ShellReady({ route, show, tabId }: { route: Route; show: string | null;
       {suggesting && suggestTo && <SuggestionDialog target={suggestTo} onClose={() => setSuggesting(false)} />}
       {paletteOpen && <Palette route={route} initial={paletteQuery} onClose={() => setPaletteOpen(false)} />}
       {menu !== null && <WorkspaceMenu value={menu} />}
+      <ReadLangPrompt />
       {show === 'apiTokens' && (
         <Dialog title="API tokens" wide scroll onClose={closeOverlay} actions={<button type="button" className="btn btn-ghost" onClick={closeOverlay}>Close</button>}>
           <ApiTokens />

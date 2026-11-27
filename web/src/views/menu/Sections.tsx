@@ -22,6 +22,7 @@ import { SlackIntegration } from '../settings/Slack';
 import { GitIntegration } from '../settings/Git';
 import { SteamIntegration } from '../settings/Steam';
 import { MyAccountPanel } from '../MyAccount';
+import { useShownTitle } from '../../translate';
 
 // ---------------------------------------------------------------- tabs inside a section
 
@@ -114,6 +115,7 @@ const FILES_PAGE = 60;
 const sizeText = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 
 export function FilesSection() {
+  const shownTitle = useShownTitle();
   const files = useStore((s) => s.files);
   const cards = useStore((s) => s.cards);
   const decks = useStore((s) => s.decks);
@@ -123,9 +125,9 @@ export function FilesSection() {
   const all = useMemo(() => {
     const q = query.trim().toLowerCase();
     return [...files.values()]
-      .filter((f) => (!images || f.mime.startsWith('image/')) && (!q || f.name.toLowerCase().includes(q) || titleOf(cards.get(f.cardId)?.content ?? '').toLowerCase().includes(q)))
+      .filter((f) => (!images || f.mime.startsWith('image/')) && (!q || f.name.toLowerCase().includes(q) || titleOf(cards.get(f.cardId)?.content ?? '').toLowerCase().includes(q) || (cards.has(f.cardId) ? shownTitle(cards.get(f.cardId)!) : '').toLowerCase().includes(q)))
       .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  }, [files, cards, query, images]);
+  }, [files, cards, query, images, shownTitle]);
   const id = useId();
   return (
     <div className="wsm-stack">
@@ -148,7 +150,7 @@ export function FilesSection() {
               <span className="wsm-file-text">
                 <a className="wsm-ellipsis" href={`/api/files/${encodeURIComponent(f.id)}`} target="_blank" rel="noreferrer">{f.name}</a>
                 <span className="wsm-help wsm-ellipsis">
-                  {sizeText(f.size)}{card && <> · on <Link href={cardHref(card, deck)}>{titleOf(card.content)}</Link></>}
+                  {sizeText(f.size)}{card && <> · on <Link href={cardHref(card, deck)}>{shownTitle(card)}</Link></>}
                 </span>
               </span>
             </li>
@@ -256,6 +258,7 @@ const ARCHIVED_SHOWN = 50;
 const when = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 
 export function ArchiveSection() {
+  const shownTitle = useShownTitle();
   const projects = useStore((s) => s.projects);
   const cards = useStore((s) => s.cards);
   const decks = useStore((s) => s.decks);
@@ -301,7 +304,7 @@ export function ArchiveSection() {
         {archivedCards.length ? (
           <ul className="wsm-rows" aria-label="Archived tasks">
             {archivedCards.slice(0, ARCHIVED_SHOWN).map((c) => {
-              const title = titleOf(c.content);
+              const title = shownTitle(c);
               return (
                 <li key={c.id} className="wsm-row">
                   <span className="wsm-row-text">

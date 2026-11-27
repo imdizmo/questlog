@@ -6,6 +6,7 @@ import { parse } from './router';
 import type { State } from './store';
 import { entryBySegment } from './wiki';
 import { pathOf } from './tabs';
+import { titleNow } from './translate';
 
 export type LabelState = Pick<State, 'projects' | 'decks' | 'cards' | 'milestones' | 'entryTypes'>;
 export interface TabLabel { label: string; icon: IconName }
@@ -47,7 +48,7 @@ export function tabLabel(s: LabelState, url: string): TabLabel {
     case 'deckCard':
     case 'card': {
       const c = cardBySeq(s.cards, r.code);
-      return { label: c ? titleOf(c.content) || 'Task' : 'Task', icon: 'task' };
+      return { label: c ? titleNow(c) || 'Task' : 'Task', icon: 'task' };
     }
     case 'milestone':
     case 'milestoneActivity': {
@@ -61,7 +62,7 @@ export function tabLabel(s: LabelState, url: string): TabLabel {
     case 'wikiEntry': {
       const p = projectOf(r.projectSeq);
       const c = p ? entryBySegment(s, p.id, r.entry) : undefined;
-      return { label: c ? titleOf(c.content) || 'Entry' : 'Entry', icon: 'doc' };
+      return { label: c ? titleNow(c) || 'Entry' : 'Entry', icon: 'doc' };
     }
     case 'wikiType':
     case 'wikiKind': {

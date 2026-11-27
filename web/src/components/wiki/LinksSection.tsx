@@ -12,6 +12,7 @@ import { CardPicker } from '../CardPicker';
 import { Icon } from '../icons';
 import { FieldEditor, entryTitle } from './FieldEditor';
 import { useTitleOfKey } from './Infobox';
+import { useShownTitle } from '../../translate';
 
 type Props = Record<string, unknown>;
 
@@ -148,6 +149,7 @@ export function WhatLinksHere({ card, projectId, projectSeq }: { card: Card; pro
 
 /** Quests not done yet that work on this entry or mention it. */
 export function OpenQuests({ card }: { card: Card }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const list = useMemo(() => openQuests(s, card.id), [s.cards, s.entryLinks, card.id]);
   const [name, setName] = useState('');
@@ -178,7 +180,7 @@ export function OpenQuests({ card }: { card: Card }) {
           {list.map((q) => (
             <li key={q.id}>
               <Link href={cardHref(q, q.deckId ? s.decks.get(q.deckId) : null)} className="wiki-quest">
-                <span className="muted">{taskId(q)}</span> {titleOf(q.content) || 'Untitled'}
+                <span className="muted">{taskId(q)}</span> {shownTitle(q) || 'Untitled'}
               </Link>
             </li>
           ))}

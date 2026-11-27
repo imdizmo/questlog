@@ -5,14 +5,14 @@ import { AppError } from '../errors';
 import { can } from '../permissions';
 import { accountRow, cardRow } from './rows';
 import { assertCardAccess, assertNotDeleted } from './cards';
-import { boardAccess, canEditHostCard, boardHooks, homeAccess, homeBoardId, referencedQueryIds, visionBoardRow, visionQueryRow } from '../boards';
+import { boardAccess, canEditHostCard, boardHooks, homeAccess, homeBoardId, homeProjectAllowed, referencedQueryIds, visionBoardRow, visionQueryRow } from '../boards';
 import { cardProjectId } from '../access';
 import { searchTokenSchema } from './search';
 import type { Command, Ctx } from '../dispatch';
 import type { VisionBoard } from '../../shared/types';
 
 export const MAX_QUERY_TOKENS = 20;
-/** Queries kept per host card (unused ones are collected first, see collectQueries). */
+/** Queries kept per host card, and per project on Home (unused ones are collected first, see collectQueries). */
 export const MAX_QUERIES_PER_CARD = 500;
 /**
  * How long an unreferenced query is kept: a superseded queryId can come back through undo, so it stays live this
@@ -40,10 +40,13 @@ function assertManage(ctx: Ctx, b: VisionBoard): void {
   throw new AppError(403, 'forbidden');
 }
 
-/** Delete the card's queries that no filter node of the board points at and that are older than the undo window. */
-function collectQueries(ctx: Ctx, boardId: string, cardId: string): void {
-  const old = ctx.db.prepare('SELECT id FROM vision_queries WHERE card_id=? AND created_at<?')
-    .all(cardId, Date.now() - QUERY_UNDO_WINDOW_MS) as { id: string }[];
+/** Owner of a query: a card board's host card, or a project on Home. */
+type QueryOwner = { col: 'card_id' | 'project_id'; id: string };
+
+/** Delete the owner's queries that no filter node of the board points at and that are older than the undo window. */
+function collectQueries(ctx: Ctx, boardId: string, owner: QueryOwner): void {
+  const old = ctx.db.prepare(`SELECT id FROM vision_queries WHERE ${owner.col}=? AND created_at<?`)
+    .all(owner.id, Date.now() - QUERY_UNDO_WINDOW_MS) as { id: string }[];
   if (old.length === 0) return; // spares decoding the doc
   const used = referencedQueryIds(ctx.db, boardId);
   for (const { id } of old) if (!used.has(id)) deleteQuery(ctx, id);
@@ -115,25 +118,41 @@ export const visionBoardCommands: Record<string, Command> = {
     },
   },
   'visionBoard/createQuery': {
+    /** cardId: the query of a card board's Smart Node. projectId: of a Smart Node on Home, for the project picked for it. */
     schema: z.object({
-      cardId: z.string(),
+      cardId: z.string().optional(),
+      projectId: z.string().optional(),
       query: z.object({ type: z.literal('filter'), tokens: z.array(searchTokenSchema).max(MAX_QUERY_TOKENS), forceOr: z.boolean() }),
-    }),
-    run(ctx, { cardId, query }) {
+    }).refine((x) => (x.cardId === undefined) !== (x.projectId === undefined), { message: 'cardId or projectId', path: ['cardId'] }),
+    run(ctx, { cardId, projectId, query }) {
       const { db, actor } = ctx;
-      assertEnabled(db);
-      const bid = db.prepare('SELECT id FROM vision_boards WHERE card_id=?').get(cardId) as { id: string } | undefined;
-      const b = bid && visionBoardRow(db, bid.id);
-      const level = b ? boardAccess(db, actor, b) : 'none';
-      if (!b || level === 'none') throw new AppError(404, 'not_found');
-      if (level !== 'edit') throw new AppError(403, 'forbidden');
+      let boardId: string;
+      let owner: QueryOwner;
+      if (projectId !== undefined) {
+        // Home is not behind the vision-board setting. Its doc goes to the whole workspace: only a project every member sees.
+        const level = homeAccess(db, actor);
+        if (level === 'none') throw new AppError(404, 'not_found');
+        if (level !== 'edit') throw new AppError(403, 'forbidden');
+        if (!homeProjectAllowed(db, actor, projectId)) throw new AppError(404, 'not_found');
+        boardId = homeBoardId(db, actor.id);
+        owner = { col: 'project_id', id: projectId };
+      } else {
+        assertEnabled(db);
+        const bid = db.prepare('SELECT id FROM vision_boards WHERE card_id=?').get(cardId) as { id: string } | undefined;
+        const b = bid && visionBoardRow(db, bid.id);
+        const level = b ? boardAccess(db, actor, b) : 'none';
+        if (!b || level === 'none') throw new AppError(404, 'not_found');
+        if (level !== 'edit') throw new AppError(403, 'forbidden');
+        boardId = b.id;
+        owner = { col: 'card_id', id: cardId! };
+      }
       // Never deleted on request (a query another node still uses would vanish): unused old ones are collected here.
-      collectQueries(ctx, b.id, cardId);
-      const n = (db.prepare('SELECT COUNT(*) n FROM vision_queries WHERE card_id=?').get(cardId) as { n: number }).n;
+      collectQueries(ctx, boardId, owner);
+      const n = (db.prepare(`SELECT COUNT(*) n FROM vision_queries WHERE ${owner.col}=?`).get(owner.id) as { n: number }).n;
       if (n >= MAX_QUERIES_PER_CARD) throw new AppError(409, 'limit_reached');
       const id = newId();
-      db.prepare('INSERT INTO vision_queries (id, card_id, creator_id, query, created_at) VALUES (?,?,?,?,?)')
-        .run(id, cardId, actor.id, JSON.stringify(query), Date.now());
+      db.prepare(`INSERT INTO vision_queries (id, ${owner.col}, creator_id, query, created_at) VALUES (?,?,?,?,?)`)
+        .run(id, owner.id, actor.id, JSON.stringify(query), Date.now());
       ctx.emit('visionQuery', 'upsert', visionQueryRow(db, id)!);
       return { id };
     },

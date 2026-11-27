@@ -11,6 +11,7 @@ import { addChip, chipLabel, focusSearchBox, sameChips, SEARCH_INPUT_ID, setChip
 import { encodeChips } from '../../../shared/search';
 import { Icon } from './icons';
 import { completeStep } from '../onboarding';
+import { useShownTitle } from '../translate';
 
 interface Row {
   id: string;
@@ -25,6 +26,7 @@ interface Group { heading: string; rows: Row[] }
 
 /** The top bar search: chips in `?search=`, a suggestion menu, quick results and saved searches. */
 export function SearchBox() {
+  const shownTitle = useShownTitle();
   const uid = useId();
   const loc = useLocation();
   const s = useStore((x) => x);
@@ -83,7 +85,7 @@ export function SearchBox() {
     const plain = !/^([!#@$]|g[dcm]:)/.test(text);
     const quick = plain ? quickResults(text, liveCards, [...s.entries.values()], ctx.search) : null;
     if (quick?.cards.length) {
-      out.push({ heading: 'Tasks', rows: quick.cards.map((c) => ({ id: `q-${c.id}`, label: titleOf(c.content), sub: `$${cardCode(c.seq)}`, onPick: () => go(hrefOf(c)) })) });
+      out.push({ heading: 'Tasks', rows: quick.cards.map((c) => ({ id: `q-${c.id}`, label: shownTitle(c), sub: `$${cardCode(c.seq)}`, onPick: () => go(hrefOf(c)) })) });
     }
     const comments = quick?.comments.flatMap((e) => {
       const card = s.cards.get(s.resolvables.get(e.resolvableId)?.cardId ?? '');
@@ -91,13 +93,13 @@ export function SearchBox() {
     }) ?? [];
     if (comments.length) {
       out.push({ heading: 'Comments', rows: comments.map(({ e, card }) => ({
-        id: `c-${e.id}`, label: e.content.replace(/\s+/g, ' ').slice(0, 90), sub: titleOf(card.content), onPick: () => go(hrefOf(card)),
+        id: `c-${e.id}`, label: (ctx.search.shownEntry?.(e) ?? e.content).replace(/\s+/g, ' ').slice(0, 90), sub: shownTitle(card), onPick: () => go(hrefOf(card)),
       })) });
     }
     for (const g of suggest(text, ctx.suggest)) {
       if (g.heading === 'Go to task' && quick?.codeHit) {
         const c = quick.codeHit;
-        out.push({ heading: 'Go to task', rows: [{ id: `g-${c.id}`, label: titleOf(c.content), sub: `$${cardCode(c.seq)}`, onPick: () => go(hrefOf(c)) }] });
+        out.push({ heading: 'Go to task', rows: [{ id: `g-${c.id}`, label: shownTitle(c), sub: `$${cardCode(c.seq)}`, onPick: () => go(hrefOf(c)) }] });
         continue;
       }
       out.push({
@@ -110,7 +112,7 @@ export function SearchBox() {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, ctx, liveCards, s.entries, s.resolvables, s.cards, s.decks, mySaved, s.me, chips]);
+  }, [text, ctx, liveCards, s.entries, s.resolvables, s.cards, s.decks, mySaved, s.me, chips, shownTitle]);
 
   const flat = groups.flatMap((g) => g.rows).filter((r) => !r.disabled);
   const optId = (r: Row) => `${uid}-${r.id}`;

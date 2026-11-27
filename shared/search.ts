@@ -31,6 +31,10 @@ export interface SearchCtx {
   todayDay: string;
   sprints: Pick<Sprint, 'id' | 'configId' | 'startDay' | 'endDay'>[];
   now: number;
+  /** The title the reader sees (a translation, web/src/translate.ts): text search matches it as well as the original. */
+  shownTitle?(card: Card): string;
+  /** A comment as the reader sees it, matched as well as the original. */
+  shownEntry?(entry: ResolvableEntry): string;
 }
 
 const PRIORITY_RANK: Record<Priority, number> = { a: 3, b: 2, c: 1 };
@@ -53,7 +57,7 @@ function compileToken(tok: SearchToken, ctx: SearchCtx, weekEnd: string, sprintB
   switch (tok.category) {
     case 'content': {
       const needle = (v ?? '').toLowerCase();
-      return (c) => titleOf(c.content).toLowerCase().includes(needle);
+      return (c) => titleOf(c.content).toLowerCase().includes(needle) || !!ctx.shownTitle?.(c).toLowerCase().includes(needle);
     }
     case 'status':
       if (v === 'undone') return (c) => c.status !== 'done';
@@ -345,19 +349,22 @@ export function savedSearchName(tokens: SearchToken[], ctx: SuggestCtx, forceOr 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function quickResults(
-  text: string, cards: Card[], entries: ResolvableEntry[], _ctx?: SearchCtx,
+  text: string, cards: Card[], entries: ResolvableEntry[], ctx?: SearchCtx,
 ): { cards: Card[]; comments: ResolvableEntry[]; codeHit: Card | null } {
   const q = text.trim();
   if (q === '') return { cards: [], comments: [], codeHit: null };
   const lower = q.toLowerCase();
   const found = cards
-    .filter((c) => titleOf(c.content).toLowerCase().includes(lower))
+    .filter((c) => titleOf(c.content).toLowerCase().includes(lower) || !!ctx?.shownTitle?.(c).toLowerCase().includes(lower))
     .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
     .slice(0, 10);
   const words = lower.split(/\s+/).filter(Boolean).map((w) => new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRe(w)}($|[^\\p{L}\\p{N}_])`, 'u'));
   const when = (e: ResolvableEntry) => e.lastChangedAt ?? e.createdAt;
   const comments = entries
-    .filter((e) => { const c = e.content.toLowerCase(); return words.every((r) => r.test(c)); })
+    .filter((e) => {
+      const c = e.content.toLowerCase(), t = ctx?.shownEntry?.(e).toLowerCase();
+      return words.every((r) => r.test(c)) || (t !== undefined && t !== c && words.every((r) => r.test(t)));
+    })
     .sort((a, b) => when(b) - when(a))
     .slice(0, 5);
   const seq = seqFromCode(lower.replace(/^\$/, ''));

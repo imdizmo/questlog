@@ -2,6 +2,7 @@ import type { BillingMode, PlanOverwrites, PlanStatus, PlanType } from './plans'
 import type { Cover } from './covers';
 import type { DeckView } from './order';
 import type { SearchToken } from './search';
+import type { GlossaryEntry, Lang } from './translate';
 export type CardStatus = 'not_started' | 'started' | 'done';
 export type Visibility = 'default' | 'archived' | 'deleted';
 export type ResolvableContext = 'block' | 'review' | 'comment';
@@ -45,6 +46,8 @@ export interface AccountSettings {
   description: string;
   /** The workspace's picture: one of the built-in artworks (shared/covers.ts COVER_ARTWORKS), or none. */
   coverArt: number | null;
+  /** Card text and comments are translated between English and Italian on the server (server/translate). */
+  translationEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: AccountSettings = {
@@ -74,6 +77,16 @@ export const DEFAULT_SETTINGS: AccountSettings = {
   mcpDailyLimit: null,
   description: '',
   coverArt: null,
+  translationEnabled: false,
+};
+
+/**
+ * A machine translation of a card's text or a comment into `lang` (server/translate/queue.ts). `sourceVersion` is the
+ * card's contentVersion, or textVersion(entry.content) for a comment: a row behind its source is stale. `fromLang`
+ * null: nothing in the text needed translating into `lang`, and `text` is the original.
+ */
+export type Translation = {
+  kind: 'card' | 'entry' | 'fields'; sourceId: string; lang: Lang; sourceVersion: number; fromLang: Lang | null; text: string; createdAt: number;
 };
 
 export interface Account {
@@ -175,6 +188,8 @@ export interface Project {
   tags: ProjectTag[];
   cover: Cover;
   createdAt: number;
+  /** Words the translator keeps as written, or always renders as given per language (shared/translate.ts). */
+  glossary?: GlossaryEntry[];
 }
 
 export interface ProjectAccess {
@@ -594,5 +609,6 @@ export type BoardState = 'default' | 'read_only' | 'locked';
 /** A vision board hosted by one card (the Yjs document is not part of the row). */
 export interface VisionBoard { id: string; accountSeq: number; cardId: string; creatorId: string; state: BoardState; createdAt: number; updatedAt: number }
 /** A saved card filter used by a board's smart node. */
-export interface VisionQuery { id: string; cardId: string; creatorId: string; query: { type: 'filter'; tokens: SearchToken[]; forceOr: boolean }; createdAt: number }
+/** A Smart Node's saved filter: owned by a card board's host card, or (on Home) by the project picked for it. */
+export interface VisionQuery { id: string; cardId: string | null; projectId: string | null; creatorId: string; query: { type: 'filter'; tokens: SearchToken[]; forceOr: boolean }; createdAt: number }
 export interface Journey { id: string; deckId: string; projectId: string; steps: JourneyStep[]; updatedAt: number }

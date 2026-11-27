@@ -13,6 +13,7 @@ import { Dialog } from '../../components/Dialog';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { EntryBlocks } from '../../components/wiki/EntryBlocks';
 import { tryNewEntry } from '../../components/wiki/GuidedStart';
+import { useShownTitle } from '../../translate';
 
 const KIND_ICON: Record<BlockKind, IconName> = {
   text: 'text', facts: 'card', model: 'asset', picture: 'asset', map: 'globe', lines: 'more', steps: 'task', table: 'frame', links: 'link', gallery: 'frame',
@@ -198,7 +199,7 @@ function RealExample({ card, type, project, page, ownerId }: { card: Card; type:
   return <>
     <EntryBlocks card={card} content={card.content} layout={layout} type={type} project={project} editable={false} compact
       badge={<span className="ex" title="One of this type's entries, laid out by the template as you edit it">{type.name} entry</span>} />
-    <p className="tnote">{titleOf(card.content)} is a {type.name} of this project, shown as the template lays it out. Its own page changes only when it is brought up to date.</p>
+    <p className="tnote">{useShownTitle()(card)} is a {type.name} of this project, shown as the template lays it out. Its own page changes only when it is brought up to date.</p>
   </>;
 }
 
@@ -225,6 +226,7 @@ function MadeUpExample({ type, project, page }: { type: EntryType; project: Proj
  * older), each to tick; they take the template's blocks, order and widths and keep everything written.
  */
 function BringUpToDate({ type, page, ownerId, onClose }: { type: EntryType; page: TypePage; ownerId: string; onClose: () => void }) {
+  const shownTitle = useShownTitle();
   const cards = useStore((s) => s.cards);
   const entryTypes = useStore((s) => s.entryTypes);
   const old = useMemo(() => [...cards.values()]
@@ -263,7 +265,7 @@ function BringUpToDate({ type, page, ownerId, onClose }: { type: EntryType; page
                 <li key={c.id}>
                   <label className="tog"><input type="checkbox" checked={picked.has(c.id)}
                     onChange={(e) => setPicked((p) => { const n = new Set(p); if (e.target.checked) n.add(c.id); else n.delete(c.id); return n; })} />
-                  <b>{titleOf(c.content)}</b></label>
+                  <b>{shownTitle(c)}</b></label>
                   {a.length > 0 && <span className="hint"> adds {a.join(', ')}</span>}
                 </li>
               );

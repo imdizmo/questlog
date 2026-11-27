@@ -2,6 +2,7 @@ import type { Db } from './db';
 import { toCamel } from './db';
 import type { ChangeEvent } from './dispatch';
 import { can } from './permissions';
+import { homeAccess } from './boards';
 import { canSeeCard, cardProjectId } from './access';
 import { now } from './auth';
 
@@ -20,6 +21,8 @@ type Route =
   | { to: 'project'; projectId: string; alsoUser?: string }
   | { to: 'projects'; projectIds: string[] }
   | { to: 'card'; card: { deckId: string | null; creatorId: string }; projectId: string | null }
+  /** Everyone who sees Home. */
+  | { to: 'home' }
   | null;
 
 export class LiveHub {
@@ -141,6 +144,8 @@ export class LiveHub {
         // Wiki rows, removes included, carry their projectId.
         return { to: 'project', projectId: row.projectId };
       case 'visionBoard': case 'visionQuery': {
+        // A query Home keeps for a project goes, like Home's doc, to everyone who sees Home.
+        if (ev.model === 'visionQuery' && row.projectId) return { to: 'home' };
         // Routed by the host card; a deleted host card routes nowhere (the board is hidden until it is restored).
         const c = db.prepare('SELECT * FROM cards WHERE id=?').get(row.cardId) as Record<string, unknown> | undefined;
         if (!c || c.visibility === 'deleted') return null;
@@ -159,6 +164,16 @@ export class LiveHub {
         // Viewers of the locked card's project, plus the locking card's project when it differs.
         const ids = [row.lockedCardId, row.lockingCardId].map((c: string) => cardProjectId(db, c)).filter((p): p is string => !!p);
         return ids.length ? { to: 'projects', projectIds: [...new Set(ids)] } : null;
+      }
+      case 'translation': {
+        // To whoever sees the card (a comment's card). Removes carry cardId, so they route once the source is gone.
+        const cardId: string | undefined = row.cardId ?? (row.kind !== 'entry' ? row.sourceId
+          : (db.prepare('SELECT r.card_id c FROM resolvable_entries e JOIN resolvables r ON r.id=e.resolvable_id WHERE e.id=?')
+            .get(row.sourceId) as { c: string } | undefined)?.c);
+        const c = cardId ? db.prepare('SELECT * FROM cards WHERE id=?').get(cardId) as Record<string, unknown> | undefined : undefined;
+        if (!c) return null;
+        const card = toCamel<any>(c);
+        return { to: 'card', card, projectId: card.deckId ? cardProjectId(db, cardId!) : null };
       }
       case 'resolvable': case 'resolvableEntry': case 'reaction': case 'handCard': case 'file': case 'timeSegment': {
         let cardId: string | undefined = row.cardId;
@@ -210,6 +225,7 @@ export class LiveHub {
           case 'admins': return (r as any).alsoUser === userId || can(this.db, user, 'account.manage');
           case 'project': return view((r as any).projectId) || (r as any).alsoUser === userId;
           case 'projects': return (r as any).projectIds.some((p: string) => view(p));
+          case 'home': return homeAccess(this.db, user) !== 'none';
           case 'card': {
             const x = r as Extract<NonNullable<Route>, { to: 'card' }>;
             return x.card.deckId

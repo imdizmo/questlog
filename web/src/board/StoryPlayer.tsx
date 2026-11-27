@@ -12,6 +12,7 @@ import { Picture, isStartFrame, isStoryline } from '../components/wiki/Builder';
 import { boardOfCard } from './boards';
 import { connectBoard, type BoardConnection } from './provider';
 import { readEdge, readNode } from './useBoard';
+import { useShownTitle } from '../translate';
 
 /** The story's starting variables, kept in the board itself (one `name = value` per line). */
 export const storyVars = (doc: Y.Doc): string => { const v = doc.getMap<unknown>('story').get('vars'); return typeof v === 'string' ? v : ''; };
@@ -53,6 +54,7 @@ function graphOf(doc: Y.Doc, hostId: string, links: { fromCardId: string; toCard
  * flow. Each board is read once, when the player reaches it.
  */
 export function StoryPlayer({ doc, host, onClose }: { doc: Y.Doc; host: Card; onClose: () => void }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const first = useMemo<Step | null>(() => {
     const graph = graphOf(doc, host.id, [...s.entryLinks.values()]);
@@ -66,7 +68,7 @@ export function StoryPlayer({ doc, host, onClose }: { doc: Y.Doc; host: Card; on
   const at = trail[trail.length - 1];
   const cardAt = (g: Graph, nodeId: string) => s.cards.get(g.cardOf.get(nodeId) ?? '');
   const card = at ? cardAt(at.graph, at.node) : undefined;
-  const title = (c: Card | undefined) => titleOf(c?.content ?? '') || 'Untitled';
+  const title = (c: Card | undefined) => (c ? shownTitle(c) : '') || 'Untitled';
   const visits = (t: string) => trail.filter((st) => title(cardAt(st.graph, st.node)).toLowerCase() === t.toLowerCase()).length;
   const choices = !at ? [] : at.graph.edges.filter((e) => e.value.source.nodeId === at.node && at.graph.cardOf.has(e.value.target.nodeId))
     .map((e) => ({ e, ...parseLabel(e.label ?? '') })).filter((c) => !c.cond || evalCond(c.cond, at.vars, visits));
@@ -89,7 +91,7 @@ export function StoryPlayer({ doc, host, onClose }: { doc: Y.Doc; host: Card; on
   const shown = Object.entries(at?.vars ?? {});
 
   return (
-    <Dialog title={`Play: ${titleOf(host.content)}`} onClose={onClose} wide scroll actions={<>
+    <Dialog title={`Play: ${shownTitle(host)}`} onClose={onClose} wide scroll actions={<>
       <button type="button" className="btn btn-ghost" disabled={trail.length < 2} onClick={() => setTrail(trail.slice(0, -1))}>Back</button>
       <button type="button" className="btn btn-ghost" disabled={trail.length < 2} onClick={() => setTrail(trail.slice(0, 1))}>Restart</button>
     </>}>

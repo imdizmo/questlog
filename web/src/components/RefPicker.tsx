@@ -7,6 +7,7 @@ import { deckPath } from '../cards';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
 import type { RefKind } from './SlashMenu';
+import { useShownTitle } from '../translate';
 
 /** A small built-in emoji set (no dependency): the ones game-dev cards tend to use. */
 export const EMOJI: [string, string][] = [
@@ -19,7 +20,8 @@ export const EMOJI: [string, string][] = [
   ['🎉', 'party celebrate'], ['👀', 'eyes look'], ['🙏', 'thanks please'], ['💬', 'comment chat'], ['🔒', 'lock locked'], ['🚧', 'construction wip'],
 ];
 
-interface Option { key: string; label: string; sub?: string; insert: string }
+/** `alt`: matched by the filter but not shown (a task's title as written, when the label is its translation). */
+interface Option { key: string; label: string; sub?: string; alt?: string; insert: string }
 
 const TITLES: Record<RefKind, string> = {
   user: 'Mention user', tag: 'Add tag', card: 'Reference task', deck: 'Reference list', emoji: 'Emoji', image: 'Embed attached image',
@@ -47,6 +49,7 @@ export function RefPicker({ kind, projectId, images, onPick, onClose }: {
 }) {
   const s = useStore((x) => x);
   const [query, setQuery] = useState('');
+  const shownTitle = useShownTitle();
   const [active, setActive] = useState(0);
   const listId = useId();
 
@@ -68,7 +71,7 @@ export function RefPicker({ kind, projectId, images, onPick, onClose }: {
       if (typed && TAG_RE.test(typed) && !names.has(typed)) out.push({ key: `new:${typed}`, label: `#${typed}`, sub: 'new tag', insert: `#${typed} ` });
     } else if (kind === 'card') {
       out = [...s.cards.values()].filter((c) => c.visibility === 'default').sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
-        .map((c) => ({ key: c.id, label: titleOf(c.content), sub: taskId(c), insert: `$${cardCode(c.seq)} ` }));
+        .map((c) => ({ key: c.id, label: shownTitle(c), sub: taskId(c), alt: titleOf(c.content), insert: `$${cardCode(c.seq)} ` }));
     } else if (kind === 'deck') {
       out = [...s.decks.values()].filter((d) => projectVisible(s, d.projectId)).sort((a, b) => a.title.localeCompare(b.title))
         .map((d) => ({ key: d.id, label: d.title, sub: s.projects.get(d.projectId)?.name, insert: `[${label(d.title)}](${deckPath(d)}) ` }));
@@ -77,8 +80,8 @@ export function RefPicker({ kind, projectId, images, onPick, onClose }: {
     } else {
       out = images.map((f) => ({ key: f.id, label: f.name, insert: `![${label(f.name)}](/api/files/${encodeURIComponent(f.id)}) ` }));
     }
-    return out.filter((o) => o.key.startsWith('new:') || hit(o.label, o.sub)).slice(0, LIMIT);
-  }, [kind, query, s, projectId, images]);
+    return out.filter((o) => o.key.startsWith('new:') || hit(o.label, o.sub, o.alt)).slice(0, LIMIT);
+  }, [kind, query, s, projectId, images, shownTitle]);
 
   useEffect(() => { setActive(0); }, [query]);
   useEffect(() => {

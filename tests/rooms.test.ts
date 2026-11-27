@@ -177,6 +177,38 @@ describe('vision board rooms', () => {
     expect(nodesOf(rooms().inspect(b)!.doc).toJSON()).toEqual(nodesOf(a.doc).toJSON());
   });
 
+  it('an MCP board edit reaches open boards at once and is saved', async () => {
+    db.prepare("UPDATE account SET settings_json=json_set(settings_json, '$.mcpEnabled', json('true'))").run();
+    const cardId = (await ok('cards/create', { content: 'Host', deckId })).id as string;
+    const b = (await ok('visionBoard/createBoard', { cardId })).id as string;
+    const task = (await ok('cards/create', { content: 'Beach', deckId })).id as string;
+    const token = (await ok('apiTokens/create', { kind: 'user', label: 'AI', role: 'admin', access: 'write', projectIds: [] })).token as string;
+    const a = await open(b);
+    a.setText('n1', 'mine');
+    expect(await until(() => nodesOf(rooms().inspect(b)!.doc).has('n1'))).toBe(true);
+    const r = await app.inject({ method: 'POST', url: '/mcp', headers: { host: HOST, 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'edit_vision_board', arguments: { cardId, ops: [{ op: 'add_task', taskId: task, x: 200, y: 0 }] } } } });
+    const res = r.json().result;
+    expect(res.isError, res.content[0].text).toBeFalsy();
+    const id = JSON.parse(res.content[0].text).added[0] as string;
+    // The person's open board shows it, their own unsaved node is kept, and both are in the saved doc.
+    expect(await until(() => nodesOf(a.doc).get(id)?.get('value')?.id === task)).toBe(true);
+    const saved = new Y.Doc();
+    Y.applyUpdate(saved, boardRow(b).doc!);
+    expect([...nodesOf(saved).keys()].sort()).toEqual(['n1', id].sort());
+  });
+
+  it('a board loaded by a server-side edit is let go again, also when the edit fails', async () => {
+    const b = await mkBoard();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const hub = (app as any).rooms as { edit(id: string, w: (d: Y.Doc) => void): void };
+    expect(() => hub.edit(b, (d) => { d.getMap('nodes').set('x', 1); throw new Error('half-way'); })).toThrow('half-way');
+    expect(rooms().loadedIds()).toEqual([b]);
+    expect(nodesOf(rooms().inspect(b)!.doc).has('x')).toBe(false);
+    vi.advanceTimersByTime(ROOM_LIMITS.unloadMs);
+    expect(rooms().loadedIds()).toEqual([]);
+  });
+
   it("a read-only viewer's update is dropped and not relayed", async () => {
     const b = await mkBoard();
     const obs = await mkUser('obs', 'observer', [projectId]);

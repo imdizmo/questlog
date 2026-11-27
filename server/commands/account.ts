@@ -10,6 +10,7 @@ import { accountRow, userRow } from './rows';
 import { assertFeature, assertSeatFor, takesSeat } from '../billing';
 import { createTailscalePerson, syncTeamFile } from '../teamFile';
 import type { Command } from '../dispatch';
+import { translateQueueOf } from '../translate/queue';
 import { COVER_ARTWORKS } from '../../shared/covers';
 
 /** The workspace description's longest length (the workspace menu's Workspace section). */
@@ -41,6 +42,7 @@ const settingsSchema = z.strictObject({
   mcpEnabled: z.boolean(),
   mcpDailyLimit: z.number().int().min(1).max(1_000_000).nullable(),
   description: z.string().max(DESCRIPTION_MAX),
+  translationEnabled: z.boolean(),
   coverArt: z.number().int().refine((n) => COVER_ARTWORKS.some((a) => a.id === n)).nullable(),
 }).partial();
 
@@ -76,9 +78,13 @@ export const accountCommands: Record<string, Command> = {
       if (sessionOnly && ctx.actor.via !== 'session') throw new AppError(403, 'missing_scope', { requiredScope: 'session' });
       const acc = accountRow(ctx.db);
       const merged: AccountSettings = { ...DEFAULT_SETTINGS, ...acc.settings, ...input.settings };
+      // Switching translation on needs the language pack; the queue starts at once instead of at its next poll.
+      const turnedOn = merged.translationEnabled && !(acc.settings as AccountSettings).translationEnabled;
+      if (turnedOn && !translateQueueOf(ctx.db)?.packAvailable()) throw new AppError(409, 'translation_pack_missing');
       ctx.db.prepare('UPDATE account SET name=?, settings_json=?, user_api_tokens_enabled=?')
         .run(input.name ?? acc.name, JSON.stringify(merged), input.userApiTokensEnabled === undefined ? (acc.userApiTokensEnabled ? 1 : 0) : (input.userApiTokensEnabled ? 1 : 0));
       ctx.emit('account', 'upsert', accountRow(ctx.db));
+      if (turnedOn) ctx.afterCommit(() => translateQueueOf(ctx.db)?.start());
       if (merged.coverFromAttachments !== (acc.settings as AccountSettings).coverFromAttachments || merged.heroCoverFromSubs !== (acc.settings as AccountSettings).heroCoverFromSubs) refreshAllCovers(ctx);
     },
   },

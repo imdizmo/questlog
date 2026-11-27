@@ -362,6 +362,9 @@ h3.sub { font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform
 .page-wide { max-width: 1480px; }
 .page-narrow { max-width: 860px; }
 .deck-layout.with-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 680px); gap: 24px; align-items: start; }
+/* With a task open, the list and the panel share the whole width: centred at 1480px they left wide empty margins on a
+   big screen while the board's columns were squeezed and its last column ran under the panel. */
+.page-wide.deck-layout.with-card { max-width: none; }
 .deck-head { align-items: flex-start; flex-wrap: wrap; }
 .deck-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .deck-title-row h1 { overflow-wrap: anywhere; }
@@ -1178,6 +1181,20 @@ body.has-selection main { padding-bottom: 120px; }
 .bconn:hover { background: var(--text); }
 .bconnect-list { flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; min-width: 180px; }
 .bconnect-list .bswatch-btn { white-space: nowrap; text-align: left; }
+/* The Smart Node guide (web/src/board/SmartGuide.tsx): a popover beside the node, above Home's welcome column (2), below its toolbars (4). */
+.bguide { position: absolute; left: 0; top: 0; z-index: 3; width: 248px; padding: 8px 10px; cursor: default; user-select: text; font-size: 13px;
+  background: var(--raised2); border: 1px solid #34343c; border-radius: var(--radius); box-shadow: 0 12px 32px rgba(0, 0, 0, .5); }
+.bguide-head { font-size: 12px; font-weight: 600; color: var(--dim); padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--line); }
+.bguide-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.bguide-steps li { display: flex; gap: 6px; color: var(--mute); }
+.bguide-steps li.is-current { color: var(--text); }
+.bguide-steps li.is-done { color: var(--dim); }
+.bguide-mark { width: 1em; flex: none; text-align: center; }
+.bguide-steps li.is-done .bguide-mark { color: var(--st-done); }
+.bguide-steps li.is-current .bguide-mark { color: var(--accent); }
+.bguide-hint { display: block; color: var(--mute); font-size: 12px; }
+.bguide-actions, .bguide-done { display: flex; justify-content: flex-end; align-items: center; gap: 4px; margin-top: 8px; }
+.bguide-done { justify-content: space-between; margin-top: 0; }
 
 /* ---------- vision board: card, image and video nodes ---------- */
 .board-card-panel { position: absolute; right: 10px; top: 10px; bottom: 10px; z-index: 6; width: min(460px, calc(100% - 80px)); max-height: none; box-shadow: 0 8px 32px rgba(0, 0, 0, .5); }
@@ -1459,6 +1476,7 @@ body.has-selection main { padding-bottom: 120px; }
 .infobox-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .infobox-row .req { color: var(--accent); margin-left: 2px; }
 .infobox-edit { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.infobox-tr { flex-basis: 100%; font-size: 0.9em; }
 .infobox input[type="text"], .infobox input[type="number"], .infobox textarea, .wiki-props input[type="text"], .wiki-props input[type="number"], .wiki-props textarea {
   width: 100%; min-width: 0; height: 30px; padding: 0 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
 }
@@ -1792,7 +1810,7 @@ body.has-selection main { padding-bottom: 120px; }
 .view-seg button:hover { color: var(--text); }
 .view-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .view-seg button[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.step-board { display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 4px; }
+.step-board { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px; align-items: start; overflow-x: auto; padding-bottom: 4px; }
 .step-col { background: var(--side-bg, #151518); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: grid; gap: 8px; min-width: 0; }
 .step-head { display: flex; align-items: center; gap: 8px; }
 .step-head h3 { font-size: 13px; }
@@ -1913,6 +1931,15 @@ body.has-selection main { padding-bottom: 120px; }
 .alias-add input { width: 160px; height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 .alias-add input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .alias-error { flex-basis: 100%; margin: 0; font-size: 13px; }
+/* Auto-translate: the line under translated text, and the translation beside the editor (below it on narrow screens). */
+.translated-line { margin: 8px 0 0; font-size: 12px; color: var(--mute); }
+.translated-line .link-btn { font-size: 12px; }
+.edit-beside { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.edit-beside > *, .edit-alone { min-width: 0; }
+.translate-ref { padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; color: var(--dim); }
+.translate-ref > .hint { margin: 0 0 6px; }
+@media (max-width: 900px) { .edit-beside { grid-template-columns: minmax(0, 1fr); } }
+.glossary-table input { width: 100%; min-width: 6em; }
 .link-ignores { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; }
 .link-ignore { display: inline-flex; align-items: center; gap: 1px; padding-left: 7px; border: 1px dashed var(--line); border-radius: 6px; color: var(--dim); }
 .link-ignore .chip-x { width: 18px; height: 18px; }

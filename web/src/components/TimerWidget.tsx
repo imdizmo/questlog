@@ -3,9 +3,11 @@ import { titleOf } from '../../../shared/cards';
 import { myCardTotal, myRunning, useCardTime, setTicking, startTimer, stopTimer, trackingOn, formatClock, useTickNow } from '../timeTracking';
 import { useStore } from '../store';
 import { Icon } from '../components/icons';
+import { useShownTitle } from '../translate';
 
 /** Floating bottom-left timer: total of my time on the last-tracked card. Close hides it until the next start. */
 export function TimerWidget() {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const on = trackingOn(s);
   const running = myRunning(s);
@@ -25,7 +27,7 @@ export function TimerWidget() {
   const total = time ? time.totalMs + (mine ? Math.max(0, now - Math.max(time.fetchedAt, mine.startedAt)) : 0) : 0;
   return (
     <div className="timer-widget" data-testid="timer-widget" role="region" aria-label="Timer">
-      <span className="timer-text">TOTAL {formatClock(total)} on {titleOf(card.content) || 'Untitled'}</span>
+      <span className="timer-text">TOTAL {formatClock(total)} on {shownTitle(card) || 'Untitled'}</span>
       {mine
         ? <button type="button" className="btn btn-sm btn-active" onClick={() => void stopTimer(mine.id)}><Icon name="stop" size={14} /> Stop</button>
         : <button type="button" className="btn btn-sm" onClick={() => void startTimer(s.me!.id, card.id)}><Icon name="play" size={14} /> Start</button>}

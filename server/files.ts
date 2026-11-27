@@ -79,10 +79,11 @@ export function unlinkFiles(db: Db, ids: string[]): void {
   }
 }
 
-/** Ids of every file attached to a card of this project (collect before a hard delete). */
+/** Ids of every file attached to a card of this project, and of Home's pictures kept for it (collect before a hard delete). */
 export const projectFileIds = (db: Db, projectId: string): string[] =>
-  (db.prepare('SELECT f.id id FROM files f JOIN cards c ON c.id=f.card_id JOIN decks d ON d.id=c.deck_id WHERE d.project_id=?')
-    .all(projectId) as { id: string }[]).map((r) => r.id);
+  (db.prepare(`SELECT f.id id FROM files f JOIN cards c ON c.id=f.card_id JOIN decks d ON d.id=c.deck_id WHERE d.project_id=?
+    UNION ALL SELECT id FROM files WHERE project_id=?`)
+    .all(projectId, projectId) as { id: string }[]).map((r) => r.id);
 
 /**
  * Startup cleanup of the files dir: partial uploads (`.tmp-*`) left by a crash, and files whose row is gone

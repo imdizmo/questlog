@@ -12,8 +12,11 @@
  * - Tool failures are `isError: true` results; protocol errors are JSON-RPC errors; auth and limits are HTTP errors.
  */
 import { z } from 'zod';
+import * as Y from 'yjs';
 import pkg from '../package.json' with { type: 'json' };
-import { toCamel, tx, type Db } from './db';
+import { newId, toCamel, tx, type Db } from './db';
+import { anyBoardRow, boardAccess, boardHooks } from './boards';
+import { containerAt, DEFAULT_SIZE, NODE_TYPES, snap, spotBeside, type BoardEdge, type BoardNode } from '../shared/board';
 import { AppError } from './errors';
 import { now } from './auth';
 import { mcpDailyLimit } from './billing';
@@ -58,6 +61,8 @@ export const MCP_LIMITS = {
   openThreads: 200,
   /** Wall time a search_cards scan may take before it answers with what it found (hasMore). */
   searchMs: 2000,
+  /** Operations one edit_vision_board call may make. */
+  boardOps: 200,
 } as const;
 
 /**
@@ -254,6 +259,58 @@ const milestoneFields = {
   isGlobal: z.boolean().optional().describe('Covers every project (admins only).'),
   projectIds: z.array(z.string()).max(500).optional().describe('Projects it covers (needed unless global).'),
 };
+
+// ---------------------------------------------------------------------------------------------------------------
+// Vision boards
+
+const SIDES = ['left', 'right', 'top', 'bottom'] as const;
+const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * The board of a task the actor can see, with their access; null when the task has none. 403 when the vision-board
+ * setting is off or `need` is edit and they may only look.
+ */
+function hostBoard(c: ToolCtx, ref: string, need: 'view' | 'edit') {
+  if ((settingsOf(c.db) as { visionBoardEnabled?: boolean }).visionBoardEnabled === false) throw new AppError(403, 'feature_disabled');
+  const card = resolveCard(c.db, c.actor, ref);
+  const id = (c.db.prepare("SELECT id FROM vision_boards WHERE card_id=? AND kind='card'").get(card.id) as { id: string } | undefined)?.id;
+  const b = id ? anyBoardRow(c.db, id) : undefined;
+  if (!b) return null;
+  const level = boardAccess(c.db, c.actor, b);
+  if (level === 'none') throw notFound();
+  if (need === 'edit' && level !== 'edit') throw new AppError(403, 'read_only');
+  return { ...b, level };
+}
+
+/** A board's nodes and lines as they are now (the live room's doc when it is open). Malformed entries are skipped. */
+function boardOf(db: Db, boardId: string): { nodes: BoardNode[]; edges: BoardEdge[] } {
+  const live = boardHooks.liveDoc(boardId);
+  const doc = live ?? new Y.Doc();
+  try {
+    if (!live) {
+      const r = db.prepare('SELECT doc FROM vision_boards WHERE id=?').get(boardId) as { doc: Uint8Array | null } | undefined;
+      if (r?.doc && r.doc.byteLength) Y.applyUpdate(doc, r.doc);
+    }
+    const nodes: BoardNode[] = [], edges: BoardEdge[] = [];
+    doc.getMap<unknown>('nodes').forEach((m, id) => {
+      if (!(m instanceof Y.Map)) return;
+      const type = m.get('type'), value = m.get('value'), pos = m.get('pos'), color = m.get('color');
+      if (!(NODE_TYPES as readonly unknown[]).includes(type) || !isObj(value) || !isObj(pos)) return;
+      if (![pos.x, pos.y, pos.w, pos.h].every(Number.isFinite)) return;
+      nodes.push({ id, type: type as BoardNode['type'], value, pos: { x: pos.x, y: pos.y, w: pos.w, h: pos.h, parent: typeof pos.parent === 'string' ? pos.parent : null },
+        ...(typeof color === 'string' ? { color: color as BoardNode['color'] } : {}) });
+    });
+    doc.getMap<unknown>('edges').forEach((m, id) => {
+      if (!(m instanceof Y.Map)) return;
+      const v = m.get('value'), label = m.get('label');
+      if (!isObj(v) || !isObj(v.source) || !isObj(v.target) || typeof v.source.nodeId !== 'string' || typeof v.target.nodeId !== 'string') return;
+      edges.push({ id, value: v as BoardEdge['value'], ...(typeof label === 'string' ? { label } : {}) });
+    });
+    return { nodes, edges };
+  } finally {
+    if (!live) doc.destroy();
+  }
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Tools
@@ -729,6 +786,140 @@ const TOOLS: Record<string, Tool> = {
       const startedAt = input.startedAt ? Date.parse(input.startedAt) : now() - durationInMs;
       const [r] = c.run([{ name: 'timeTracking/create', payload: { cardId: card.id, userId: input.userId ?? c.actor.id, startedAt, durationInMs } }]);
       return { segmentId: r.id };
+    },
+  },
+
+  // ---- vision boards ----
+  get_vision_board: {
+    description: "A task's vision board: its nodes (tasks, notes, frames, ...) with positions and sizes, and its lines. "
+      + 'Positions are board pixels, x to the right and y down; parent is the frame a node sits in.',
+    schema: z.object({ cardId: cardRef.describe('The task the board belongs to: id or number.') }),
+    run(c, { cardId }) {
+      const b = hostBoard(c, cardId, 'view');
+      if (!b) return { board: null };
+      const { nodes, edges } = boardOf(c.db, b.id);
+      const items = nodes.map((n) => {
+        const out: Record<string, unknown> = { id: n.id, type: n.type, x: n.pos.x, y: n.pos.y, w: n.pos.w, h: n.pos.h, parent: n.pos.parent };
+        if (n.color) out.color = n.color;
+        if (n.type === 'card') {
+          try {
+            const t = resolveCard(c.db, c.actor, String(n.value.id));
+            out.task = { id: t.id, seq: t.seq, title: titleOf(t.content) };
+          } catch { out.task = null; }
+        }
+        const text = n.type === 'text' ? n.value.content : n.value.label;
+        if (typeof text === 'string' && text) out.text = text;
+        return out;
+      });
+      return {
+        board: { id: b.id, state: b.state, canEdit: b.level === 'edit' },
+        items,
+        edges: edges.map((e) => ({ id: e.id, from: e.value.source.nodeId, to: e.value.target.nodeId, fromSide: e.value.source.side,
+          toSide: e.value.target.side, ...(e.label ? { label: e.label } : {}), ...(e.value.kind ? { kind: e.value.kind } : {}) })),
+      };
+    },
+  },
+  edit_vision_board: {
+    description: "Change a task's vision board, all or nothing, as you would by hand (people with it open see it at once). "
+      + 'Ops: add_task places a task card (at x,y, else beside the last placed node); move sets a node\'s position (and size); '
+      + 'remove takes a node off the board (the task itself stays) with its lines; add_line joins two nodes; remove_line removes one. '
+      + 'A node dropped fully inside a frame goes into it. Makes the board if the task has none.',
+    schema: z.object({
+      cardId: cardRef.describe('The task the board belongs to: id or number.'),
+      ops: z.array(z.discriminatedUnion('op', [
+        z.object({ op: z.literal('add_task'), taskId: cardRef, x: z.number().finite().optional(), y: z.number().finite().optional() }),
+        z.object({ op: z.literal('move'), nodeId: z.string(), x: z.number().finite(), y: z.number().finite(),
+          w: z.number().finite().positive().optional(), h: z.number().finite().positive().optional() }),
+        z.object({ op: z.literal('remove'), nodeId: z.string() }),
+        z.object({ op: z.literal('add_line'), from: z.string().describe('Node id.'), to: z.string().describe('Node id.'),
+          label: z.string().max(200).optional(), fromSide: z.enum(SIDES).default('right'), toSide: z.enum(SIDES).default('left') }),
+        z.object({ op: z.literal('remove_line'), lineId: z.string() }),
+      ])).min(1).max(MCP_LIMITS.boardOps),
+    }),
+    run(c, { cardId, ops }) {
+      if (!c.actor.scopes.includes('write')) throw new AppError(403, 'missing_scope', { requiredScope: 'write' });
+      let b = hostBoard(c, cardId, 'edit');
+      // A task with no board: the ops are checked against an empty one, and the board is made only once they hold.
+      const { nodes, edges } = b ? boardOf(c.db, b.id) : { nodes: [], edges: [] };
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const lines = new Map(edges.map((e) => [e.id, e]));
+      const node = (id: string) => byId.get(id) ?? (() => { throw new AppError(404, 'unknown_node', { id }); })();
+      const added: string[] = [], moved = new Set<string>(), removed = new Set<string>(), newLines: string[] = [], goneLines = new Set<string>();
+      let last: BoardNode | null = nodes[nodes.length - 1] ?? null;
+      const place = (n: BoardNode) => { n.pos.parent = containerAt([...byId.values()], n.pos, n.id); };
+      for (const o of ops) {
+        if (o.op === 'add_task') {
+          const t = resolveCard(c.db, c.actor, o.taskId);
+          const size = DEFAULT_SIZE.card;
+          const at = o.x !== undefined && o.y !== undefined ? { x: snap(o.x), y: snap(o.y) } : spotBeside([...byId.values()], last?.pos ?? { x: 0, y: 0, w: 0, h: 0 }, size);
+          const n: BoardNode = { id: newId(), type: 'card', value: { id: t.id, mode: 'mini' }, pos: { ...at, ...size, parent: null } };
+          byId.set(n.id, n);
+          place(n);
+          added.push(n.id);
+          last = n;
+        } else if (o.op === 'move') {
+          const n = node(o.nodeId);
+          const dx = snap(o.x) - n.pos.x, dy = snap(o.y) - n.pos.y;
+          n.pos = { ...n.pos, x: snap(o.x), y: snap(o.y), w: o.w ?? n.pos.w, h: o.h ?? n.pos.h };
+          // A frame takes what is in it along, as a drag in the app does.
+          if (n.type === 'container' && (dx || dy)) {
+            const inside = new Set([n.id]);
+            for (let grew = true; grew;) {
+              grew = false;
+              for (const m of byId.values()) {
+                if (inside.has(m.id) || !m.pos.parent || !inside.has(m.pos.parent)) continue;
+                inside.add(m.id);
+                m.pos = { ...m.pos, x: m.pos.x + dx, y: m.pos.y + dy };
+                moved.add(m.id);
+                grew = true;
+              }
+            }
+          }
+          place(n);
+          moved.add(n.id);
+          last = n;
+        } else if (o.op === 'remove') {
+          node(o.nodeId);
+          byId.delete(o.nodeId);
+          removed.add(o.nodeId);
+          for (const n of byId.values()) if (n.pos.parent === o.nodeId) { n.pos = { ...n.pos, parent: null }; moved.add(n.id); }
+          for (const [id, e] of lines) if (e.value.source.nodeId === o.nodeId || e.value.target.nodeId === o.nodeId) { lines.delete(id); goneLines.add(id); }
+        } else if (o.op === 'add_line') {
+          node(o.from); node(o.to);
+          const e: BoardEdge = { id: newId(), value: { source: { nodeId: o.from, side: o.fromSide }, target: { nodeId: o.to, side: o.toSide } }, ...(o.label ? { label: o.label } : {}) };
+          lines.set(e.id, e);
+          newLines.push(e.id);
+        } else {
+          if (!lines.delete(o.lineId)) throw new AppError(404, 'unknown_line', { id: o.lineId });
+          goneLines.add(o.lineId);
+        }
+      }
+      if (!b) {
+        c.run([{ name: 'visionBoard/createBoard', payload: { cardId: resolveCard(c.db, c.actor, cardId).id } }]);
+        b = hostBoard(c, cardId, 'edit')!;
+      }
+      boardHooks.edit(b.id, (doc) => {
+        const yn = doc.getMap<Y.Map<unknown>>('nodes'), ye = doc.getMap<Y.Map<unknown>>('edges');
+        for (const id of goneLines) ye.delete(id);
+        for (const id of removed) yn.delete(id);
+        for (const id of added) {
+          const n = byId.get(id);
+          if (!n) continue; // added, then removed in the same call
+          const m = new Y.Map<unknown>();
+          m.set('type', n.type); m.set('value', n.value); m.set('pos', n.pos);
+          yn.set(id, m);
+        }
+        for (const id of moved) if (!added.includes(id)) yn.get(id)?.set('pos', byId.get(id)!.pos);
+        for (const id of newLines) {
+          const e = lines.get(id);
+          if (!e) continue;
+          const m = new Y.Map<unknown>();
+          m.set('value', e.value);
+          if (e.label) m.set('label', e.label);
+          ye.set(id, m);
+        }
+      });
+      return { boardId: b.id, added: added.filter((id) => byId.has(id)), lines: newLines.filter((id) => lines.has(id)) };
     },
   },
 };

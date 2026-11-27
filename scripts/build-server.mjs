@@ -1,5 +1,6 @@
 // Bundles server/main.ts into <outDir>/server.mjs and copies server/migrations beside it.
 // Also writes <outDir>/server.mjs.LEGAL.txt (licence comments of the bundled packages).
+// Also copies server/translate/worker.mjs to <outDir>/translate/worker.mjs (engine.ts starts it from there).
 // db.ts finds the migrations through import.meta.url, so they must stay next to the bundle.
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, rmSync } from 'node:fs';
@@ -29,3 +30,5 @@ await build({
 });
 rmSync(join(outDir, 'migrations'), { recursive: true, force: true });
 cpSync(join(root, 'server/migrations'), join(outDir, 'migrations'), { recursive: true });
+mkdirSync(join(outDir, 'translate'), { recursive: true });
+cpSync(join(root, 'server/translate/worker.mjs'), join(outDir, 'translate/worker.mjs'));

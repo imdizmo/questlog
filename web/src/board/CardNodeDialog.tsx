@@ -7,6 +7,7 @@ import { canEditContent, projectVisible, store, useStore } from '../store';
 import { Dialog } from '../components/Dialog';
 import { Icon } from '../components/icons';
 import { boardOfCard } from './boards';
+import { useShownTitle } from '../translate';
 
 const LIMIT = 50;
 type Tab = 'find' | 'create';
@@ -53,6 +54,7 @@ export function CardNodeDialog({ host, onChoose, onClose, makeFrame }: {
 }
 
 function FindCard({ host, onChoose }: { host: Card | null; onChoose: (id: string) => void }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -61,7 +63,7 @@ function FindCard({ host, onChoose }: { host: Card | null; onChoose: (id: string
     const q = query.trim().toLowerCase().replace(/^\$/, '');
     return [...s.cards.values()]
       .filter((c) => c.visibility !== 'deleted' && c.id !== host?.id)
-      .filter((c) => !q || titleOf(c.content).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q))
+      .filter((c) => !q || titleOf(c.content).toLowerCase().includes(q) || shownTitle(c).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q))
       .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
       .slice(0, LIMIT);
   }, [s.cards, query, host?.id]);
@@ -92,7 +94,7 @@ function FindCard({ host, onChoose }: { host: Card | null; onChoose: (id: string
             <li key={c.id} id={`${listId}-${i}`} role="option" aria-selected={i === active}
               className={i === active ? 'picker-opt active' : 'picker-opt'}
               onMouseEnter={() => setActive(i)} onClick={() => onChoose(c.id)}>
-              <span className="picker-opt-title">{titleOf(c.content)}</span>
+              <span className="picker-opt-title">{shownTitle(c)}</span>
               {boardOfCard(s, c.id) && <span className="bpick-board" title="Has a board"><Icon name="frame" size={14} /><span className="sr-only">Has a board</span></span>}
               <span className="picker-sub">
                 {taskId(c)}{owner ? ` · ${owner}` : ''}{c.effort !== null ? ` · ${c.effort} effort` : ''}

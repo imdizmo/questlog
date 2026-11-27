@@ -13,6 +13,13 @@ export const boardHooks = {
   onDelete: (_boardId: string): void => {},
   /** The board's loaded room doc (with edits not yet saved), if its room is loaded. */
   liveDoc: (_boardId: string): Y.Doc | undefined => undefined,
+  /** A server-side edit (the MCP board tools): the app routes it through the board's live room (RoomHub.edit). */
+  edit: (_boardId: string, _write: (doc: Y.Doc) => void): void => { throw new Error('vision board rooms are not running'); },
+};
+const defaultEdit = boardHooks.edit;
+/** Back to the room-less hooks (the app closing). */
+export const resetBoardHooks = (): void => {
+  Object.assign(boardHooks, { onChange: () => {}, onDelete: () => {}, liveDoc: () => undefined, edit: defaultEdit });
 };
 
 /** The queryIds that the board's filter nodes point at now: from the loaded room if any, else from the stored doc. */
@@ -76,8 +83,18 @@ export function homeAccess(db: Db, user: Who): 'none' | 'view' | 'edit' {
 }
 
 export function visionQueryRow(db: Db, id: string): VisionQuery | undefined {
-  const r = db.prepare('SELECT * FROM vision_queries WHERE id=?').get(id) as { id: string; card_id: string; creator_id: string; query: string; created_at: number } | undefined;
-  return r && { id: r.id, cardId: r.card_id, creatorId: r.creator_id, query: JSON.parse(r.query), createdAt: r.created_at };
+  const r = db.prepare('SELECT * FROM vision_queries WHERE id=?').get(id) as
+    { id: string; card_id: string | null; project_id: string | null; creator_id: string; query: string; created_at: number } | undefined;
+  return r && { id: r.id, cardId: r.card_id, projectId: r.project_id, creatorId: r.creator_id, query: JSON.parse(r.query), createdAt: r.created_at };
+}
+
+/**
+ * Whether Home's pictures and Smart Nodes may belong to this project: it is not archived and every member sees it
+ * (visibility 'full'), since Home's doc goes to the whole workspace; and the user sees it too.
+ */
+export function homeProjectAllowed(db: Db, user: Who, projectId: string): boolean {
+  const p = db.prepare('SELECT visibility v, is_archived a FROM projects WHERE id=?').get(projectId) as { v: string; a: number } | undefined;
+  return !!p && p.v === 'full' && !p.a && can(db, user, 'project.view', projectId);
 }
 
 /**

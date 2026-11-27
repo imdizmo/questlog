@@ -8,6 +8,7 @@ import type { ChangeEvent } from './dispatch';
 import { anyBoardRow, boardAccess } from './boards';
 import { accountRow } from './commands/rows';
 import { now } from './auth';
+import { AppError } from './errors';
 
 /** Memory bounds of the realtime vision-board rooms. */
 export const ROOM_LIMITS = {
@@ -403,6 +404,39 @@ export class RoomHub {
     } finally {
       this.rooms.delete(room.boardId);
       room.destroy();
+    }
+  }
+
+  /**
+   * A server-side edit (boardHooks.edit): applied to the board's room (loaded if need be), relayed to its sockets and
+   * saved at once. `write` must not throw half-way (validate first); if it does, the room goes back to its last save.
+   * 503 busy when every room is in use, 413 too_large past the doc cap.
+   */
+  edit(boardId: string, write: (doc: Y.Doc) => void): void {
+    const room = this.open(boardId);
+    if (!room) throw new AppError(503, 'busy');
+    try {
+      const before = Y.encodeStateVector(room.doc);
+      try {
+        room.doc.transact(() => write(room.doc), 'server');
+      } catch (e) {
+        this.rollback(room);
+        throw e;
+      }
+      // The same rule as save(), so what is reported as done is also what gets saved.
+      const exact = Y.encodeStateAsUpdate(room.doc).byteLength;
+      if (exact > ROOM_LIMITS.maxDocBytes && exact > room.savedBytes) {
+        this.rollback(room);
+        throw new AppError(413, 'too_large', { maxBytes: ROOM_LIMITS.maxDocBytes });
+      }
+      room.exactBytes = room.sizeBound = exact;
+      room.dirty = true;
+      const update = Y.encodeStateAsUpdate(room.doc, before);
+      this.broadcast(room, null, message(MSG_SYNC, (e) => syncProtocol.writeUpdate(e, update)));
+      this.save(room);
+    } finally {
+      // A room this edit loaded (nobody has it open) is let go again, also when the edit failed.
+      if (room.members.size === 0 && this.rooms.get(boardId) === room) this.scheduleUnload(room);
     }
   }
 

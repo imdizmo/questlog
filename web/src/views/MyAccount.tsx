@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { api, ApiError, dispatch, messageFor } from '../api';
-import { useStore } from '../store';
+import { settingsOf, useStore } from '../store';
+import { READ_LANGS, useReadLang, type ReadLang } from '../translate';
 import { refreshTailscale, useTailscale } from '../tailscale';
 import { Dialog } from '../components/Dialog';
 
@@ -13,8 +14,39 @@ export function MyAccount({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** The language task text, comments and Lore pages are shown in (pref `readLang`); editing always edits what was written. */
+export function ReadingLanguage() {
+  const id = useId();
+  const [lang, setLang] = useReadLang();
+  const on = useStore((s) => settingsOf(s).translationEnabled);
+  return (
+    <section className="settings-group">
+      <h3 className="sub">Reading language</h3>
+      <label className="field">
+        <span>Reading language</span>
+        <select value={lang} aria-describedby={`${id}-h`} onChange={(e) => setLang(e.target.value as ReadLang)}>
+          {READ_LANGS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+        </select>
+      </label>
+      <p className="hint" id={`${id}-h`}>
+        Task text, comments and Lore pages are shown in this language. Editing always edits the text as it was written.
+        {!on && ' Translation is switched off for this workspace, so everything shows as written.'}
+      </p>
+    </section>
+  );
+}
+
 /** The My account page's content, also the workspace menu's Preferences › Sign-in tab. Its own form, so Enter links. */
 export function MyAccountPanel() {
+  return (
+    <>
+      <ReadingLanguage />
+      <TailscaleForm />
+    </>
+  );
+}
+
+function TailscaleForm() {
   const ts = useTailscale();
   const meId = useStore((s) => s.me?.id);
   const [password, setPassword] = useState('');

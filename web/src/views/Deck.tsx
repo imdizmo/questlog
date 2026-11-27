@@ -34,6 +34,7 @@ import { LatestActivity } from '../components/LatestActivity';
 import { CardView, shortcutTarget } from './Card';
 import { keysOf } from '../shortcuts';
 import { InPane, keysHere, usePageNavigate } from './HomePane';
+import { useShownTitle } from '../translate';
 
 type Dialogs = 'type' | 'rename' | 'delete' | 'automations' | 'guardians' | 'journey' | null;
 type StepKey = 'todo' | 'started' | 'review' | 'done';
@@ -61,6 +62,7 @@ export function Deck({ seq, cardCode }: { seq: number; cardCode?: string }) {
 }
 
 function DeckPage({ deck, cardCode }: { deck: DeckRow; cardCode?: string }) {
+  const shownTitle = useShownTitle();
   const go = usePageNavigate(); // in the pane beside Home, it stays there
   const s = useStore((x) => x);
   const loc = useLocation();
@@ -171,7 +173,7 @@ function DeckPage({ deck, cardCode }: { deck: DeckRow; cardCode?: string }) {
     return () => document.removeEventListener('keydown', onKey);
   }, [inPane]);
 
-  const titleOfCard = (id: string) => { const p = s.cards.get(id); return p ? titleOf(p.content) : undefined; };
+  const titleOfCard = (id: string) => { const p = s.cards.get(id); return p ? shownTitle(p) : undefined; };
   // Heroes are cards with at least one sub card (the store holds no deleted cards).
   const kidsOf = useMemo(() => {
     const m = new Map<string, Card[]>();

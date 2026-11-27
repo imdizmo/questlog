@@ -171,9 +171,9 @@ test('settings persist', async ({ page }) => {
   dlg = page.getByRole('dialog', { name: 'Workspace menu' });
   await expect(slots()).toHaveValue('200');
 
-  // The Features section holds the eight switches.
+  // The Features section holds the eight feature switches, plus Translation (saved on its own, with the language pack's state).
   await dlg.getByRole('tab', { name: 'Features' }).click();
-  await expect(dlg.getByRole('switch')).toHaveCount(8);
+  await expect(dlg.getByRole('switch')).toHaveCount(9);
   await expect(dlg.getByRole('switch', { name: 'Milestones' })).toBeChecked();
   // Other specs may switch flags on (shared workspace): the switch must show the saved value, whatever it is.
   const { dueDateEnabled } = (await snapshot(page)).account.settings;

@@ -36,7 +36,7 @@ find "$OUT" \( -name CLAUDE.md -o -name AGENTS.md -o -name .claude \) -prune -ex
 # Patterns use a bracket somewhere so this script never matches itself.
 PATTERNS=(
   '[c]odecks'
-  '/[h]ome/'
+  '(^|[^a-z0-9_])/[h]ome/[a-z_][a-z0-9_.-]*/'  # a personal home folder (not a route like /api/home/files)
   '19[2]\.168\.'
   '10[0]\.113\.'
   '[a-z0-9-]+\.[t]s\.net'

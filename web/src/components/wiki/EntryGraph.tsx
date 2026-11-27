@@ -8,6 +8,7 @@ import { campaignGraphData, campaignTypes, entryExcerpt, entryPath, projectIdOf,
 import { GraphCanvas, radiusFor } from './GraphCanvas';
 import { TypeBadge } from './Infobox';
 import { usePanelOpener, type PanelOpener } from './panelContext';
+import { useShownTitle } from '../../translate';
 
 /**
  * Opens an entry from a graph. One place on purpose: inside the wiki's entry stack (`beside`) it opens as a panel to the
@@ -69,7 +70,7 @@ export function GraphPreview({ card, at, relations, onClose }: {
 }) {
   const type = useStore((s) => (card.entryTypeId ? s.entryTypes.get(card.entryTypeId) ?? null : null));
   const beside = usePanelOpener();
-  const title = titleOf(card.content) || 'Untitled';
+  const title = useShownTitle()(card) || 'Untitled';
   const line = entryExcerpt(card);
   let style: CSSProperties | undefined;
   if (at) {
@@ -96,6 +97,7 @@ const readDepth = (): 1 | 2 => { try { return localStorage.getItem(DEPTH_KEY) ==
 
 /** The tile beside an open entry: its neighbours one or two steps away. */
 export function EntryGraph({ card, project }: { card: Card; project: Project }) {
+  const shownTitle = useShownTitle();
   const s = useStore((x) => x);
   const [depth, setDepthState] = useState<1 | 2>(readDepth);
   const setDepth = (d: 1 | 2) => { setDepthState(d); try { localStorage.setItem(DEPTH_KEY, String(d)); } catch { /* not remembered */ } };
@@ -126,7 +128,7 @@ export function EntryGraph({ card, project }: { card: Card; project: Project }) 
       {empty ? (
         <p className="muted entry-graph-empty">No connections yet. Links, entry fields and names written in other pages show up here.</p>
       ) : (
-        <GraphCanvas graph={graph} layout={pos} label={`Neighbours of ${titleOf(card.content) || 'this entry'}`} colorOf={colorOf} describe={describe}
+        <GraphCanvas graph={graph} layout={pos} label={`Neighbours of ${shownTitle(card) || 'this entry'}`} colorOf={colorOf} describe={describe}
           labels={10} selectedId={selected && graph.nodes.some((n) => n.id === selected) ? selected : null}
           onSelect={setSelected}
           onOpen={(id) => { const c = s.cards.get(id); if (c) openEntry(c, beside); }}

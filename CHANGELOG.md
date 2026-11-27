@@ -3,6 +3,41 @@
 What changed in each Questlog release. The release workflow publishes the section for a tag as that release's notes,
 so add a section here before tagging. When releasing, rename `[Unreleased]` to the version and date; the release job fails if the section is missing.
 
+## [0.5.0] - 2026-11-27
+
+### Assistants can arrange vision boards
+- Two new MCP tools: `get_vision_board` reads a task's board (its tasks, notes and frames with their places, and its lines), and `edit_vision_board` adds, moves and removes tasks on it and draws or removes lines, all at once or not at all. Anyone with the board open sees the change straight away. It acts as the token's owner: a write token, and only on boards they may edit.
+
+### Translation: Lore fields and fixes
+- Lore entries' text fields (such as a character's Description), list and step lines, and table cells are now translated too. Numbers and short amounts like "3.5 kg" stay as written. While you edit, the translation shows under the field.
+- Changing the glossary while older text was still being translated could leave some text in the old wording. It is now redone.
+- Text that fails to translate three times is tried again a day later, and again whenever the server restarts (for example after a new language pack is installed). Until then it shows as written.
+
+### Read and write in your own language (English ↔ Italian)
+- Everyone writes in the language they like and reads in theirs. Pick **English**, **Italiano** or **As written** (workspace menu › Preferences › Sign-in › Reading language); the first time, Questlog asks. Task text, comments, Lore pages and their fields show in your language, with "Translated from Italian · Show original" under them. Titles in lists, tabs, pickers and search follow too, and search finds both languages.
+- You always edit the original; while you edit, the translation shows beside it. Copying, exporting and the API keep the original.
+- Translation runs on your own server with a small offline model: nothing leaves it. It is off until an owner or admin installs the language pack (below) and switches **Translation** on (workspace menu › Features). It uses about 400 MB of memory while it works and lets it go after 5 idle minutes.
+- Each project has a **glossary** (Project settings › Edit glossary): words kept as written, or always translated your way (for example "Storia → Story"). Names of Lore characters, places and items are never translated. Changing the glossary or a name redoes the project's translations in the background.
+
+### Translation: the language pack
+- The language pack for English ↔ Italian translation is a separate download, `questlog-translate-models-vX.Y.Z.tar.gz` (about 55 MB, one file for every platform, with a `.sha256`). Unpack it beside the server's `server/` folder, or fill a volume mounted at `/app/models` with Docker, then switch Translation on. The README has the exact lines. The normal server archives and the Docker image stay model-free.
+- Engine and models (Bergamot WebAssembly engine, Firefox Translations en-it and it-en) are licensed under the Mozilla Public License 2.0; see NOTICE.md.
+- New: `scripts/package-translate-pack.sh <vX.Y.Z> <outDir>` builds the pack; every download is pinned by sha256.
+
+### Smart Nodes: a short guide on your first one
+- The first time you add a Smart Node, a small guide opens beside it with the steps: **Pick a project** (on Home only), **Add a filter**, **Choose how it shows**, and **Open it as a search**. Each step is ticked when you do it. **Next ›** moves on without doing it, and **Skip** or Esc closes the guide. When every step is done, it says **Done** and closes.
+- It opens on its own once per person, on any device, and only for people who can edit the board. It doesn't open on its own while the Tutorial is paused. **Show guide** in a Smart Node's toolbar shows it again.
+- The guide stays beside its node when you drag the node, pan or zoom, and keeps clear of the filter panel and the toolbars. Only you see it. Nothing is saved to the board.
+
+### Home: images and Smart Nodes, each kept with a project
+- Home's **Add** toolbar now has **Image** and **Smart Node** too. Each one belongs to a project: Questlog asks **Which project?** first, and skips the question when only one project can be picked. Only projects every member sees and that are not archived can be picked, because everyone in the workspace sees Home. When there is no such project, a message says so.
+- An image on Home is uploaded for that project, not attached to a task. A Smart Node on Home counts only that project's tasks. Everyone who sees Home sees both, live. Observers see them but can't add any.
+- Deleting a project also deletes its images and Smart Node filters on Home, and removes the image files from disk.
+- New: `POST /api/home/files?projectId=…` (images only), and `visionBoard/createQuery` takes a `projectId` instead of a `cardId` for Home. Migration 040 lets uploaded files and Smart Node filters belong to a project instead of a task. Existing rows are copied unchanged.
+
+### Fixes
+- With a task open, the list and its panel use the whole width of the window.
+
 ## [0.4.0] - 2026-11-19
 
 ### Redesign: Home is a real board, shared by the team

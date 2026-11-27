@@ -11,6 +11,7 @@ import { assertGuardianAllows } from '../guardians';
 import { onEntry, onEntryEdited, REMIND_AFTER_MS, updateOwn } from '../notifications';
 import type { Command, Ctx } from '../dispatch';
 import type { HistoryChange } from '../../shared/types';
+import { touchTranslation } from '../translate/queue';
 
 /** Cheap emoji-ish guard: no whitespace, no ASCII letters or digits. */
 const EMOJI_ISH = /^[^\s A-Za-z0-9]+$/;
@@ -76,6 +77,7 @@ export const resolvableCommands: Record<string, Command> = {
       ctx.emit('resolvable', 'upsert', resolvableRow(db, rid)!);
       ctx.emit('resolvableEntry', 'upsert', entryRow(db, eid)!);
       onEntry(ctx, rid, eid, actor.id, true);
+      touchTranslation(ctx, 'entry', eid);
       emitCard(ctx, card.id);
       return { id: rid, entryId: eid };
     },
@@ -97,6 +99,7 @@ export const resolvableCommands: Record<string, Command> = {
       ctx.emit('resolvable', 'upsert', resolvableRow(db, input.resolvableId)!);
       ctx.emit('resolvableEntry', 'upsert', entryRow(db, eid)!);
       onEntry(ctx, input.resolvableId, eid, actor.id);
+      touchTranslation(ctx, 'entry', eid);
       return { id: eid };
     },
   },
@@ -111,6 +114,7 @@ export const resolvableCommands: Record<string, Command> = {
         .run(input.content, Date.now(), input.entryId);
       ctx.emit('resolvableEntry', 'upsert', entryRow(db, input.entryId)!);
       onEntryEdited(ctx, resolvable.id as string);
+      touchTranslation(ctx, 'entry', input.entryId);
       return { id: input.entryId };
     },
   },

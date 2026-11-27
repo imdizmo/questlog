@@ -5,7 +5,8 @@
  * (tests/web-side-tree.test.ts); the sidebar only renders the rows.
  */
 import type { Card, Deck, EntryType, Project } from '../../shared/types';
-import { titleOf } from '../../shared/cards';
+import { store } from './store';
+import { readLangNow, titleNow } from './translate';
 import { nameKey } from '../../shared/autolink';
 import { deckPath } from './cards';
 import { entryPath, kindPath, wikiPath } from './wiki';
@@ -54,11 +55,13 @@ export function setFold(folds: Record<string, boolean>, id: string, open: boolea
 /** A wiki entry with its title and search form worked out once per `cards` map (not on every keystroke). */
 interface LoreItem { card: Card; title: string; key: string }
 interface Lore { byType: Map<string | null, LoreItem[]>; total: number }
-const loreCache = new WeakMap<Map<string, Card>, Map<string, Lore>>();
+const loreCache = new WeakMap<Map<string, Card>, { lore: Map<string, Lore>; tr: object; lang: string }>();
 /** Live wiki entries by project and type, sorted by title: one pass over the cards, cached per `cards` map. */
 function loreByProject(cards: Map<string, Card>, decks: Map<string, Deck>): Map<string, Lore> {
   const hit = loreCache.get(cards);
-  if (hit) return hit;
+  // Titles are the reader's (translations): new rows or another reading language rebuild it as well.
+  const tr = store.get().translations, lang = readLangNow();
+  if (hit && hit.tr === tr && hit.lang === lang) return hit.lore;
   const out = new Map<string, Lore>();
   for (const c of cards.values()) {
     if (!c.isDoc || c.visibility === 'deleted' || !c.deckId) continue;
@@ -68,13 +71,13 @@ function loreByProject(cards: Map<string, Card>, decks: Map<string, Deck>): Map<
     if (!l) out.set(pid, (l = { byType: new Map(), total: 0 }));
     const type = c.entryTypeId ?? null;
     const list = l.byType.get(type) ?? [];
-    const title = titleOf(c.content);
+    const title = titleNow(c);
     list.push({ card: c, title, key: foldKey(title) });
     l.byType.set(type, list);
     l.total++;
   }
   for (const l of out.values()) for (const list of l.byType.values()) list.sort((a, b) => a.title.localeCompare(b.title));
-  loreCache.set(cards, out);
+  loreCache.set(cards, { lore: out, tr, lang });
   return out;
 }
 

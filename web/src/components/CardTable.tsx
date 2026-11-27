@@ -11,6 +11,7 @@ import { InlineTitle } from './InlineTitle';
 import { tagMark } from './TagToggles';
 import { GroupSelect, SelectBox } from './BulkBar';
 import { useEffortOn } from '../store';
+import { useShownTitle } from '../translate';
 
 const fmt = (n: number) => String(Math.round(n * 100) / 100);
 
@@ -48,6 +49,7 @@ interface Props {
 
 /** The deck as a table: one row per card, group header rows carry the same effort summary as the list. */
 export function CardTable({ groups, deck, settings, sprints, milestones, users, projectTags, open, timeOf, selected, selectable, onFilter }: Props) {
+  const shownTitle = useShownTitle();
   const tagInfo = new Map((projectTags ?? []).map((t) => [t.name, t]));
   const runs = settings.sprintsEnabled, miles = settings.milestonesEnabled;
   const effortOn = useEffortOn();
@@ -88,7 +90,7 @@ export function CardTable({ groups, deck, settings, sprints, milestones, users, 
               const talk = (open.get(c.id)?.size ?? 0) > 0;
               return (
                 <tr key={c.id} className={c.id === selected ? 'selected' : undefined} data-testid="card-row">
-                  {selectable && <td className="select-cell"><SelectBox id={c.id} order={order} title={titleOf(c.content)} /></td>}
+                  {selectable && <td className="select-cell"><SelectBox id={c.id} order={order} title={shownTitle(c)} /></td>}
                   <td>
                     {c.isDoc ? <Icon name="doc" size={15} title="Lore" />
                       : c.priority ? <span title={`Priority: ${settings.priorityLabels[c.priority]}`}><PriorityMark priority={c.priority} /></span> : null}
@@ -99,7 +101,7 @@ export function CardTable({ groups, deck, settings, sprints, milestones, users, 
                   <td>{owner && <span className="avatar sm" title={owner.name}>{owner.name.slice(0, 1).toUpperCase()}</span>}</td>
                   <td>
                     <div className="deck-table-title">
-                    <Link href={keepSearch(cardHref(c, deck))} aria-current={c.id === selected ? 'page' : undefined}><InlineTitle text={titleOf(c.content)} /></Link>
+                    <Link href={keepSearch(cardHref(c, deck))} aria-current={c.id === selected ? 'page' : undefined}><InlineTitle text={shownTitle(c)} /></Link>
                     {(c.masterTags ?? []).map((t) => (
                       <span key={t} className="tag-chip"><span className="tag-mark">{tagMark(tagInfo.get(t))}</span>{t}</span>
                     ))}

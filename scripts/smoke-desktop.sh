@@ -241,6 +241,7 @@ for f in LICENSE NOTICE.md THIRD-PARTY-RUST.txt icon.png runtime/node runtime/LI
   [[ -s "$S/unpack/Questlog/$f" ]] || die "archive has no Questlog/$f"
 done
 ls "$S/unpack/Questlog/server/migrations/"*.sql >/dev/null 2>&1 || die "archive has no server/migrations/*.sql"
+[[ -s "$S/unpack/Questlog/server/translate/worker.mjs" ]] || die "archive has no server/translate/worker.mjs"
 ok "unpacked $(basename "$archive")"
 
 # The scratch path in Xvfb's environment lets the cleanup find it too.

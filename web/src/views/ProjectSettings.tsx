@@ -1,11 +1,12 @@
 import { useEffect, useId, useState, type KeyboardEvent } from 'react';
 import type { OrgRole, Project, ProjectVisibility, User } from '../../../shared/types';
 import { dispatch } from '../api';
-import { canManageProject, useStore } from '../store';
+import { canEditContent, canManageProject, useStore } from '../store';
 import { Dialog } from '../components/Dialog';
 import { CoverPicker, coverFields, type CoverChoice } from '../components/CoverPicker';
 import { VisibilityField } from '../components/VisibilityField';
 import { ProjectTagsDialog } from '../components/ProjectTagsDialog';
+import { GlossaryDialog } from '../components/GlossaryDialog';
 import { tagMark } from '../components/TagToggles';
 import { navigate } from '../router';
 import { typesPath } from '../wiki';
@@ -44,6 +45,8 @@ export function ProjectSettings({ project, onClose, initialTab = 'general' }: { 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [typed, setTyped] = useState('');
   const [editTags, setEditTags] = useState(false);
+  const [editGlossary, setEditGlossary] = useState(false);
+  const canEditGlossary = useStore((s) => canEditContent(s, project));
 
   const dirty = name.trim() !== project.name || visibility !== project.visibility
     || JSON.stringify(cover) !== JSON.stringify(project.cover);
@@ -109,6 +112,19 @@ export function ProjectSettings({ project, onClose, initialTab = 'general' }: { 
           <button type="button" className="btn" onClick={() => setEditTags(true)}>Edit tags</button>
         </div>
 
+        <h3 className="sub">Translation glossary</h3>
+        <div className="tags-box">
+          <div>
+            <p className="hint">Words here are kept as written, or always translated the way you set.</p>
+            <div className="tag-preview" aria-label="Glossary words">
+              {(project.glossary ?? []).length
+                ? project.glossary!.map((g) => <span key={g.term} className="tag-chip" title={[g.en && `English: ${g.en}`, g.it && `Italian: ${g.it}`].filter(Boolean).join(' · ') || 'Kept as written'}>{g.term}</span>)
+                : <span className="muted">No words yet.</span>}
+            </div>
+          </div>
+          {canEditGlossary && <button type="button" className="btn" onClick={() => setEditGlossary(true)}>Edit glossary</button>}
+        </div>
+
         <h3 className="sub">Archive and delete</h3>
         <div className="danger-zone">
           <div>
@@ -145,6 +161,7 @@ export function ProjectSettings({ project, onClose, initialTab = 'general' }: { 
       </Dialog>
       {/* Outside the settings form: its own form must not submit this one. */}
       {editTags && <ProjectTagsDialog project={project} onClose={() => setEditTags(false)} />}
+      {editGlossary && <GlossaryDialog project={project} onClose={() => setEditGlossary(false)} />}
     </>
   );
 }

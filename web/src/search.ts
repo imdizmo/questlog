@@ -6,6 +6,7 @@ import { decodeChips, encodeChips, savedSearchName, type SearchCtx, type SearchT
 import { navigate, parse, setQuery, useLocation } from './router';
 import { localToday, openByCard } from './cards';
 import { settingsOf, useStore } from './store';
+import { shownEntry, shownTitle, useReadLang } from './translate';
 
 export const SEARCH_INPUT_ID = 'search-box-input';
 
@@ -52,6 +53,7 @@ export interface SearchContexts { search: SearchCtx; suggest: SuggestCtx }
 /** Everything compileSearch and suggest need, rebuilt when the store changes. */
 export function useSearchCtx(): SearchContexts {
   const s = useStore((x) => x);
+  const [readLang] = useReadLang();
   return useMemo(() => {
     const settings = settingsOf(s);
     const open = openByCard(s.resolvables.values());
@@ -73,6 +75,8 @@ export function useSearchCtx(): SearchContexts {
       personalTags: (id) => mine.get(id) ?? [],
       subCount: (id) => kids.get(id) ?? 0,
       todayDay: localToday(), sprints, now: Date.now(),
+      shownTitle: (c) => shownTitle(c, readLang, s),
+      shownEntry: (e) => shownEntry(e, readLang, false, s).text,
     };
     const projectTags = new Set<string>();
     for (const p of s.projects.values()) for (const t of p.tags) projectTags.add(t.name);
@@ -89,5 +93,5 @@ export function useSearchCtx(): SearchContexts {
       cardBySeq: (seq) => bySeq.get(seq) ?? null,
     };
     return { search, suggest };
-  }, [s.cards, s.resolvables, s.userCardTags, s.users, s.decks, s.projects, s.milestones, s.sprints, s.sprintConfigs, s.me, s.account]);
+  }, [s.cards, s.resolvables, s.userCardTags, s.users, s.decks, s.projects, s.milestones, s.sprints, s.sprintConfigs, s.me, s.account, s.translations, readLang]);
 }

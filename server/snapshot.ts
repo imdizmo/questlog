@@ -3,9 +3,10 @@ import { toCamel } from './db';
 import { can, plainUser, visibleProjectIds, type Actor, type Who } from './permissions';
 import { apiTokenRow } from './tokens';
 import { canSeeCard } from './access';
+import { homeAccess } from './boards';
 import { donePileCutoff } from './commands/hand';
 import { shape } from './commands/time';
-import { CARD_SELECT, accountRow } from './commands/rows';
+import { CARD_SELECT, accountRow, projectOut } from './commands/rows';
 import { todayLocal } from './commands/milestones';
 import { addDays } from '../shared/schedule';
 import type { User } from '../shared/types';
@@ -71,7 +72,7 @@ const withEmails = (db: Db, me: User | Actor) => {
 export function buildSnapshot(db: Db, me: User | Actor) {
   const vis = [...visibleProjectIds(db, me)];
   const pq = marks(vis.length);
-  const projects = vis.length ? rows(db, `SELECT * FROM projects WHERE id IN (${pq}) ORDER BY seq`, ...vis) : [];
+  const projects = vis.length ? rows(db, `SELECT * FROM projects WHERE id IN (${pq}) ORDER BY seq`, ...vis).map(projectOut) : [];
   const projectAccess = vis.length ? rows(db, `SELECT * FROM project_access WHERE project_id IN (${pq})`, ...vis) : [];
   const decks = vis.length ? rows(db, `SELECT * FROM decks WHERE project_id IN (${pq}) ORDER BY seq`, ...vis) : [];
   const { sql: cardScope, args: scopeArgs } = cardScopeSql(db, me, vis);
@@ -80,6 +81,13 @@ export function buildSnapshot(db: Db, me: User | Actor) {
   const entries = rows(db,
     `SELECT e.* FROM resolvable_entries e JOIN resolvables r ON r.id=e.resolvable_id
      WHERE r.is_closed=0 AND r.card_id IN (${cardScope}) ORDER BY e.created_at`, ...scopeArgs);
+  // Translations of those cards and of their open threads' comments (stale ones too: clients compare versions).
+  const translations = rows(db,
+    `SELECT kind, source_id, lang, source_version, from_lang, text, created_at FROM translations WHERE kind IN ('card','fields') AND source_id IN (${cardScope})
+     UNION ALL
+     SELECT t.kind, t.source_id, t.lang, t.source_version, t.from_lang, t.text, t.created_at FROM translations t
+       JOIN resolvable_entries e ON e.id=t.source_id JOIN resolvables r ON r.id=e.resolvable_id
+     WHERE t.kind='entry' AND r.is_closed=0 AND r.card_id IN (${cardScope})`, ...scopeArgs, ...scopeArgs);
   const reactions = rows(db,
     `SELECT x.* FROM resolvable_reactions x JOIN resolvable_entries e ON e.id=x.entry_id JOIN resolvables r ON r.id=e.resolvable_id
      WHERE r.is_closed=0 AND r.card_id IN (${cardScope}) ORDER BY x.created_at, x.id`, ...scopeArgs);
@@ -113,7 +121,10 @@ export function buildSnapshot(db: Db, me: User | Actor) {
   // Boards and their saved queries follow their host card: visible projects only, nothing for deleted cards (archived ones stay).
   const visionBoards = rows(db,
     `SELECT id, account_seq, card_id, creator_id, state, created_at, updated_at FROM vision_boards WHERE card_id IN (${cardScope}) ORDER BY account_seq`, ...scopeArgs);
-  const visionQueries = rows(db, `SELECT * FROM vision_queries WHERE card_id IN (${cardScope}) ORDER BY created_at, id`, ...scopeArgs)
+  // Home's queries (one per Smart Node there) belong to a project and go, like Home's doc, to everyone who sees Home.
+  const home = homeAccess(db, me) !== 'none';
+  const visionQueries = rows(db, `SELECT * FROM vision_queries WHERE card_id IN (${cardScope})${home ? ' OR project_id IS NOT NULL' : ''}
+    ORDER BY created_at, id`, ...scopeArgs)
     .map((q: any) => ({ ...q, query: JSON.parse(q.query) }));
   const bookmarks = rows(db, `SELECT * FROM bookmarks WHERE user_id=? AND card_id IN (${cardScope}) ORDER BY created_at, card_id`, me.id, ...scopeArgs);
   const donePile = rows(db, `SELECT * FROM done_pile WHERE user_id=? AND done_at>=? AND card_id IN (${cardScope}) ORDER BY done_at, card_id`, me.id, donePileCutoff(), ...scopeArgs);
@@ -171,6 +182,7 @@ export function buildSnapshot(db: Db, me: User | Actor) {
     resolvables,
     entries,
     reactions,
+    translations,
     notifications,
     handCards,
     bookmarks,

@@ -41,6 +41,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:8780', ws: true },
       '/dispatch': 'http://localhost:8780',
+      '/translate': 'http://localhost:8780',
     },
   },
 });

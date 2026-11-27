@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { textVersion } from '../../../shared/translate';
 import type { Reaction, Resolvable, ResolvableEntry, ResolvableNotification, User } from '../../../shared/types';
 import { dispatch } from '../api';
 import { formatTime } from '../cards';
-import { GUARDIAN_TIP } from '../store';
+import { GUARDIAN_TIP, useStore } from '../store';
+import { openForTranslation, shownEntry, useReadLang, useShowOriginal } from '../translate';
+import { TranslatedLine } from './TranslatedLine';
 import { Icon } from './icons';
 import { ReactionBar } from './ReactionBar';
 
@@ -95,7 +98,7 @@ export function ThreadView({ resolvable: r, entries, reactions, users, meId, not
                   </div>
                 </div>
               ) : (
-                <p className="entry-text">{e.content}</p>
+                closed ? <p className="entry-text">{e.content}</p> : <EntryText entry={e} />
               )}
               <ReactionBar entryId={e.id} reactions={ownReactions} meId={meId} users={users} disabled={closed || !canAct} />
             </li>
@@ -126,5 +129,27 @@ export function ThreadView({ resolvable: r, entries, reactions, users, meId, not
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * An open thread's message in the reader's language, with the "Translated from…" line. Closed threads (loaded on
+ * demand, without their translations) show what was written.
+ */
+function EntryText({ entry }: { entry: ResolvableEntry }) {
+  const [readLang] = useReadLang();
+  const translations = useStore((s) => s.translations);
+  const account = useStore((s) => s.account);
+  const [showOriginal, toggle] = useShowOriginal(`entry:${entry.id}`);
+  const translated = shownEntry(entry, readLang, false, { translations, account });
+  const shown = showOriginal ? shownEntry(entry, readLang, true, { translations, account }) : translated;
+  useEffect(() => {
+    if (translated.pending) openForTranslation('entry', entry.id, textVersion(entry.content));
+  }, [translated.pending, entry.id, entry.content]);
+  return (
+    <>
+      <p className="entry-text">{shown.text}</p>
+      <TranslatedLine shown={shown} showOriginal={showOriginal} canTranslate={!!translated.from} onToggle={toggle} />
+    </>
   );
 }

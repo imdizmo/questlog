@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import * as Y from 'yjs';
 import { ensureWorkspace, newPerson, run, SHOTS, snapshot, unique, writeBoard } from './helpers';
 
@@ -607,6 +607,7 @@ test('vision board smart node: filter, figures, table, add to board, keyboard', 
   await run(page, 'cards', 'create', { deckId: deck.id, content: `Flicker on resize #${tag}` });
   await run(page, 'cards', 'create', { deckId: deck.id, content: 'Unrelated chore' });
   const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host.id });
+  await setGuidePref(page, 'seen'); // the Smart Node guide has its own test below
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
   const tools = page.getByRole('toolbar', { name: 'Add to the board' });
@@ -618,7 +619,7 @@ test('vision board smart node: filter, figures, table, add to board, keyboard', 
   await page.mouse.click(box.x + 560, box.y + 240); // clear of the tool rail, which would cover the wide toolbar
   await expect(smart).toContainText('No filter yet');
   const bar = page.getByRole('toolbar', { name: 'Node actions' });
-  await expect(bar.getByRole('button')).toHaveText(['Display', 'Set up filter', 'Open as search', 'Edit label', 'Colour', 'Connect to…', 'Focus', 'Delete']);
+  await expect(bar.getByRole('button')).toHaveText(['Display', 'Set up filter', 'Open as search', 'Show guide', 'Edit label', 'Colour', 'Connect to…', 'Focus', 'Delete']);
 
   // Set up the tag filter: two cards are listed; nothing is written until Save.
   await bar.getByRole('button', { name: 'Set up filter' }).click();
@@ -702,6 +703,124 @@ test('vision board smart node: filter, figures, table, add to board, keyboard', 
   await page.goto(`/vision/${accountSeq}`);
   await expect(page.locator('[data-node-type="filter"]')).toContainText(`#${tag} tasks`);
   await expect(page.locator('[data-node-type="filter"]').getByRole('columnheader', { name: 'Owner' })).toBeVisible();
+});
+
+/** The Smart Node guide's per-person preference, set on the server before the page loads it (null: never seen). */
+async function setGuidePref(page: Page, value: 'seen' | null) {
+  expect((await page.request.put('/api/prefs/smartGuide', { data: { value } })).ok()).toBe(true);
+}
+/** Two boxes on screen share no pixel. */
+const apart = (a: Box, b: Box) => a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+type Box = { x: number; y: number; width: number; height: number };
+
+test('smart node guide: opens on the first Smart Node, ticks each step, beside the node; not again; Show guide replays it', async ({ page }) => {
+  await ensureWorkspace(page);
+  const tag = `guide${Date.now() % 100000}`;
+  const project = await run<{ id: string }>(page, 'projects', 'create', { name: unique('Guide proj') });
+  await run(page, 'projects', 'update', { id: project.id, tags: [{ name: tag, emoji: null }] });
+  const deck = await run<{ id: string }>(page, 'decks', 'create', { title: unique('Guide list'), projectId: project.id, spaceId: 1 });
+  const host = await run<{ id: string }>(page, 'cards', 'create', { deckId: deck.id, content: 'Guide host' });
+  await run(page, 'cards', 'create', { deckId: deck.id, content: `Broken save #${tag}` });
+  const { accountSeq } = await run<{ accountSeq: number }>(page, 'visionBoard', 'createBoard', { cardId: host.id });
+  await setGuidePref(page, null);
+  await page.goto(`/vision/${accountSeq}`);
+  await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
+  const vp = page.getByTestId('board-viewport');
+  const box = (await vp.boundingBox())!;
+  const smart = page.locator('[data-node-type="filter"]');
+  const guide = page.getByRole('region', { name: 'Smart Node guide' });
+  const bar = page.getByRole('toolbar', { name: 'Node actions' });
+  const panel = page.getByRole('complementary', { name: 'Smart filter' });
+  /** The guide sits beside the node, inside the canvas, clear of the panel and the toolbars. */
+  const placed = async () => {
+    const g = (await guide.boundingBox())!, n = (await smart.first().boundingBox())!, v = (await vp.boundingBox())!;
+    expect(apart(g, n)).toBe(true);
+    expect(g.x >= v.x && g.y >= v.y && g.x + g.width <= v.x + v.width && g.y + g.height <= v.y + v.height).toBe(true);
+    for (const o of [panel, bar, tools]) if (await o.isVisible()) expect(apart(g, (await o.boundingBox())!)).toBe(true);
+  };
+
+  // The first Smart Node: the guide opens beside it, three steps (no project on a card board); the node keeps the focus.
+  await tools.getByRole('button', { name: 'Smart Node' }).click();
+  await page.mouse.click(box.x + 420, box.y + 300);
+  await expect(guide).toBeVisible();
+  await expect(guide).toContainText('Smart Nodes · 0 of 3');
+  await expect(guide.getByRole('listitem')).toHaveText([/Add a filter/, /Choose how it shows/, /Open it as a search/]);
+  await expect(guide).not.toContainText('Pick a project');
+  await expect(guide.getByRole('listitem').first()).toHaveAttribute('aria-current', 'step');
+  await expect(smart).toBeFocused();
+  await placed();
+  await expect.poll(async () => (await (await page.request.get('/api/prefs')).json()).prefs.smartGuide).toBe('seen');
+
+  // Add a filter: ticks when the saved filter has a chip; the guide stays clear of the panel on the right.
+  await bar.getByRole('button', { name: 'Set up filter' }).click();
+  await panel.getByRole('combobox', { name: 'Filter tasks' }).fill(`#${tag}`);
+  await panel.getByRole('option', { name: `#${tag}` }).click();
+  await expect(guide).toContainText('0 of 3'); // nothing until Save
+  await panel.getByRole('button', { name: 'Save filter' }).click();
+  await expect(guide).toContainText('Smart Nodes · 1 of 3');
+  await expect(guide.getByRole('listitem').nth(1)).toHaveAttribute('aria-current', 'step');
+  await expect(guide.locator('[aria-live="polite"]')).toHaveText('Step 2 of 3: Choose how it shows');
+  await placed();
+  await panel.getByRole('button', { name: 'Close filter' }).click();
+
+  // Choose how it shows: a new mode ticks it.
+  await smart.click();
+  await bar.getByRole('button', { name: 'Display' }).click();
+  await page.getByRole('group', { name: 'Display' }).getByRole('button', { name: 'Donut' }).click();
+  await expect(guide).toContainText('Smart Nodes · 2 of 3');
+  await page.keyboard.press('Escape');
+  await placed();
+  await page.screenshot({ path: `${process.env.HOME}/.cache/gametracker/scratch/smart-guide/card-board.png` });
+
+  // It follows the node when the board zooms and when the node is dragged.
+  await page.getByRole('button', { name: 'Zoom out' }).click();
+  await placed();
+  const n0 = (await smart.boundingBox())!;
+  await page.mouse.move(n0.x + n0.width / 2, n0.y + n0.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(n0.x + n0.width / 2 + 60, n0.y + n0.height / 2 + 80, { steps: 6 });
+  await page.mouse.up();
+  await placed();
+
+  // Open it as a search: the last step; the guide is finished.
+  await smart.click();
+  await bar.getByRole('button', { name: 'Open as search' }).click();
+  await expect(page).toHaveURL(/\/decks\?search=/);
+  await expect.poll(async () => (await (await page.request.get('/api/prefs')).json()).prefs.smartGuide).toBe('done');
+
+  // Back on the board: a second Smart Node opens no guide.
+  await page.goto(`/vision/${accountSeq}`);
+  await expect(smart).toHaveCount(1);
+  await tools.getByRole('button', { name: 'Smart Node' }).click();
+  await page.mouse.click(box.x + 420, box.y + 120);
+  await expect(smart).toHaveCount(2);
+  await page.waitForTimeout(300);
+  await expect(guide).toHaveCount(0);
+
+  // Show guide replays it on the first node: what is done there is ticked; Next moves on; Esc (focus inside) closes it.
+  await smart.first().click();
+  await bar.getByRole('button', { name: 'Show guide' }).click();
+  await expect(guide).toBeVisible();
+  await expect(guide).toContainText('Smart Nodes · 1 of 3');
+  await expect(guide.getByRole('listitem').nth(1)).toHaveAttribute('aria-current', 'step');
+  await guide.getByRole('button', { name: 'Next ›' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(guide.getByRole('listitem').nth(2)).toHaveAttribute('aria-current', 'step');
+  await expect(guide.getByRole('button', { name: 'Close' })).toBeVisible();
+  await expect(guide.getByRole('button', { name: 'Skip' })).toBeVisible();
+  await expect(smart).toHaveCount(2); // Enter in the guide never reached the canvas
+  await page.keyboard.press('Escape');
+  await expect(guide).toHaveCount(0);
+  await expect(smart).toHaveCount(2);
+
+  // Deleting the node closes its guide.
+  await smart.first().click();
+  await bar.getByRole('button', { name: 'Show guide' }).click();
+  await expect(guide).toBeVisible();
+  await bar.getByRole('button', { name: 'Delete' }).click();
+  await expect(smart).toHaveCount(1);
+  await expect(guide).toHaveCount(0);
 });
 
 test('vision board presence: named cursor, selection outline, avatar stack, leaving', async ({ page, browser }) => {

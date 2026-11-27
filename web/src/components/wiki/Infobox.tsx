@@ -6,6 +6,8 @@ import { useStore } from '../../store';
 import { campaignLore, cardCodeOfHref, entriesOfTypes, formatValue, infoboxFields, projectIdOf, safeColor, usedValues } from '../../wiki';
 import { fileUrl } from '../AttachmentsTab';
 import { FieldEditor, IMAGE_MIME } from './FieldEditor';
+import { useShownPiece, useShownTitle } from '../../translate';
+import { pieceKey } from '../../../../shared/translate';
 
 /** Type name with its icon and colour. The icon is text (React escapes it); the colour only if it is #rrggbb. */
 export function TypeBadge({ type }: { type: EntryType | null | undefined }) {
@@ -20,13 +22,14 @@ export function TypeBadge({ type }: { type: EntryType | null | undefined }) {
 
 /** Looks up entry titles by key within one project. */
 export function useTitleOfKey(projectId: string | null) {
+  const shownTitle = useShownTitle();
   const cards = useStore((s) => s.cards);
   const decks = useStore((s) => s.decks);
   const byKey = useMemo(() => {
     const m = new Map<string, string>();
-    if (projectId) for (const c of campaignLore(cards.values(), projectId, decks)) if (c.entryKey) m.set(c.entryKey, titleOf(c.content) || 'Untitled');
+    if (projectId) for (const c of campaignLore(cards.values(), projectId, decks)) if (c.entryKey) m.set(c.entryKey, shownTitle(c) || 'Untitled');
     return m;
-  }, [cards, decks, projectId]);
+  }, [cards, decks, projectId, shownTitle]);
   return useCallback((k: string) => byKey.get(k) ?? null, [byKey]);
 }
 
@@ -51,6 +54,14 @@ export function Infobox({ card, type, projectId, editable }: { card: Card; type:
   const decks = useStore((s) => s.decks);
   const files = useStore((s) => s.files);
   const titleOfKey = useTitleOfKey(projectId);
+  const shown = useShownPiece(card.id);
+  /** A text field's translation, when there is one (editing keeps the original). */
+  const translated = (f: FieldDef): string | null => {
+    const v = card.fields?.[f.key];
+    if ((f.kind !== 'text' && f.kind !== 'longtext') || typeof v !== 'string') return null;
+    const t = shown(pieceKey.field(f.key), v);
+    return t !== v ? t : null;
+  };
   // Rules and scenarios have sections of their own below the text (BalanceSections).
   const defs = useMemo(() => infoboxFields(types, type.id).filter((f) => f.kind !== 'rule' && f.kind !== 'scenario'), [types, type.id]);
   const lore = useMemo(() => campaignLore(cards.values(), projectId, decks), [cards, decks, projectId]);
@@ -80,8 +91,9 @@ export function Infobox({ card, type, projectId, editable }: { card: Card; type:
                     suggestions={f.kind === 'text' ? usedValues(lore, f.key) : undefined}
                     entries={candidates.get(f.target ?? '') ?? []} />
                   {f.unit && <span className="muted">{f.unit}</span>}
+                  {translated(f) && <span className="muted infobox-tr">{translated(f)}</span>}
                 </span>
-              ) : <ValueView def={f} v={card.fields?.[f.key]} titleOfKey={titleOfKey} />}
+              ) : translated(f) ?? <ValueView def={f} v={card.fields?.[f.key]} titleOfKey={titleOfKey} />}
             </dd>
           </div>
         ))}
@@ -95,6 +107,7 @@ export function Infobox({ card, type, projectId, editable }: { card: Card; type:
  * infobox fields.
  */
 export function EntryPreviews({ children }: { children: ReactNode }) {
+  const shownTitle = useShownTitle();
   const cards = useStore((s) => s.cards);
   const decks = useStore((s) => s.decks);
   const types = useStore((s) => s.entryTypes);
@@ -125,7 +138,7 @@ export function EntryPreviews({ children }: { children: ReactNode }) {
       {children}
       {at && (
         <div className="entry-preview" role="tooltip" data-testid="entry-preview" style={{ top: at.top, left: at.left }}>
-          <strong>{titleOf(at.card.content) || 'Untitled'}</strong> <TypeBadge type={type} />
+          <strong>{shownTitle(at.card) || 'Untitled'}</strong> <TypeBadge type={type} />
           {defs.length > 0 && (
             <dl>
               {defs.map((f) => (

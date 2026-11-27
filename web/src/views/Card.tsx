@@ -36,6 +36,8 @@ import { boardOfCard, boardPath, createBoard } from '../board/boards';
 import { entryPath } from '../wiki';
 import { WorksOnRow } from '../components/wiki/LinksSection';
 import { InPane, keysHere } from './HomePane';
+import { LANG_NAME, openForTranslation, shownContent, useReadLang, useShowOriginal, useShownTitle } from '../translate';
+import { TranslatedLine } from '../components/TranslatedLine';
 
 type SideTab = 'conversations' | 'history' | 'properties' | 'subcards' | 'attachments';
 const SIDE_TABS: SideTab[] = ['conversations', 'history', 'properties', 'subcards', 'attachments'];
@@ -212,7 +214,8 @@ function CardBody({ card, deck, remote, inDeck }: { card: Card; deck: Deck | nul
   const status = derivedStatus(card, open);
   const deleted = card.visibility === 'deleted';
   const code = cardCode(card.seq);
-  const title = titleOf(card.content);
+  const shownTitle = useShownTitle();
+  const title = shownTitle(card);
 
   const update = async (patch: object) => {
     setBusy(true);
@@ -363,8 +366,8 @@ function CardBody({ card, deck, remote, inDeck }: { card: Card; deck: Deck | nul
         )}
         {hero && (
           <Link href={cardHref(hero, hero.deckId ? s.decks.get(hero.deckId) : undefined)} className="hero-link"
-            aria-label={`Open main task ${titleOf(hero.content)}`} title="Open main task">
-            <Icon name="up" size={14} /><span className="muted">Main task</span> {titleOf(hero.content) ? <InlineTitle text={titleOf(hero.content)} /> : 'Untitled'}
+            aria-label={`Open main task ${shownTitle(hero)}`} title="Open main task">
+            <Icon name="up" size={14} /><span className="muted">Main task</span> {shownTitle(hero) ? <InlineTitle text={shownTitle(hero)} /> : 'Untitled'}
           </Link>
         )}
       </div>
@@ -449,7 +452,16 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
   const files = useStore((s) => s.files);
   const meId = useStore((s) => s.me?.id ?? null);
   const images = useMemo(() => [...files.values()].filter((f) => f.cardId === card.id), [files, card.id]);
-  const { title, body, bodyStart } = splitTitle(card.content);
+  // Reading language: the view shows the reader's language, the editor always the original (with the translation beside it).
+  const [readLang] = useReadLang();
+  const translations = useStore((s) => s.translations);
+  const account = useStore((s) => s.account);
+  const [showOriginal, toggleOriginal] = useShowOriginal(`card:${card.id}`);
+  const translated = shownContent(card, readLang, false, { translations, account });
+  const shown = showOriginal ? shownContent(card, readLang, true, { translations, account }) : translated;
+  const { title, body, bodyStart } = splitTitle(shown.text);
+  // The translation shown beside the editor (the newest one, even of an earlier version), while Translation is on.
+  const ref = readLang === 'original' || account?.settings?.translationEnabled !== true ? undefined : translations.get(`card:${card.id}:${readLang}`);
   const [draft, setDraft] = useState<string | null>(null);
   const [base, setBase] = useState(card.contentVersion);
   const [conflict, setConflict] = useState(false);
@@ -467,6 +479,11 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
     if (draft === card.content && base === card.contentVersion) dropDraft(meId, card.id);
     else keepDraft(meId, card.id, draft, base);
   }, [draft, base, persistDraft]);
+
+  // Shown with no translation for this version yet: the server translates it ahead of its background pass.
+  useEffect(() => {
+    if (translated.pending) openForTranslation('card', card.id, card.contentVersion);
+  }, [translated.pending, card.id, card.contentVersion]);
 
   const cancel = () => { setDraft(null); setConflict(false); if (persistDraft) dropDraft(meId, card.id); onDone(); };
   const save = async () => {
@@ -507,9 +524,14 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
   };
 
   if (draft !== null) {
+    const editor = card.isDoc
+      ? <LoreEditor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Text"
+          projectId={projectId} images={images} onSetProperties={onSetProperties} cardId={card.id} />
+      : <Editor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Task text"
+          projectId={projectId} images={images} onSetProperties={onSetProperties} cardId={card.id} />;
     return (
       <div className="card-edit">
-        <Heading id={titleId} className="sr-only">{title}</Heading>
+        <Heading id={titleId} className="sr-only">{titleOf(card.content)}</Heading>
         {conflict && (
           <div className="notice notice-danger" role="alert">
             <p>Someone else changed this task while you were editing. Their text:</p>
@@ -517,11 +539,19 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
             <p>Save again to replace it with yours, or Cancel to keep theirs.</p>
           </div>
         )}
-        {card.isDoc
-          ? <LoreEditor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Text"
-              projectId={projectId} images={images} onSetProperties={onSetProperties} cardId={card.id} />
-          : <Editor value={draft} onChange={setDraft} onSave={() => void save()} onCancel={cancel} autoFocus label="Task text"
-              projectId={projectId} images={images} onSetProperties={onSetProperties} cardId={card.id} />}
+        {/* One wrapper either way, so a translation arriving mid-edit doesn't remount the editor. */}
+        <div className={ref?.fromLang ? 'edit-beside' : 'edit-alone'}>
+          {editor}
+          {ref?.fromLang && (
+            <aside className="translate-ref" aria-label="Translation">
+              <p className="hint">
+                Translated from {LANG_NAME[ref.fromLang]}, to read while you edit the original
+                {ref.sourceVersion !== card.contentVersion && ' (of an earlier version)'}
+              </p>
+              <MarkdownView content={ref.text} card={card} />
+            </aside>
+          )}
+        </div>
         <LinkIgnores card={card} editable />
         <div className="row">
           <span className="hint foot-hint">Ctrl+Enter saves · Esc cancels{card.isDoc && ' · Alt+Enter on a name'}</span>
@@ -531,12 +561,15 @@ export function ContentEditor({ card, titleId, Heading, editing, onDone, canTick
       </div>
     );
   }
+  // Ticking a box in a translation ticks the same line of the original: only while the lines still match up.
+  const tickable = canTick && (shown.text === card.content || shown.text.split('\n').length === card.content.split('\n').length);
   return (
     <div className="card-content">
       <Heading id={titleId} className="card-heading"><InlineTitle text={title} links /></Heading>
       {body.trim()
-        ? <MarkdownView content={body} lineOffset={bodyStart} onToggle={canTick ? tick : undefined} testId="card-markdown" card={card} editable={canTick} />
+        ? <MarkdownView content={body} lineOffset={bodyStart} onToggle={tickable ? tick : undefined} testId="card-markdown" card={card} editable={tickable} />
         : <p className="muted">No text yet.</p>}
+      <TranslatedLine shown={shown} showOriginal={showOriginal} canTranslate={!!translated.from} onToggle={toggleOriginal} />
       <LinkIgnores card={card} editable={canTick} />
     </div>
   );

@@ -5,6 +5,7 @@ import { titleOf } from '../../../../shared/cards';
 import type { CardFile } from '../../store';
 import { CardPicker } from '../CardPicker';
 import { Icon } from '../icons';
+import { titleNow } from '../../translate';
 
 /** Image kinds an `image` field can point at (the server shows these inline). */
 export const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -227,7 +228,8 @@ function EntryRefs({ def, value, onSave, entries, titleOfKey }: FieldEditorProps
 }
 
 /** Title of a Lore card for showing in lists. */
-export const entryTitle = (c: Pick<Card, 'content'>) => titleOf(c.content) || 'Untitled';
+export const entryTitle = (c: Pick<Card, 'content'> & Partial<Pick<Card, 'id' | 'contentVersion'>>) =>
+  (c.id !== undefined && c.contentVersion !== undefined ? titleNow({ id: c.id, content: c.content, contentVersion: c.contentVersion }) : titleOf(c.content)) || 'Untitled';
 
 // ---- Tables: a grid of numbers by one or two keys ----
 

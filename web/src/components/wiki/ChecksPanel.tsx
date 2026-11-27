@@ -7,6 +7,7 @@ import { Link } from '../../router';
 import { Dialog } from '../Dialog';
 import { cardHref } from '../../cards';
 import { campaignChecks, campaignLore, checkGroups, checksBadgeText, checksTruncatedText, entryPath } from '../../wiki';
+import { useShownTitle } from '../../translate';
 
 /** "⚠ N checks" for the Wiki header; it opens the checks panel. Nothing shows while every check passes. */
 export function ChecksBadge({ project }: { project: Project }) {
@@ -36,6 +37,7 @@ const readable = (detail: string) => detail.replace(/: (wrong_kind|below_min|abo
 
 /** The project's failing checks (the first CHECKS_LIMIT), grouped by problem; each names its entry and links to it. */
 export function ChecksPanel({ project, checks: result, onClose }: { project: Project; checks: ChecksResult; onClose: () => void }) {
+  const shownTitle = useShownTitle();
   const checks = result.checks;
   const cut = checksTruncatedText(result);
   const cards = useStore((s) => s.cards);
@@ -52,7 +54,7 @@ export function ChecksPanel({ project, checks: result, onClose }: { project: Pro
     if (!card) return <code>{entry}</code>;
     // A quest (the source of a works_on link) opens as a quest; lore opens its wiki page.
     const href = card.isDoc ? entryPath(project.seq, card) : cardHref(card, card.deckId ? decks.get(card.deckId) : null);
-    return <Link href={href} onClick={onClose}>{titleOf(card.content) || entry}</Link>;
+    return <Link href={href} onClick={onClose}>{shownTitle(card) || entry}</Link>;
   };
   return (
     <Dialog title={`Checks · ${project.name}`} wide scroll onClose={onClose}

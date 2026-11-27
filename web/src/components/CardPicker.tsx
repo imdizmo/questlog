@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type R
 import type { Card } from '../../../shared/types';
 import { cardCode, titleOf } from '../../../shared/cards';
 import { Icon } from './icons';
+import { useShownTitle } from '../translate';
 
 const LIMIT = 50;
 
@@ -25,6 +26,7 @@ export function CardPicker({ label, trigger, triggerClass = 'btn btn-sm', candid
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const shownTitle = useShownTitle();
   const [active, setActive] = useState(0);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -34,10 +36,10 @@ export function CardPicker({ label, trigger, triggerClass = 'btn btn-sm', candid
     if (!open) return [];
     const q = query.trim().toLowerCase().replace(/^\$/, '');
     return (typeof candidates === 'function' ? candidates() : candidates)
-      .filter((c) => !q || titleOf(c.content).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q) || taskId(c).toLowerCase().includes(q))
+      .filter((c) => !q || titleOf(c.content).toLowerCase().includes(q) || shownTitle(c).toLowerCase().includes(q) || cardCode(c.seq).toLowerCase().includes(q) || taskId(c).toLowerCase().includes(q))
       .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
       .slice(0, LIMIT);
-  }, [open, query, candidates]);
+  }, [open, query, candidates, shownTitle]);
 
   useEffect(() => { setActive(0); }, [query]);
   useEffect(() => {
@@ -83,7 +85,7 @@ export function CardPicker({ label, trigger, triggerClass = 'btn btn-sm', candid
               <li key={c.id} id={`${listId}-${i}`} role="option" aria-selected={i === active}
                 className={i === active ? 'picker-opt active' : 'picker-opt'}
                 onMouseEnter={() => setActive(i)} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(c)}>
-                <span className="picker-opt-title">{titleOf(c.content) || 'Untitled'}</span>
+                <span className="picker-opt-title">{shownTitle(c) || 'Untitled'}</span>
                 <span className="picker-sub">{taskId(c)}</span>
               </li>
             ))}

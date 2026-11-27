@@ -17,6 +17,8 @@ async function freshHome(page: Page) {
   await page.evaluate(() => sessionStorage.clear()); // this window's own tabs
   await page.goto('about:blank'); // the page sends what it has first, so nothing overwrites the reset below
   for (const key of ['tabs', 'home']) expect((await page.request.put(`/api/prefs/${key}`, { data: { value: null } })).ok()).toBe(true);
+  // The Smart Node guide opens on a person's first Smart Node; it has its own test, so here it counts as seen.
+  expect((await page.request.put('/api/prefs/smartGuide', { data: { value: 'seen' } })).ok()).toBe(true);
   await page.goto('/home');
   await expect(page.getByRole('heading', { level: 1, name: 'Welcome back, Ada' })).toBeVisible();
 }
@@ -387,6 +389,116 @@ test('two people on Home see each other\'s move and note at once; an observer on
   await drag(o, pnode, { x: 120, y: 60 });
   await o.waitForTimeout(300);
   expect(await stored(pnode)).toEqual(p0);
+  await o.context().close();
+});
+
+test('an image and a Smart Node on Home, each kept for a project picked first; live for a member; an observer cannot add', async ({ page, browser }) => {
+  const { name, projectId, taming } = await setUp(page);
+  const b = await member(page, browser, 'member', [projectId]);
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
+  const vb = (await page.getByTestId('board-viewport').boundingBox())!;
+  const which = page.getByRole('dialog', { name: 'Which project?' });
+
+  // Image: "Which project?" first (only projects every member sees), then the upload; nothing is written before it.
+  const png = Buffer.from(await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 240; c.height = 120;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#2a7be0'; g.fillRect(0, 0, 240, 120);
+    return c.toDataURL('image/png').split(',')[1];
+  }), 'base64');
+  await tools.getByRole('button', { name: 'Image' }).click();
+  await page.mouse.click(vb.x + vb.width - 420, vb.y + vb.height - 260);
+  await expect(which).toBeVisible();
+  await which.getByLabel('Project').selectOption({ label: name });
+  await which.getByRole('button', { name: 'Continue' }).click();
+  const upl = page.getByRole('dialog', { name: 'Upload image' });
+  await upl.getByLabel('Choose image').setInputFiles({ name: 'home-swatch.png', mimeType: 'image/png', buffer: png });
+  const mine = board(page).locator('[data-node-type="image"]');
+  await expect(mine).toHaveCount(1);
+  await expect(mine).toBeFocused();
+  const theirs = board(b).locator('[data-node-type="image"] img');
+  await expect(theirs).toHaveAttribute('src', /^\/api\/files\/[\w-]+$/);
+  await expect.poll(() => theirs.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBe(240);
+
+  // Smart Node: the project first, then its filter panel opens; it lists that project's tasks only.
+  await tools.getByRole('button', { name: 'Smart Node' }).click();
+  await page.mouse.click(vb.x + vb.width - 420, vb.y + 140);
+  await which.getByLabel('Project').selectOption({ label: name });
+  await which.getByRole('button', { name: 'Continue' }).click();
+  const panel = page.getByRole('complementary', { name: 'Smart filter' });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText(`Tasks of ${name}`)).toBeVisible();
+  await panel.getByRole('combobox', { name: 'Filter tasks' }).fill(title(taming));
+  await page.keyboard.press('Enter');
+  await expect(panel.getByRole('list', { name: 'Matching tasks' }).getByRole('listitem')).toHaveCount(1);
+  await panel.getByRole('button', { name: 'Save filter' }).click();
+  const smart = board(page).locator('[data-node-type="filter"]');
+  await expect(smart).not.toContainText('No filter yet');
+  const label = (await smart.locator('.bsmart-label').textContent())!;
+  expect((await snapshot(page)).visionQueries.filter((q: any) => q.projectId === projectId && q.cardId === null)).toHaveLength(1);
+  await panel.getByRole('button', { name: 'Close filter' }).click();
+  await expect(board(b).locator('[data-node-type="filter"] .bsmart-label')).toHaveText(label);
+  await page.screenshot({ path: `${SHOTS}/home-media.png` });
+  await b.context().close();
+
+  // An observer sees both, and gets no Add tools.
+  const o = await member(page, browser, 'observer', [projectId]);
+  await expect.poll(() => board(o).locator('[data-node-type="image"] img').evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBe(240);
+  await expect(board(o).locator('[data-node-type="filter"] .bsmart-label')).toHaveText(label);
+  await expect(o.getByRole('toolbar', { name: 'Add to the board' })).toHaveCount(0);
+  await o.context().close();
+});
+
+test('the Smart Node guide on Home starts with Pick a project, clear of the panel and the toolbars; a viewer never sees it', async ({ page, browser }) => {
+  const { name, projectId } = await setUp(page);
+  await run(page, 'projects', 'create', { name: unique('Other project') }); // two projects: Home asks which one
+  expect((await page.request.put('/api/prefs/smartGuide', { data: { value: null } })).ok()).toBe(true);
+  await page.reload();
+  await expect(page.getByRole('status', { name: /Connection: online/ })).toBeVisible();
+  const tools = page.getByRole('toolbar', { name: 'Add to the board' });
+  const vb = (await page.getByTestId('board-viewport').boundingBox())!;
+  const guide = page.getByRole('region', { name: 'Smart Node guide' });
+  const smart = board(page).locator('[data-node-type="filter"].is-selected'); // Home is shared: other tests left theirs
+
+  await tools.getByRole('button', { name: 'Smart Node' }).click();
+  await page.mouse.click(vb.x + 520, vb.y + 160);
+  const which = page.getByRole('dialog', { name: 'Which project?' });
+  await which.getByLabel('Project').selectOption({ label: name });
+  await which.getByRole('button', { name: 'Continue' }).click();
+  const panel = page.getByRole('complementary', { name: 'Smart filter' });
+  await expect(panel).toBeVisible();
+  await expect(guide).toBeVisible();
+  await expect(guide.getByRole('listitem')).toHaveText([/Pick a project/, /Add a filter/, /Choose how it shows/, /Open it as a search/]);
+  await expect(guide).toContainText('Smart Nodes · 1 of 4'); // the project was picked first
+  await expect(guide.getByRole('listitem').first()).toContainText('(done)');
+  await expect(guide.getByRole('listitem').nth(1)).toHaveAttribute('aria-current', 'step');
+  expect(await guide.evaluate((el) => el.contains(document.activeElement))).toBe(false); // the guide takes no focus
+
+  // Beside the node, inside the canvas, never over the panel or Home's toolbars.
+  const apart = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
+    a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+  const g = (await guide.boundingBox())!;
+  expect(apart(g, (await smart.boundingBox())!)).toBe(true);
+  expect(apart(g, (await panel.boundingBox())!)).toBe(true);
+  for (const r of await page.locator('.rail, .board-zoom, .board-status').all()) if (await r.isVisible()) expect(apart(g, (await r.boundingBox())!)).toBe(true);
+  expect(g.x >= vb.x && g.y >= vb.y && g.x + g.width <= vb.x + vb.width && g.y + g.height <= vb.y + vb.height).toBe(true);
+  await page.screenshot({ path: `${process.env.HOME}/.cache/gametracker/scratch/smart-guide/home.png` });
+
+  const nodeId = (await smart.getAttribute('data-node-id'))!;
+  // Skip closes it, and it counts as seen.
+  await guide.getByRole('button', { name: 'Skip' }).click();
+  await expect(guide).toHaveCount(0);
+  await expect.poll(async () => (await (await page.request.get('/api/prefs')).json()).prefs.smartGuide).toBe('seen');
+
+  // A viewer (an observer, for whom the guide was never seen) gets neither the guide nor Show guide.
+  const o = await member(page, browser, 'observer', [projectId]);
+  const theirs = board(o).locator(`[data-node-id="${nodeId}"]`);
+  await expect(theirs).toHaveCount(1);
+  await theirs.click();
+  await expect(o.getByRole('toolbar', { name: 'Node actions' })).toBeVisible();
+  await expect(o.getByRole('toolbar', { name: 'Node actions' }).getByRole('button', { name: 'Show guide' })).toHaveCount(0);
+  await expect(o.getByRole('region', { name: 'Smart Node guide' })).toHaveCount(0);
   await o.context().close();
 });
 

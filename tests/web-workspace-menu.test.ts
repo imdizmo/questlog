@@ -83,8 +83,9 @@ describe('keyboard between sections', () => {
 describe('nothing of the old Workspace settings dialog is lost', () => {
   it('maps every stored setting the old form edited to a section', () => {
     // mcpEnabled / mcpDailyLimit live on the MCP panel (Connections); maxHandSlots never had a field in the dialog;
-    // questLevel and defaultInboxDeckId are stored but nothing reads them, so the menu leaves them out.
-    const elsewhere = new Set<string>(['mcpEnabled', 'mcpDailyLimit', 'maxHandSlots', ...STORED_BUT_UNUSED]);
+    // questLevel and defaultInboxDeckId are stored but nothing reads them, so the menu leaves them out;
+    // translationEnabled gets its own switch beside the language pack's state.
+    const elsewhere = new Set<string>(['mcpEnabled', 'mcpDailyLimit', 'maxHandSlots', 'translationEnabled', ...STORED_BUT_UNUSED]);
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       if (elsewhere.has(key)) continue;
       const home = SETTING_TEXT[key as keyof typeof SETTING_TEXT];

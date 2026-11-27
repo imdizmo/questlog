@@ -149,6 +149,13 @@ export function homeCardAllowed(s: State, cardId: string): boolean {
   return p?.visibility === 'full';
 }
 
+export const HOME_NO_PROJECT = 'Pictures and Smart Nodes on Home are kept with a project every member sees. There is none yet that is not archived.';
+
+/** Projects Home's pictures and Smart Nodes may be kept for (server/boards.ts homeProjectAllowed): every member sees them, not archived. */
+export function homeProjects(s: State) {
+  return [...s.projects.values()].filter((p) => p.visibility === 'full' && !p.isArchived).sort((a, b) => a.seq - b.seq);
+}
+
 /** Why "Add project" / "Arrange as frames" may not show `projectId` on the board hosted by `hostId`, or null. */
 export function refuseProject(s: State, hostId: string, projectId: string): string | null {
   return hostProject(s, hostId) === projectId ? null : OTHER_PROJECT;

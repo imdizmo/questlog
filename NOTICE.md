@@ -30,6 +30,16 @@ stated in each package). The licence comments of the packages in the server bund
 `server/server.mjs.LEGAL.txt`. The packages inlined into the web app are listed with their full licence texts in
 `web/THIRD-PARTY-WEB.txt`, written by the build. The archives also carry this file and `LICENSE`.
 
+## Translation language pack (separate download)
+
+The optional language pack `questlog-translate-models-vX.Y.Z.tar.gz` (not part of the server archives, the Docker image
+or the desktop builds) contains the Bergamot translator (`@browsermt/bergamot-translator` 0.4.9, compiled to
+WebAssembly) and the Firefox Translations models en-it 2.1 and it-en 2.0
+(<https://github.com/mozilla/firefox-translations-models>). Engine and models are licensed under the Mozilla Public
+License 2.0, shipped unmodified, with the licence text (`LICENSE-MPL-2.0.txt`) and a `NOTICE.txt` inside the pack. Their
+source is at <https://github.com/browsermt/bergamot-translator>. The pack's `engine.mjs` is Questlog's own wrapper
+(`scripts/translate-pack/engine.mjs`, MIT) and uses only Node.js built-in modules.
+
 ## Icons
 
 The Questlog icon (`desktop/src-tauri/icons/`) is original work, under this project's MIT licence.

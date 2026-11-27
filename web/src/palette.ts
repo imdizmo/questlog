@@ -5,7 +5,8 @@ import { cardCode, seqFromCode, titleOf } from '../../shared/cards';
 import { nameKey } from '../../shared/autolink';
 import type { State } from './store';
 import type { Route } from './router';
-import { canEditContent } from './store';
+import { canEditContent, store } from './store';
+import { readLangNow, titleNow } from './translate';
 import { cardHref, deckPath } from './cards';
 import { campaignTypes, entryPath, projectIdOf, wikiPath } from './wiki';
 import { projectPrefix } from './taskId';
@@ -38,20 +39,25 @@ const kindOf = (c: Card): HitKind => (c.isDoc ? (c.entryTypeId ? 'entry' : 'lore
 // so a change re-folds only that card; the array is rebuilt once per `cards` map. ----
 const itemOfCard = new WeakMap<Card, Item>();
 function cardItem(c: Card): Item {
+  // The reader's title (a translation) is shown and searched; the title as written is searched too.
+  const title = titleNow(c);
   let it = itemOfCard.get(c);
-  if (it) return it;
-  const title = titleOf(c.content);
+  if (it && it.title === title) return it;
   const alt: string[] = [];
+  const written = titleOf(c.content);
+  if (written !== title) alt.push(nameKey(written));
   for (const a of c.aliases ?? []) alt.push(nameKey(a));
   if (c.entryKey) alt.push(c.entryKey.replace(/_/g, ' '));
   it = { kind: kindOf(c), id: c.id, title, fold: nameKey(title), alt, seq: c.seq };
   itemOfCard.set(c, it);
   return it;
 }
-const cardIndex = new WeakMap<Map<string, Card>, { items: Item[]; bySeq: Map<number, Card> }>();
+const cardIndex = new WeakMap<Map<string, Card>, { items: Item[]; bySeq: Map<number, Card>; tr: object; lang: string }>();
 function cardsIndexed(cards: Map<string, Card>) {
   let idx = cardIndex.get(cards);
-  if (idx) return idx;
+  // Rebuilt for new translations or another reading language too (cards whose title didn't change keep their item).
+  const tr = store.get().translations, lang = readLangNow();
+  if (idx && idx.tr === tr && idx.lang === lang) return idx;
   const items: Item[] = [];
   const bySeq = new Map<number, Card>();
   for (const c of cards.values()) {
@@ -59,7 +65,7 @@ function cardsIndexed(cards: Map<string, Card>) {
     items.push(cardItem(c));
     bySeq.set(c.seq, c);
   }
-  idx = { items, bySeq };
+  idx = { items, bySeq, tr, lang };
   cardIndex.set(cards, idx);
   return idx;
 }
@@ -227,7 +233,7 @@ export function recentHits(s: PaletteState, refs: readonly RecentRef[]): Hit[] {
     if (out.length >= RECENT_SHOWN) break;
     if (r.kind === 'card') {
       const c = s.cards.get(r.id);
-      if (c && c.visibility !== 'deleted') out.push({ kind: kindOf(c), id: c.id, title: titleOf(c.content), score: 0 });
+      if (c && c.visibility !== 'deleted') out.push({ kind: kindOf(c), id: c.id, title: titleNow(c), score: 0 });
     } else if (r.kind === 'list') {
       const d = s.decks.get(r.id);
       if (d) out.push({ kind: 'list', id: d.id, title: d.title, score: 0 });

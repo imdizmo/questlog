@@ -25,9 +25,11 @@ import { titleOf } from '../shared/cards';
 import { workspaceKind } from '../shared/workspaceKind';
 import { McpServer, mcpUsage } from './mcp';
 import { LiveHub } from './live';
+import { TranslateQueue, type TranslateQueueOptions } from './translate/queue';
+import type { TranslateEngine } from './translate/engine';
 import { RoomHub, ROOM_LIMITS } from './rooms';
-import { boardHooks } from './boards';
-import { canSeeCard } from './access';
+import { boardHooks, resetBoardHooks } from './boards';
+import { canSeeCard, cardProjectId } from './access';
 import { registerFileRoutes } from './file-routes';
 import { registerAssetRoutes } from './assets';
 import { registerLibraryRoutes } from './library';
@@ -88,6 +90,11 @@ export interface AppOptions {
   library?: SuggestionRouteDeps['library'];
   /** Test seam of the library reads (server/library.ts): the first-answer and idle limits. */
   libraryTimeouts?: { firstMs?: number; idleMs?: number };
+  /**
+   * Translation (server/translate): the engine (main.ts passes a TranslateEngine on the language pack; without one
+   * nothing is translated) and queue options. The app closes the engine when it closes.
+   */
+  translate?: { engine?: Pick<TranslateEngine, 'available' | 'translate'> & { version?(): string | null } & { close?(): Promise<void> }; queue?: TranslateQueueOptions };
   /** Sign-in by Tailscale (server/tailscale.ts). Default from env: JT_TAILSCALE_AUTH=1 turns it on, JT_TAILSCALE_SOCKET. */
   tailscale?: { enabled: boolean; socketPath: string };
   /** The desktop sign-in secret (see /desktop-sign-in). Default from env: JT_DESKTOP_SIGNIN. */
@@ -129,7 +136,7 @@ export const HEARTBEAT_MS = 15_000;
 const messageBytes = (d: Buffer | ArrayBuffer | Buffer[]) => (Array.isArray(d) ? d.reduce((n, b) => n + b.byteLength, 0) : d.byteLength);
 
 declare module 'fastify' {
-  interface FastifyInstance { hub: LiveHub; rooms: RoomHub; integrations: IntegrationNotifier }
+  interface FastifyInstance { hub: LiveHub; rooms: RoomHub; integrations: IntegrationNotifier; translate: TranslateQueue }
 }
 
 /**
@@ -178,8 +185,13 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     onChange: (id: string) => rooms.refreshAccess(id),
     onDelete: (id: string) => rooms.closeBoard(id, 4404),
     liveDoc: (id: string) => rooms.liveDoc(id),
+    edit: (id: string, write: (doc: import('yjs').Doc) => void) => rooms.edit(id, write),
   };
   Object.assign(boardHooks, hooks);
+  // One worker translates saved and opened text in the background; its rows reach clients like any change.
+  const translateEngine = opts.translate?.engine ?? { available: () => false, translate: () => Promise.reject(new Error('no language pack')) };
+  const translate = new TranslateQueue(db, translateEngine, (model, op, row) => hub.publish(nextActionId(), [{ model, op, row }]), opts.translate?.queue);
+  translate.start();
 
   app.register(cookie);
   // Room messages carry Yjs updates (up to 1 MiB); /api/push closes on anything over PUSH_MAX_MESSAGE itself.
@@ -695,6 +707,26 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     return { payload: await registerDiscordCommands(db, http), actionId: nextActionId() };
   });
 
+  // ---- translation (server/translate): status for the settings page, and "someone opened this" for the queue ----
+  app.get('/translate/status', async (req) => {
+    needUser(req);
+    const on = (JSON.parse((db.prepare('SELECT settings_json s FROM account').get() as { s: string }).s) as { translationEnabled?: boolean }).translationEnabled === true;
+    return { pack: translate.packAvailable(), version: translate.packVersion(), enabled: on, queued: translate.queued() };
+  });
+  // Cheap on every card view: a read as far as access goes, so no write scope; the queue ignores what is already current.
+  app.post('/dispatch/translate/open', async (req) => {
+    const actor = resolveActor(req);
+    const { kind, id } = body(req);
+    if ((kind !== 'card' && kind !== 'entry' && kind !== 'fields') || typeof id !== 'string') throw new AppError(400, 'invalid_payload');
+    const row = (kind !== 'entry'
+      ? db.prepare('SELECT c.id, c.deck_id, c.creator_id FROM cards c WHERE c.id=?').get(id)
+      : db.prepare('SELECT c.id, c.deck_id, c.creator_id FROM resolvable_entries e JOIN resolvables r ON r.id=e.resolvable_id JOIN cards c ON c.id=r.card_id WHERE e.id=?').get(id)) as
+      { id: string; deck_id: string | null; creator_id: string } | undefined;
+    if (!row || !canSeeCard(db, actor, { deckId: row.deck_id, creatorId: row.creator_id }, row.deck_id ? cardProjectId(db, row.id) : null)) throw new AppError(404, 'not_found');
+    translate.open(kind, id);
+    return {};
+  });
+
   // ---- writes ----
   app.post('/dispatch/:ns/:action', async (req) => {
     const user = resolveActor(req, true);
@@ -963,12 +995,15 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   app.decorate('hub', hub);
   app.decorate('rooms', rooms);
   app.decorate('integrations', integrations);
+  app.decorate('translate', translate);
   app.addHook('onClose', async () => {
     clearInterval(sweeper);
     clearInterval(integrationSender);
     clearInterval(heartbeat);
     rooms.closeAll(); // saves every loaded doc
-    if (boardHooks.onChange === hooks.onChange) Object.assign(boardHooks, { onChange: () => {}, onDelete: () => {}, liveDoc: () => undefined });
+    await translate.stop();
+    await translateEngine.close?.();
+    if (boardHooks.onChange === hooks.onChange) resetBoardHooks();
     for (const s of app.websocketServer?.clients ?? []) s.terminate();
   });
   return app;

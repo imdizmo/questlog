@@ -17,6 +17,7 @@ import { journeyCommands } from './commands/journeys';
 import { visionBoardCommands } from './commands/visionBoards';
 import { bookmarkCommands, handCommands } from './commands/hand';
 import { apiTokenCommands } from './commands/apiTokens';
+import { translateQueueOf } from './translate/queue';
 import { userReportCommands } from './commands/userReports';
 import { onboardingCommands } from './commands/onboarding';
 import { emailPrefCommands } from './commands/emailPrefs';
@@ -34,7 +35,7 @@ export type ModelName =
   | 'deck' | 'card' | 'resolvable' | 'resolvableEntry' | 'reaction' | 'handCard' | 'preset' | 'userCardTag' | 'cardDep' | 'file' | 'resolvableNotification' | 'cardSubscription' | 'deckSubscription' | 'deckGuardian' | 'journey' | 'visionBoard' | 'visionQuery' | 'bookmark' | 'donePile' | 'savedSearch' | 'onboardingStep'
   | 'milestone' | 'milestoneZone' | 'milestoneProgress'
   | 'sprintConfig' | 'sprint' | 'sprintProgress' | 'timeSegment' | 'apiToken'
-  | 'entryType' | 'linkKind' | 'entryLink' | 'entryFamily' | 'asset';
+  | 'entryType' | 'linkKind' | 'entryLink' | 'entryFamily' | 'asset' | 'translation';
 /** 'access' (model 'project' only, row {id}): someone's view of this project may have changed; reload the snapshot. */
 export type ChangeOp = 'upsert' | 'remove' | 'access';
 export type ChangeEvent = { model: ModelName; op: ChangeOp; row: object };
@@ -199,5 +200,6 @@ export function runAction<T>(db: Db, user: User | Actor, fn: (ctx: Ctx) => T): {
   for (const fn of after) {
     try { fn(); } catch (e) { console.error('[jt] after-commit step failed', String((e as Error)?.message ?? e)); }
   }
+  translateQueueOf(db)?.wakeStale();
   return { result, actionId: nextActionId(), events: ctx.events };
 }

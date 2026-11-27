@@ -7,11 +7,13 @@ import { Link } from '../router';
 import { useMinuteClock } from '../clock';
 import { inboxRows, useStore } from '../store';
 import { Icon } from '../components/icons';
+import { useShownTitle } from '../translate';
 
 const CONTEXT = { block: 'Blocker', review: 'Review', comment: 'Comment' } as const;
 
 /** Threads waiting for me: unseen messages or a due reminder, minus the muted and snoozed. */
 export function Inbox() {
+  const shownTitle = useShownTitle();
   const state = useStore((s) => s);
   const now = useMinuteClock();
   const rows = useMemo(() => inboxRows(state, now), [state.notifications, state.resolvables, state.cards, state.me, now]);
@@ -34,7 +36,7 @@ export function Inbox() {
                   <div className="inbox-top">
                     <span className="badge">{CONTEXT[r.context]}</span>
                     <span className="code-chip">{taskId(card)}</span>
-                    <strong>{titleOf(card.content) || 'Untitled'}</strong>
+                    <strong>{shownTitle(card) || 'Untitled'}</strong>
                     {note.unseenEntryCount > 0 && <span className="tab-count" title="Unseen messages">{note.unseenEntryCount}</span>}
                   </div>
                   {last && (

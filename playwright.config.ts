@@ -15,8 +15,9 @@ export default defineConfig({
     baseURL: BASE_URL,
     launchOptions: { executablePath: '/usr/bin/chromium' },
   },
+  // The fake language pack (prefixes "[it] " / "[en] ") lets e2e/translate.spec.ts switch Translation on.
   webServer: {
-    command: `pnpm build && env -u STRIPE_SECRET_KEY -u STRIPE_WEBHOOK_SECRET -u EMAIL_TRANSPORT JT_DB=${E2E_DB} PORT=${PORT} pnpm start`,
+    command: `pnpm build && env -u STRIPE_SECRET_KEY -u STRIPE_WEBHOOK_SECRET -u EMAIL_TRANSPORT JT_DB=${E2E_DB} JT_TRANSLATE_PACK=tests/fixtures/translate-pack PORT=${PORT} pnpm start`,
     url: `http://localhost:${PORT}/api/status`,
     reuseExistingServer: false,
     timeout: 120_000,

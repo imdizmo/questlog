@@ -5,6 +5,7 @@ import { current, TAB_CAP } from '../tabs';
 import { tabLabel } from '../tabLabel';
 import { Icon } from './icons';
 import { IS_MAC } from '../linkIgnores';
+import { useReadLang } from '../translate';
 
 /**
  * The open pages, right beside the workspace switcher: a click shows one, double-click pins or unpins it, a middle
@@ -17,10 +18,13 @@ export function TabBar() {
   const cards = useStore((s) => s.cards);
   const milestones = useStore((s) => s.milestones);
   const entryTypes = useStore((s) => s.entryTypes);
+  // Task titles are the reader's: a translation landing or another reading language relabels the tabs.
+  const translations = useStore((s) => s.translations);
+  const [readLang] = useReadLang();
   const urls = tabs?.list.map(current).join('\n') ?? '';
   const labels = useMemo(
     () => (tabs ? tabs.list.map((t) => tabLabel({ projects, decks, cards, milestones, entryTypes }, current(t))) : []),
-    [urls, projects, decks, cards, milestones, entryTypes],
+    [urls, projects, decks, cards, milestones, entryTypes, translations, readLang],
   );
   // More tabs than fit scroll sideways: the one showing is always scrolled into view.
   const bar = useRef<HTMLDivElement>(null);

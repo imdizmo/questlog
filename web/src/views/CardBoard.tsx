@@ -24,6 +24,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { Icon } from '../components/icons';
 import { Menu, type MenuItem } from '../components/Menu';
 import { Rail } from '../components/Rail';
+import { useShownTitle } from '../translate';
 
 /**
  * The boards on Home (web/src/views/Home.tsx): the Boards toolbar (Home, every board the person may see, a new one; a
@@ -55,13 +56,14 @@ export function useBoardList(): Array<{ board: VisionBoard; title: string }> {
   const boards = useStore((s) => s.visionBoards);
   const cards = useStore((s) => s.cards);
   const enabled = useStore((s) => settingsOf(s).visionBoardEnabled);
+  const shownTitle = useShownTitle();
   return useMemo(() => {
     if (!enabled) return [];
     return [...boards.values()].flatMap((board) => {
       const card = cards.get(board.cardId);
-      return card && card.visibility !== 'deleted' ? [{ board, title: titleOf(card.content) || 'Untitled' }] : [];
+      return card && card.visibility !== 'deleted' ? [{ board, title: shownTitle(card) || 'Untitled' }] : [];
     }).sort((a, b) => a.board.accountSeq - b.board.accountSeq);
-  }, [boards, cards, enabled]);
+  }, [boards, cards, enabled, shownTitle]);
 }
 
 /** The Boards toolbar, top centre: Home, each board, + (a new board); `children` (a card board's actions) at its end. */
@@ -166,7 +168,7 @@ function CardBoard({ board }: { board: VisionBoard }) {
   const s = useStore((x) => x);
   const card = s.cards.get(board.cardId)!;
   const deck = card.deckId ? s.decks.get(card.deckId) : undefined;
-  const title = titleOf(card.content) || 'Untitled';
+  const title = useShownTitle()(card) || 'Untitled';
   const level = boardLevel(s, board);
   const manage = canManageBoard(s, board);
   const { conn, status, reason, reconnect } = useBoardConnection(board.id);

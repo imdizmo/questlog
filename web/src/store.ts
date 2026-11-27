@@ -2,7 +2,7 @@ import { useRef, useSyncExternalStore } from 'react';
 import { showToast } from './toast';
 import { clearDrafts, pruneDrafts } from './drafts';
 import type {
-  Account, AccountRole, ApiToken, Bookmark, DonePileEntry, AccountSettings, Card, Deck, HandCard, Journey, VisionBoard, VisionQuery, Milestone, MilestoneProgress, MilestoneZone, Sprint, SprintConfig, SprintProgress, TimeSegment, OrgRole, PresetData, Project, ProjectAccess, Resolvable, ResolvableEntry, Reaction, ResolvableNotification, SavedSearch, User, OnboardingStep, EntryType, EntryFamily, LinkKind, EntryLink,
+  Account, AccountRole, Translation, ApiToken, Bookmark, DonePileEntry, AccountSettings, Card, Deck, HandCard, Journey, VisionBoard, VisionQuery, Milestone, MilestoneProgress, MilestoneZone, Sprint, SprintConfig, SprintProgress, TimeSegment, OrgRole, PresetData, Project, ProjectAccess, Resolvable, ResolvableEntry, Reaction, ResolvableNotification, SavedSearch, User, OnboardingStep, EntryType, EntryFamily, LinkKind, EntryLink,
 } from '../../shared/types';
 import { DEFAULT_SETTINGS } from '../../shared/types';
 import { featureAllowed, type PlanFeature } from '../../shared/plans';
@@ -21,7 +21,7 @@ export interface ProjectPref { userId: string; projectId: string; visible: boole
 export type ModelName =
   | 'account' | 'user' | 'accountRole' | 'project' | 'projectAccess' | 'projectPref'
   | 'deck' | 'card' | 'resolvable' | 'resolvableEntry' | 'reaction' | 'handCard' | 'preset' | 'userCardTag' | 'cardDep' | 'file' | 'resolvableNotification' | 'cardSubscription' | 'deckSubscription' | 'deckGuardian' | 'journey' | 'visionBoard' | 'visionQuery' | 'bookmark' | 'donePile' | 'savedSearch' | 'onboardingStep' | 'milestone' | 'milestoneZone' | 'milestoneProgress' | 'sprintConfig' | 'sprint' | 'sprintProgress' | 'timeSegment' | 'apiToken'
-  | 'entryType' | 'linkKind' | 'entryLink' | 'entryFamily' | 'asset';
+  | 'entryType' | 'linkKind' | 'entryLink' | 'entryFamily' | 'asset' | 'translation';
 /** Mirrors server/dispatch.ts. 'access' (model 'project', row {id}): our view of that project may have changed. */
 export type ChangeOp = 'upsert' | 'remove' | 'access';
 export interface ChangeEvent { model: ModelName; op: ChangeOp; row: any }
@@ -79,6 +79,8 @@ export interface State {
   entryFamilies: Map<string, EntryFamily>;
   linkKinds: Map<string, LinkKind>;
   entryLinks: Map<string, EntryLink>;
+  /** Machine translations of card text and comments, keyed `${kind}:${sourceId}:${lang}` (web/src/translate.ts reads them). */
+  translations: Map<string, Translation>;
 }
 
 /** People: users without the service users behind org API tokens (member lists and pickers). */
@@ -129,6 +131,7 @@ const MODELS: Record<Exclude<ModelName, 'account' | 'asset'>, { coll: Coll; key:
   entryFamily: { coll: 'entryFamilies', key: (r) => r.id },
   linkKind: { coll: 'linkKinds', key: (r) => r.id },
   entryLink: { coll: 'entryLinks', key: (r) => r.id },
+  translation: { coll: 'translations', key: (r) => `${r.kind}:${r.sourceId}:${r.lang}` },
 };
 
 const empty = (): State => ({
@@ -139,7 +142,7 @@ const empty = (): State => ({
   cardSubscriptions: new Map(), deckSubscriptions: new Map(), deckGuardians: new Map(), journeys: new Map(), visionBoards: new Map(), visionQueries: new Map(), bookmarks: new Map(), donePile: new Map(), savedSearches: new Map(), onboarding: new Map(),
   milestones: new Map(), milestoneZones: new Map(), milestoneProgress: new Map(),
   sprintConfigs: new Map(), sprints: new Map(), sprintProgress: new Map(), timeSegments: new Map(), apiTokens: new Map(),
-  entryTypes: new Map(), entryFamilies: new Map(), linkKinds: new Map(), entryLinks: new Map(),
+  entryTypes: new Map(), entryFamilies: new Map(), linkKinds: new Map(), entryLinks: new Map(), translations: new Map(),
 });
 
 const byKey = <T>(rows: T[] | undefined, key: (r: T) => string) => new Map((rows ?? []).map((r) => [key(r), r]));
@@ -176,9 +179,10 @@ function cardDependents(s: State, cardIds: Set<string>): Partial<State> {
     timeSegments: keep(s.timeSegments, (t) => !cardIds.has(t.cardId)),
     // A host card that is gone or deleted hides its board and saved queries (restoring re-sends them).
     visionBoards: keep(s.visionBoards, (b) => !cardIds.has(b.cardId)),
-    visionQueries: keep(s.visionQueries, (q) => !cardIds.has(q.cardId)),
+    visionQueries: keep(s.visionQueries, (q) => !q.cardId || !cardIds.has(q.cardId)),
     // The snapshot sends links only between cards we see.
     entryLinks: keep(s.entryLinks, (l) => !cardIds.has(l.fromCardId) && !cardIds.has(l.toCardId)),
+    translations: keep(s.translations, (t) => t.kind === 'entry' || !cardIds.has(t.sourceId)),
   };
 }
 
@@ -320,6 +324,7 @@ export class Store {
           entryFamilies: byKey<EntryFamily>(s.entryFamilies, MODELS.entryFamily.key),
           linkKinds: byKey<LinkKind>(s.linkKinds, MODELS.linkKind.key),
           entryLinks: byKey<EntryLink>(s.entryLinks, MODELS.entryLink.key),
+          translations: byKey<Translation>(s.translations, MODELS.translation.key),
         });
       } catch {
         this.loadFailed(gen);

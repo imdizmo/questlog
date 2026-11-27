@@ -5,6 +5,7 @@ import { ambiguousNames, nameKey, nameSourceOf } from '../../../../shared/autoli
 import { api, ApiError, messageFor } from '../../api';
 import { store, useStore } from '../../store';
 import { campaignLore, projectIdOf } from '../../wiki';
+import { useShownTitle } from '../../translate';
 
 /** The server's reason, in plain words (wiki/setAliases). */
 export function aliasError(e: unknown): string {
@@ -21,6 +22,7 @@ export function aliasError(e: unknown): string {
  * editors; read-only chips for others (nothing when there are none).
  */
 export function Aliases({ card, editable }: { card: Card; editable: boolean }) {
+  const shownTitle = useShownTitle();
   const aliases = card.aliases ?? [];
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +37,7 @@ export function Aliases({ card, editable }: { card: Card; editable: boolean }) {
     const lore = campaignLore(cards.values(), projectId, decks);
     return ambiguousNames(lore.map(nameSourceOf)).filter((a) => a.cardIds.includes(card.id)).map((a) => ({
       name: a.name,
-      others: a.cardIds.filter((id) => id !== card.id).map((id) => titleOf(cards.get(id)?.content ?? '')),
+      others: a.cardIds.filter((id) => id !== card.id).map((id) => { const c = cards.get(id); return c ? shownTitle(c) : ''; }),
     }));
   }, [cards, decks, card]);
   if (!editable && aliases.length === 0) return null;

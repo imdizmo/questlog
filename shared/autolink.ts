@@ -275,14 +275,14 @@ export function cachedNameIndex(entries: readonly NameSource[]): NameIndex {
 
 // ---- Where names are not looked for ----
 
-const FENCE = /^\s*(`{3,}|~{3,})/;
+export const FENCE = /^\s*(`{3,}|~{3,})/;
 const HEADING_MARK = /^ {0,3}#{1,6}(?=[ \t]|$)/;
-const CODE_SPAN = /(`+)[^\n]*?\1/g;
-const LINK = /!?\[[^\]\n]*\]\([^)\n]*\)/g;
-const ANGLE = /<[^<>\s][^<>\n]*>/g;
-const URL = /\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)[^\s<>]+/giu;
+export const CODE_SPAN = /(`+)[^\n]*?\1/g;
+export const LINK = /!?\[[^\]\n]*\]\([^)\n]*\)/g;
+export const ANGLE = /<[^<>\s][^<>\n]*>/g;
+export const URL = /\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)[^\s<>]+/giu;
 /** `$code`, `#tag` and `@mention` tokens (shared/content rules): already references. */
-const TOKEN = new RegExp(`(^|\\s)([$](?:${TOKEN_BODY.code})|#(?:${TOKEN_BODY.tag})|@(?:${TOKEN_BODY.mention}))`, 'gu');
+export const TOKEN = new RegExp(`(^|\\s)([$](?:${TOKEN_BODY.code})|#(?:${TOKEN_BODY.tag})|@(?:${TOKEN_BODY.mention}))`, 'gu');
 
 /**
  * Ranges [from, to) of the text that never hold a mention, sorted and merged: fenced blocks, code spans, Markdown and

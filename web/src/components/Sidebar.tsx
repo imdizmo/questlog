@@ -14,6 +14,7 @@ import { tabActions } from '../tabRuntime';
 import { Icon, type IconName } from './icons';
 import { QuickActions } from './QuickActions';
 import { SideRail } from './SideRail';
+import { useReadLang } from '../translate';
 
 const NO_FOLDS: Record<string, boolean> = {};
 const WIKI = new Set<Route['name']>(['wiki', 'wikiProject', 'wikiEntry', 'wikiType', 'wikiKind', 'wikiNew', 'wikiView']);
@@ -110,9 +111,12 @@ export function Sidebar({ route }: { route: Route }) {
   const decks = useStore((s) => s.decks);
   const entryTypes = useStore((s) => s.entryTypes);
   const cards = useStore((s) => s.cards);
+  // Lore titles are the reader's: a translation landing or another reading language redoes the rows.
+  const translations = useStore((s) => s.translations);
+  const [readLang] = useReadLang();
   const savedSearches = useStore((s) => s.savedSearches);
   const ctx = useSearchCtx();
-  const rows = useMemo(() => sideRows({ projects, decks, entryTypes, cards }, stats, dq, folds, overrides), [projects, decks, entryTypes, cards, stats, dq, folds, overrides]);
+  const rows = useMemo(() => sideRows({ projects, decks, entryTypes, cards }, stats, dq, folds, overrides), [projects, decks, entryTypes, cards, stats, dq, folds, overrides, translations, readLang]);
   const target = quickTarget(store.get(), route, picked);
   const saved = [...savedSearches.values()].sort((a, b) => a.createdAt - b.createdAt);
 

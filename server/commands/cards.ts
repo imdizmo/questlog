@@ -23,6 +23,7 @@ import { fileRow, refreshCover, unlinkFiles } from '../files';
 import { visionBoardRow, visionQueryRow } from '../boards';
 import type { Command, Ctx } from '../dispatch';
 import type { CardStatus, HistoryChange, ProjectTag, ResolvableContext, Visibility } from '../../shared/types';
+import { dropCardTranslations, touchTranslation } from '../translate/queue';
 
 const status = z.enum(['not_started', 'started', 'done']);
 const visibility = z.enum(['default', 'archived', 'deleted']);
@@ -147,6 +148,9 @@ export function applyTransition(
     if (card.visibility === 'deleted') emitCardDependents(ctx, card.id);
     // Wiki links of a deleted card stay in the database but leave every view until it is restored.
     else if (to.visibility === 'deleted') for (const l of cardLinkRefs(db, card.id)) ctx.emit('entryLink', 'remove', l);
+    // Translations leave with the card and come back (translated afresh) when it is restored.
+    if (to.visibility === 'deleted') dropCardTranslations(ctx, card.id);
+    else if (card.visibility === 'deleted') touchTranslation(ctx, 'card', card.id);
   }
   if (changes.length) syncHeroStatus(ctx, card.parentCardId as string | null);
   // Restored from the trash: its sub cards may have changed meanwhile, so its own status is stale.
@@ -519,6 +523,7 @@ export function applyCardUpdate(ctx: Ctx, card: any, input: CardPatch): void {
   if (sprintId !== curSprint) changes.push({ kind: 'sprint', from: curSprint, to: sprintId });
   db.prepare('UPDATE cards SET deck_id=?, is_doc=?, content=?, content_version=?, assignee_id=?, sort_index=?, priority=?, effort=?, due_date=?, milestone_id=?, milestone_zone_id=?, sprint_id=? WHERE id=?')
     .run(deckId, isDoc ? 1 : 0, content, contentVersion, assigneeId, sortIndex, priority, effort, dueDate, ms.milestoneId, ms.zoneId, sprintId, card.id);
+  if (content !== card.content) touchTranslation(ctx, 'card', card.id);
   // A hand-made run change starts the card fresh in that run (or out of any run).
   if (sprintId !== curSprint) db.prepare('UPDATE cards SET sprint_joined_at=?, carry_count=0 WHERE id=?').run(sprintId ? Date.now() : null, card.id);
   writeDerived(db, card.id, derived, masterTags);
@@ -681,6 +686,7 @@ export function createCard(ctx: Ctx, input: CreateInput): { id: string; accountS
   if (input.putInQueue) insertHand(ctx, assigneeId ?? actor.id, id);
   else if (assigneeId) handSyncOwner(ctx, id);
   emitCard(ctx, id);
+  touchTranslation(ctx, 'card', id);
   return { id, accountSeq: seq };
 }
 

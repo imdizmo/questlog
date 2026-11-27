@@ -13,6 +13,8 @@ import { campaignLore, entriesOfTypes, entryPath } from '../../wiki';
 import { CardPicker } from '../CardPicker';
 import { Icon } from '../icons';
 import { TypePicture } from './TypePicture';
+import { useShownPiece, useShownTitle } from '../../translate';
+import { pieceKey } from '../../../../shared/translate';
 
 export interface BlockBodyProps {
   block: Block;
@@ -58,7 +60,8 @@ function EditButton({ label, onClick }: { label: string; onClick: () => void }) 
 }
 
 /** Lines (barks): one per line; Steps: numbered. Grey prompt while empty. */
-function ListBlock({ block, data, onSave }: BlockBodyProps) {
+function ListBlock({ block, data, onSave, card }: BlockBodyProps) {
+  const shown = useShownPiece(card?.id);
   const items = data?.items ?? [];
   const [text, setText] = useState<string | null>(null);
   const { busy, save } = useSaving(onSave, () => setText(null));
@@ -81,7 +84,7 @@ function ListBlock({ block, data, onSave }: BlockBodyProps) {
   return (
     <>
       {items.length
-        ? <Tag className="blist">{items.map((x, i) => <li key={i}>{x}</li>)}</Tag>
+        ? <Tag className="blist">{items.map((x, i) => <li key={i}>{shown(pieceKey.item(block.id, i), x)}</li>)}</Tag>
         : <Tag className="blist ph"><li>{block.prompt || (block.kind === 'steps' ? 'One step each.' : 'One short line each.')}</li></Tag>}
       {onSave && <EditButton label={items.length ? 'Edit' : block.kind === 'steps' ? 'Add steps' : 'Add lines'} onClick={() => setText(items.join('\n'))} />}
     </>
@@ -89,7 +92,8 @@ function ListBlock({ block, data, onSave }: BlockBodyProps) {
 }
 
 /** A table: the block's columns, the entry's rows. Edits as a grid of cells; empty rows are dropped on save. */
-function TableBlock({ block, data, onSave }: BlockBodyProps) {
+function TableBlock({ block, data, onSave, card }: BlockBodyProps) {
+  const shown = useShownPiece(card?.id);
   const cols = block.cols ?? [];
   const rows = data?.rows ?? [];
   const width = Math.max(cols.length, ...rows.map((r) => r.length));
@@ -128,7 +132,7 @@ function TableBlock({ block, data, onSave }: BlockBodyProps) {
       <table className="btab">
         <thead><tr>{heads.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
         <tbody>
-          {rows.length ? rows.map((r, i) => <tr key={i}>{pad(r).map((c, j) => <td key={j}>{c}</td>)}</tr>)
+          {rows.length ? rows.map((r, i) => <tr key={i}>{pad(r).map((c, j) => <td key={j}>{shown(pieceKey.cell(block.id, i, j), c)}</td>)}</tr>)
             : <tr>{heads.map((_, j) => <td key={j} className="ph">…</td>)}</tr>}
         </tbody>
       </table>
@@ -139,6 +143,7 @@ function TableBlock({ block, data, onSave }: BlockBodyProps) {
 
 /** Links to entries of a type (`to`; any type when empty): chips that open them; × and "Add…" save at once. */
 function LinksBlock({ block, data, project, onSave, card }: BlockBodyProps) {
+  const shownTitle = useShownTitle();
   const cards = useStore((s) => s.cards);
   const decks = useStore((s) => s.decks);
   const types = useStore((s) => s.entryTypes);
@@ -150,8 +155,8 @@ function LinksBlock({ block, data, project, onSave, card }: BlockBodyProps) {
     <div className="blinks">
       {linked.map((c) => (
         <span key={c.id} className="chipx">
-          <Link href={entryPath(project.seq, c)}>{titleOf(c.content)}</Link>
-          {onSave && <button type="button" className="chip-x" aria-label={`Remove ${titleOf(c.content)}`} onClick={() => set(ids.filter((x) => x !== c.id))}>×</button>}
+          <Link href={entryPath(project.seq, c)}>{shownTitle(c)}</Link>
+          {onSave && <button type="button" className="chip-x" aria-label={`Remove ${shownTitle(c)}`} onClick={() => set(ids.filter((x) => x !== c.id))}>×</button>}
         </span>
       ))}
       {!linked.length && !onSave && <span className="chipx ph">Pick {target ? `${target.name} entries` : 'entries'}…</span>}

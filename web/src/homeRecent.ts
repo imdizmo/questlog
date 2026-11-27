@@ -8,6 +8,7 @@ import { titleOf } from '../../shared/cards';
 import { cardHref } from './cards';
 import { entryPath } from './wiki';
 import { projectPrefix } from './taskId';
+import { titleNow } from './translate';
 
 export interface RecentRow { id: string; title: string; sub: string; href: string; done: boolean; doc: boolean; at: number }
 export const RECENT_MAX = 8;
@@ -43,7 +44,7 @@ export function recentRows(
     if (!c || c.visibility === 'deleted') continue;
     const deck = c.deckId ? s.decks.get(c.deckId) : undefined;
     const project = deck ? s.projects.get(deck.projectId) : undefined;
-    const title = titleOf(c.content);
+    const title = titleNow(c);
     if (c.isDoc) {
       out.push({ id: c.id, title, sub: project ? `Page · ${project.name}` : 'Page', href: project ? entryPath(project.seq, c) : cardHref(c, deck), done: false, doc: true, at: it.at });
     } else {

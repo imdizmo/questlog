@@ -10,7 +10,7 @@ import {
 import { cardCode, titleOf } from '../../../shared/cards';
 import { planStoryboard, refOf, SCENE, SUBTASK, WAITS_FOR } from './projectTree';
 import { convertTree, layoutFrames, originBelow, treeProjects, type BoardPatch } from './projectFrames';
-import { frameInput, HOME_CARD_REFUSED, homeCardAllowed, refuseProject } from './boards';
+import { frameInput, HOME_CARD_REFUSED, HOME_NO_PROJECT, homeCardAllowed, homeProjects, refuseProject } from './boards';
 import { isStoryline, makeFrame } from '../components/wiki/Builder';
 import { showToast } from '../toast';
 import { dispatch } from '../api';
@@ -36,10 +36,15 @@ import { NodeView, handlesFor, initialValue, TYPE_LABEL, type Handle } from './n
 import { NodeToolbar } from './NodeToolbar';
 import { SmartFilterPanel } from './SmartFilterPanel';
 import { smartToStored, smartValue, type SmartValue } from './SmartNode';
+import { SmartGuide } from './SmartGuide';
+import { claimGuide, guideFacts, guidePhase, markGuide, nextStep, opensByItself, releaseGuide, startGuide, tickGuide, type GuideState } from './smartGuideState';
+import { prefs } from '../prefs';
+import { useTutorialPaused } from '../guides';
 import { EdgeLabels, Edges, edgeGeometry, MacroLinks, type ConnectPreview } from './Edges';
 import { isMacro, macroView } from './macro';
 import type { Awareness } from 'y-protocols/awareness';
 import { PresenceLayer, useLocalPresence } from './Presence';
+import { titleNow } from '../translate';
 
 /** Board units → screen: screen = s * (board + (x, y)). Pan and zoom live here only, never in the doc. */
 interface View { x: number; y: number; s: number }
@@ -144,7 +149,7 @@ export interface WorkLayer {
 }
 
 export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }: {
-  /** The board's host task; null for Home, which has none (no project upkeep, Smart Nodes or uploads there). */
+  /** The board's host task; null for Home, which has none (no project upkeep; its pictures and Smart Nodes are kept for a project picked for each). */
   doc: Y.Doc | null; canEdit: boolean; host: Card | null; awareness?: Awareness | null;
   /** Hands up "Arrange as frames" while this board has an old tree to arrange (null when it has none). */
   onArrange?: (run: (() => void) | null) => void;
@@ -152,7 +157,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
 }) {
   const stored = useBoard(doc);
   const board = useMemo(() => drawnBoard(stored, work ? work.place(stored.nodes) : null), [stored, work]);
-  const tools = useMemo(() => (host ? TOOLS : TOOLS.filter((t) => t.type !== 'filter' && t.type !== 'image')), [host]);
+  const tools = TOOLS;
   const hostId = host?.id ?? '';
   const meId = useStore((x) => x.me?.id);
   const settings = useStore(settingsOf);
@@ -182,7 +187,11 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
   const [resize, setResize] = useState<{ id: string; rect: Rect } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   /** A card, image or video node waits for its dialog: nothing is written until the dialog completes. */
-  const [dialog, setDialog] = useState<{ type: 'card' | 'image' | 'video'; at: Point; fromKeyboard: boolean } | null>(null);
+  const [dialog, setDialog] = useState<{ type: 'card' | 'image' | 'video'; at: Point; fromKeyboard: boolean; projectId?: string } | null>(null);
+  /** On Home, a Picture or Smart Node waits for "Which project?" (nodeId: setting up a Smart Node already there). */
+  const [projectAsk, setProjectAsk] = useState<HomeAsk | null>(null);
+  /** On Home, the project the open Smart Node panel saves its query for. */
+  const [setupProject, setSetupProject] = useState<string | null>(null);
   /** The card shown in the side panel over the board (a node id, so the panel follows the node's card). */
   const [openNode, setOpenNode] = useState<string | null>(null);
   /** The Smart Node whose filter panel is open; it shares the side with the card panel, so only one shows. */
@@ -190,6 +199,9 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
   /** The project picker for "Add project", and the question a line between two tasks raises. */
   const [treeAsk, setTreeAsk] = useState(false);
   const [linkAsk, setLinkAsk] = useState<{ edgeId: string; a: string; b: string } | null>(null);
+  /** The Smart Node guide this person sees (one per page; local UI, never in the board's document). */
+  const [guide, setGuide] = useState<GuideState | null>(null);
+  const tutorialPaused = useTutorialPaused();
   const gesture = useRef<Gesture | null>(null);
   /** Where focus goes after the next render: a node id, or 'canvas' for the viewport. */
   const pendingFocus = useRef<string | null>(null);
@@ -197,8 +209,8 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
   const quietFocus = useRef(false);
 
   // Latest values for handlers registered once (keyboard, wheel).
-  const live = useRef({ board, view, tool, selected, selectedEdge, canEdit, multi });
-  useLayoutEffect(() => { live.current = { board, view, tool, selected, selectedEdge, canEdit, multi }; });
+  const live = useRef({ board, view, tool, selected, selectedEdge, canEdit, multi, host });
+  useLayoutEffect(() => { live.current = { board, view, tool, selected, selectedEdge, canEdit, multi, host }; });
 
   /** One selection at a time: a node or a connector. */
   const setSelected = useCallback((id: string | null) => { setSelectedNode(id); if (id) setSelectedEdge(null); }, []);
@@ -369,7 +381,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
         const o = other ? live.current.board.nodes.find((n) => n.id === other) : undefined;
         if (o && (refOf(o) ?? '').startsWith('deck:')) live.current.board.deleteEdge(e.id);
       }
-      showToast(`${titleOf(card.content)} moved to ${deck.title}`, 'info', 3000);
+      showToast(`${titleNow(card)} moved to ${deck.title}`, 'info', 3000);
     }).catch(() => { live.current.board.deleteEdge(keep); });
   };
   /**
@@ -476,7 +488,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
 
   /** What a saved drop says (the dispatch toasts a refusal). */
   const toastDrop = (done: DropIntent, s = store.get(), area?: BoardNode) => {
-    if (done?.kind === 'move-task') showToast(`${titleOf(s.cards.get(done.cardId)?.content ?? '')} moved to ${s.decks.get(done.deckId)?.title ?? 'the list'}`, 'info', 3000);
+    if (done?.kind === 'move-task') showToast(`${(c => (c ? titleNow(c) : ''))(s.cards.get(done.cardId))} moved to ${s.decks.get(done.deckId)?.title ?? 'the list'}`, 'info', 3000);
     else if (done) showToast(`${s.decks.get(done.deckId)?.title ?? 'The list'} moved to ${String(area?.value.label ?? 'the area')}`, 'info', 3000);
   };
   /**
@@ -563,21 +575,50 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
     board.setPos(changes);
   };
 
-  /** One write: the node, selected and focused (a text node opens its editor instead). */
-  const addPlaced = (type: NodeType, at: Point, value: Record<string, unknown>) => {
-    if (!live.current.canEdit) return;
+  /** One write: the node, selected and focused (a text node opens its editor instead). Returns its id. */
+  const addPlaced = (type: NodeType, at: Point, value: Record<string, unknown>): string | null => {
+    if (!live.current.canEdit) return null;
     const placed = newNodeAt(type, at, value);
     if (value.mode === 'scene') Object.assign(placed.pos, SCENE);
     placed.pos.parent = containerAt(nodes, placed.pos);
     board.addNode(placed);
+    if (type === 'filter' && opensByItself(prefs, { canEdit: live.current.canEdit, paused: tutorialPaused })) openGuide(placed.id, smartValue(placed.value).mode);
     setTool(null);
     setSelected(placed.id);
     if (type === 'text') setEditing(placed.id);
     else { setEditing(null); pendingFocus.current = placed.id; }
+    return placed.id;
+  };
+
+  /**
+   * On Home a Picture or Smart Node is kept for a project: asks which one, unless only one may be picked (one every
+   * member sees, not archived); with none, says why.
+   */
+  const askProject = (ask: HomeAsk) => {
+    const list = homeProjects(store.get());
+    if (list.length === 0) { if (!ask.fromKeyboard) pendingFocus.current = 'canvas'; showToast(HOME_NO_PROJECT, 'info', 5000); }
+    else if (list.length === 1) withProject(ask, list[0].id);
+    else setProjectAsk(ask);
+  };
+  const withProject = (ask: HomeAsk, projectId: string) => {
+    setProjectAsk(null);
+    if (ask.type === 'image') { setDialog({ type: 'image', at: ask.at, fromKeyboard: ask.fromKeyboard, projectId }); return; }
+    const id = ask.nodeId ?? addPlaced('filter', ask.at, initialValue('filter'));
+    if (!id) return;
+    setOpenNode(null);
+    setSetupProject(projectId);
+    setSetupNode(id);
+  };
+  const cancelAsk = () => {
+    if (projectAsk && !projectAsk.fromKeyboard) pendingFocus.current = projectAsk.nodeId ?? 'canvas';
+    setProjectAsk(null);
   };
 
   const place = (type: NodeType, at: Point, fromKeyboard = false) => {
-    if (type === 'card' || type === 'image' || type === 'video') {
+    if (!host && (type === 'image' || type === 'filter')) {
+      setTool(null);
+      askProject({ type, at, fromKeyboard });
+    } else if (type === 'card' || type === 'image' || type === 'video') {
       setTool(null);
       setDialog({ type, at, fromKeyboard });
     } else addPlaced(type, at, initialValue(type));
@@ -594,6 +635,34 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
     addPlaced(dialog.type, dialog.at, value);
   };
 
+  const closeGuide = useCallback(() => setGuide(null), []);
+  useEffect(() => () => releaseGuide(closeGuide), [closeGuide]);
+  /** Opens the guide on a Smart Node (by itself on the first one, or from its "Show guide"); seen from then on. */
+  const openGuide = (nodeId: string, mode: SmartValue['mode']) => {
+    claimGuide(closeGuide);
+    setGuide(startGuide(nodeId, !host, mode));
+    markGuide(prefs, 'seen');
+  };
+  const guideNode = guide ? byId.get(guide.nodeId) : undefined;
+  /** What the guide reads off the node: its query's project (on Home, also the one just picked for it) and chips, its mode. */
+  const factsIn = (n: BoardNode) => {
+    const v = smartValue(n.value), q = v.queryId ? store.get().visionQueries.get(v.queryId) : undefined;
+    return { projectId: q?.projectId ?? (setupNode === n.id ? setupProject : null), tokens: q?.query.tokens.length ?? 0, mode: v.mode, startMode: guide?.startMode ?? v.mode, opened: false };
+  };
+  useStore((s) => s.visionQueries); // a saved filter arrives over the socket: re-read the ticks
+  // Each render: tick what is done; close when the node goes, rights go, or the person moved past the last step.
+  useEffect(() => {
+    if (!guide) return;
+    if (!guideNode || guideNode.type !== 'filter' || !canEdit) { setGuide(null); return; }
+    const next = tickGuide(guide, guideFacts(factsIn(guideNode)));
+    const phase = guidePhase(next);
+    if (phase === 'closed') setGuide(null);
+    else {
+      if (phase === 'done' && guidePhase(guide) !== 'done') markGuide(prefs, 'done');
+      if (next !== guide) setGuide(next);
+    }
+  });
+
   const openCard = (nodeId: string, newTab = false) => {
     const n = byId.get(nodeId);
     if (n?.type === 'work') { work?.open(String(n.value.k), newTab); return; }
@@ -602,9 +671,17 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
   };
   const setupFilter = useCallback((nodeId: string) => {
     if (!live.current.canEdit) return;
+    if (!live.current.host) {
+      // On Home the query is kept for a project: the one its saved query has, else ask.
+      const n = live.current.board.nodes.find((x) => x.id === nodeId);
+      const qid = n ? smartValue(n.value).queryId : null;
+      const pid = qid ? store.get().visionQueries.get(qid)?.projectId : null;
+      if (!pid) { askProject({ type: 'filter', at: { x: 0, y: 0 }, fromKeyboard: true, nodeId }); return; }
+      setSetupProject(pid);
+    }
     setOpenNode(null);
     setSetupNode(nodeId);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const filterNode = setupNode ? byId.get(setupNode) : undefined;
   const closeSetup = () => { if (setupNode) pendingFocus.current = setupNode; setSetupNode(null); };
   useEffect(() => { if (setupNode && (!filterNode || filterNode.type !== 'filter' || !canEdit)) setSetupNode(null); }, [setupNode, filterNode, canEdit]);
@@ -626,6 +703,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
   };
   const openAsSearch = (node: BoardNode) => {
     const q = smartValue(node.value).queryId ? store.get().visionQueries.get(smartValue(node.value).queryId!) : undefined;
+    if (guide?.nodeId === node.id && guidePhase(tickGuide(guide, { ...guideFacts(factsIn(node)), search: true })) === 'done') markGuide(prefs, 'done');
     if (q) navigate(q.query.tokens.length ? `/decks?search=${encodeChips(q.query.tokens, q.query.forceOr)}` : '/decks');
   };
   const panelCard = (() => {
@@ -967,7 +1045,8 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
   const selRect = selNode && rectOf(selNode);
   const pct = Math.round(view.s * 100);
   const showHint = canEdit && projectBoard && !overview && !hintGone && edges.filter((e) => e.label === WAITS_FOR || e.label === SUBTASK).length < 2;
-  const handleName = handleNode?.type === 'card' ? titleOf(store.get().cards.get(String(handleNode.value.id))?.content ?? '') : '';
+  const handleCard = handleNode?.type === 'card' ? store.get().cards.get(String(handleNode.value.id)) : undefined;
+  const handleName = handleCard ? titleNow(handleCard) : '';
   // A frame's name strip runs along its top edge, so its handles sit just outside it (a press on the strip must move the frame).
   const out = handleNode?.type === 'container' ? 10 / view.s : 0;
   const showToolbar = selNode && selRect && editing !== selNode.id && !drag && !resize && !(overview && pressed);
@@ -1013,6 +1092,7 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
                           },
                           onSetup: () => setupFilter(selNode.id),
                           onOpenSearch: smartValue(selNode.value).queryId ? () => openAsSearch(selNode) : undefined,
+                          onGuide: () => openGuide(selNode.id, smartValue(selNode.value).mode),
                         } : undefined}
                         onColor={(c) => board.setColor(selNode.id, c)}
                         onFocus={() => focusRect(selNode.pos)}
@@ -1047,6 +1127,9 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
               )}
             </div>
           </div>
+          {guide && guideNode && isShown(guideNode.id) && (
+            <SmartGuide key={`guide-${guide.nodeId}`} guide={guide} onClose={closeGuide} onSkip={closeGuide} onNext={() => setGuide((g) => (g ? nextStep(g) : g))} />
+          )}
           {showHint && (
             <div className="board-hint" role="note" title="From the keyboard: focus a task, Tab to its toolbar and choose Connect to…">
               <span>Drag from a task's handle to another task to connect them.</span>
@@ -1091,8 +1174,9 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
               <CardView code={cardCode(panelCard.seq)} inDeck embedded />
             </aside>
           )}
-          {filterNode && filterNode.type === 'filter' && (
-            host && <SmartFilterPanel key={filterNode.id} host={host} queryId={smartValue(filterNode.value).queryId} canEdit={canEdit}
+          {filterNode && filterNode.type === 'filter' && (host || setupProject) && (
+            <SmartFilterPanel key={filterNode.id} owner={host ? { cardId: host.id } : { projectId: setupProject! }}
+              queryId={smartValue(filterNode.value).queryId} canEdit={canEdit}
               onSaved={(queryId, label) => {
                 const cur = live.current.board.nodes.find((n) => n.id === filterNode.id); // the node may have changed while saving
                 if (cur) live.current.board.setValue(cur.id, smartToStored({ ...smartValue(cur.value), queryId, label }));
@@ -1101,8 +1185,10 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
               onClose={closeSetup} />
           )}
           {treeAsk && <AddProjectDialog onClose={() => setTreeAsk(false)} onPick={addProject} />}
+          {projectAsk && <HomeProjectDialog what={projectAsk.type === 'image' ? 'picture' : 'Smart Node'} onClose={cancelAsk}
+            onPick={(projectId) => withProject(projectAsk, projectId)} />}
           {linkAsk && (() => {
-            const s = store.get(), ta = titleOf(s.cards.get(linkAsk.a)?.content ?? ''), tb = titleOf(s.cards.get(linkAsk.b)?.content ?? '');
+            const s = store.get(), ca = s.cards.get(linkAsk.a), cb = s.cards.get(linkAsk.b), ta = ca ? titleNow(ca) : '', tb = cb ? titleNow(cb) : '';
             return (
               <Dialog title="What does this line mean?" onClose={() => setLinkAsk(null)} actions={<>
                 <button type="button" className="btn btn-ghost" onClick={() => setLinkAsk(null)}>Only a line</button>
@@ -1128,7 +1214,9 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
             if (frame && !linked) void dispatch('wiki', 'addLink', { kindKey: 'frames', fromCardId: hostId, toCardId: id, props: {} }).catch(() => {});
             finishDialog({ id, mode: frame ? 'scene' : 'mini' });
           }} />}
-          {dialog?.type === 'image' && host && <ImageDialog hostCardId={hostId} onClose={cancelDialog} onDone={(v) => finishDialog({ ...v })} />}
+          {dialog?.type === 'image' && (host || dialog.projectId) && (
+            <ImageDialog owner={host ? { cardId: hostId } : { projectId: dialog.projectId! }} onClose={cancelDialog} onDone={(v) => finishDialog({ ...v })} />
+          )}
           {dialog?.type === 'video' && <VideoDialog onClose={cancelDialog} onDone={(videoId) => finishDialog({ videoId })} />}
           <div className="board-zoom" role="group" aria-label="Zoom">
             <button type="button" className="icon-btn" aria-label="Zoom out" aria-keyshortcuts="-" disabled={view.s <= ZOOM_MIN} onClick={() => zoomTo(view.s - ZOOM_STEP)}><Icon name="minus" /></button>
@@ -1141,6 +1229,29 @@ export function Canvas({ doc, canEdit, host, awareness = null, onArrange, work }
         </>
       )}
     </section>
+  );
+}
+
+/** On Home, what waits for "Which project?": a new Picture or Smart Node at `at`, or setting up Smart Node `nodeId`. */
+interface HomeAsk { type: 'image' | 'filter'; at: Point; fromKeyboard: boolean; nodeId?: string }
+
+/** "Which project?" for a Picture or Smart Node on Home: only projects every member sees, not archived. */
+function HomeProjectDialog({ what, onClose, onPick }: { what: string; onClose: () => void; onPick: (projectId: string) => void }) {
+  const projects = useStore(homeProjects);
+  const [id, setId] = useState(projects[0]?.id ?? '');
+  return (
+    <Dialog title="Which project?" onClose={onClose} onSubmit={() => { if (id) onPick(id); }} actions={<>
+      <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+      <button type="submit" className="btn btn-primary" disabled={!id}>Continue</button>
+    </>}>
+      <label className="field">
+        <span>Project</span>
+        <select data-autofocus value={id} onChange={(e) => setId(e.target.value)}>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      </label>
+      <p className="hint">Home is shared with the whole workspace. The {what} is kept with this project, and goes when the project is deleted.</p>
+    </Dialog>
   );
 }
 

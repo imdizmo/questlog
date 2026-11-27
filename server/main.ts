@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveWebRoot } from './webRoot';
 import { openDb, NewerDatabaseError } from './db';
 import { buildApp } from './app';
+import { packDirFor, TranslateEngine } from './translate/engine';
 import { sweepFilesDir } from './files';
 import { startScheduler } from './jobs';
 import { deleteWorkspace } from './commands/dangerZone';
@@ -51,7 +52,11 @@ startTeamFile(db);
 const email = emailConfig();
 const web = resolveWebRoot(process.env, dirname(fileURLToPath(import.meta.url)));
 console.log(`web: serving ${web.root} (${web.from})`);
-const app = buildApp({ db, webRoot: web.root, port, filesDir, email: { ...email, secret: loadSecret(dirname(resolve(dbPath))) } });
+// Translation runs only with a language pack (JT_TRANSLATE_PACK, else models/translate beside the server); the app
+// stops the queue and closes the engine's worker when it closes.
+const translateEngine = new TranslateEngine({ packDir: packDirFor(dirname(fileURLToPath(import.meta.url))) });
+console.log(`translate: ${translateEngine.available() ? 'language pack found' : 'no language pack, translation off'}`);
+const app = buildApp({ db, webRoot: web.root, port, filesDir, email: { ...email, secret: loadSecret(dirname(resolve(dbPath))) }, translate: { engine: translateEngine } });
 const host = process.env.JT_HOST;
 await app.listen({ host: host ?? '0.0.0.0', port });
 console.log(`QUESTLOG_LISTENING ${port}`);
